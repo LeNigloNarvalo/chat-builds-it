@@ -57,3 +57,21 @@ const b3 = B.newBoss(); b3.phase = 'attack'; b3.attack = 'pluie'; b3.timer = 9;
 b3.shots.push({ type: 'meteor', x: bs.player.x, y: bs.player.y, w: 24, h: 24, vx: 0, vy: 0 });
 const lv = bs.lives; B.step(b3, bs, 0.001, none, rnd); assert.strictEqual(bs.lives, lv - 1, 'un météore touche le joueur');
 console.log('OK');
+// IA du mode démo : esquive, vise, relance
+const A = require('./ai.js');
+const as = L.newState(); as.enemies = [{ x: 300, y: 100, w: 28, h: 22, row: 0, hp: 1 }]; as.player.x = 100;
+assert(A.decide(as).right === 1 && A.decide(as).left === 0, "l'IA se place sous l'ennemi");
+as.player.x = 300 + 14 - 16; assert(A.decide(as).fire, "l'IA tire quand elle est alignée");
+as.bombs = [{ x: as.player.x + 13, y: as.player.y - 60, w: 6, h: 12 }];
+const mv = A.decide(as); assert(mv.left + mv.right === 1, "l'IA esquive une bombe");
+as.over = true; assert(!A.decide(as).fire, "rien à faire si la partie est finie");
+assert(A.shouldRestart(true, true, 2) && !A.shouldRestart(true, true, 0.1) && !A.shouldRestart(true, false, 9), "relance après game over");
+// simulation : l'IA survit bien plus longtemps qu'un joueur immobile
+function play(ai) { const g = L.newState(); for (let i = 0; i < 60 * 40 && !g.over; i++) L.step(g, 1 / 60, ai ? A.decide(g) : none); return g; }
+const bot = play(true), idle = play(false);
+assert(bot.score > idle.score * 3 && bot.level >= 3, 'IA efficace: score ' + bot.score + ' niv ' + bot.level);
+// contre le boss
+const gb = L.newState(), bb = B.newBoss(); gb.enemies = [];
+for (let i = 0; i < 60 * 60 && !gb.over && !bb.defeated; i++) B.step(bb, gb, 1 / 60, A.decide(gb, bb), rnd);
+assert(bb.hp < bb.max, "l'IA blesse le boss");
+console.log('OK IA');
