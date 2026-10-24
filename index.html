@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Astro Arcade</title>
+<style>
+body{margin:0;background:#0a0a1a;color:#eee;font:16px monospace;display:flex;flex-direction:column;align-items:center;min-height:100vh;justify-content:center}
+h1{margin:8px;color:#ffd23f;text-shadow:0 0 12px #ff4d6d;letter-spacing:4px}
+canvas{background:radial-gradient(#1b1b4a,#05050f);border:3px solid #6c5ce7;box-shadow:0 0 30px #6c5ce7;max-width:100vw;max-height:80vh}
+p{opacity:.7}
+</style></head><body>
+<h1>ASTRO ARCADE</h1>
+<canvas id="c" width="480" height="640"></canvas>
+<p>← → / Q D : bouger · Espace : tirer · Entrée : (re)lancer · tactile : glisser</p>
+<script src="logic.js"></script>
+<script>
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+const keys = {}; let s = Logic.newState(), running = false, last = 0;
+let best = +(localStorage.getItem('astro-best') || 0);
+const stars = Array.from({length: 60}, () => ({x: Math.random()*480, y: Math.random()*640, v: 20+Math.random()*80}));
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Enter' && (!running || s.over)) { s = Logic.newState(); running = true; }
+  if (['Space','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+});
+addEventListener('keyup', e => (keys[e.code] = false));
+cv.addEventListener('touchstart', e => { keys.Touch = true; if (!running || s.over) { s = Logic.newState(); running = true; } });
+cv.addEventListener('touchmove', e => { const r = cv.getBoundingClientRect(); s.player.x = (e.touches[0].clientX - r.left) / r.width * 480 - 16; e.preventDefault(); }, {passive:false});
+cv.addEventListener('touchend', () => (keys.Touch = false));
+
+function text(t, x, y, size, color) { g.fillStyle = color || '#fff'; g.font = `bold ${size}px monospace`; g.textAlign = 'center'; g.fillText(t, x, y); }
+function frame(t) {
+  const dt = Math.min(0.05, (t - last) / 1000 || 0); last = t;
+  if (running) Logic.step(s, dt, {
+    left: +!!(keys.ArrowLeft || keys.KeyA || keys.KeyQ), right: +!!(keys.ArrowRight || keys.KeyD),
+    fire: !!(keys.Space || keys.Touch) });
+  if (s.over && s.score > best) { best = s.score; try { localStorage.setItem('astro-best', best); } catch (e) {} }
+  g.save(); g.clearRect(0, 0, 480, 640);
+  if (s.shake > 0) g.translate((Math.random()-.5)*10, (Math.random()-.5)*10);
+  g.fillStyle = '#fff'; stars.forEach(st => { st.y = (st.y + st.v*dt) % 640; g.fillRect(st.x, st.y, 2, 2); });
+  const rowColors = ['#ff4d6d','#ff9f43','#ffd23f','#2ed573','#1e90ff','#a55eea'];
+  s.enemies.forEach(e => { g.fillStyle = rowColors[e.row % 6]; g.shadowColor = g.fillStyle; g.shadowBlur = 10;
+    g.fillRect(e.x, e.y, e.w, e.h); g.fillStyle = '#000'; g.fillRect(e.x+6, e.y+6, 4, 4); g.fillRect(e.x+18, e.y+6, 4, 4); });
+  g.shadowColor = '#00e5ff'; g.shadowBlur = 12; g.fillStyle = '#00e5ff';
+  const p = s.player; g.beginPath(); g.moveTo(p.x+p.w/2, p.y); g.lineTo(p.x+p.w, p.y+p.h); g.lineTo(p.x, p.y+p.h); g.fill();
+  g.fillStyle = '#fff'; s.bullets.forEach(b => g.fillRect(b.x, b.y, b.w, b.h));
+  g.fillStyle = '#ff4d6d'; s.bombs.forEach(b => g.fillRect(b.x, b.y, b.w, b.h));
+  s.particles.forEach(q => { g.globalAlpha = Math.max(0, q.life/0.6); g.fillStyle = q.color; g.fillRect(q.x, q.y, 3, 3); });
+  g.globalAlpha = 1; g.shadowBlur = 0; g.restore();
+  g.textAlign = 'left'; g.fillStyle = '#fff'; g.font = '16px monospace';
+  g.fillText('SCORE ' + s.score, 10, 22); g.fillText('NIV ' + s.level, 200, 22);
+  g.textAlign = 'right'; g.fillText('♥'.repeat(Math.max(0, s.lives)), 470, 22);
+  if (s.combo > 2) text('COMBO x' + s.combo, 240, 620, 18, '#ffd23f');
+  g.textAlign = 'left'; g.fillStyle = '#888'; g.fillText('RECORD ' + best, 10, 42);
+  if (s.flash) text(s.flash, 240, 300, 40, '#ffd23f');
+  if (!running) { text('ASTRO ARCADE', 240, 280, 36, '#ffd23f'); text('Appuie sur Entrée', 240, 330, 20); }
+  if (s.over) { text('GAME OVER', 240, 280, 44, '#ff4d6d'); text('Score : ' + s.score, 240, 325, 22); text('Entrée pour rejouer', 240, 365, 18); }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script></body></html>
