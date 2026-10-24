@@ -104,6 +104,40 @@
     return s;
   }
 
-  const api = { W, H, levelConfig, makeWave, hit, points, newState, step };
+  // Classement permanent : liste triée {name, score, level, date}, top 10.
+  const MAX_SCORES = 10;
+
+  function cleanName(name) {
+    const n = String(name || '').replace(/[^\p{L}\p{N} _-]/gu, '').trim().slice(0, 12);
+    return n || 'ANONYME';
+  }
+
+  function addScore(board, name, score, level, date) {
+    const entry = { name: cleanName(name), score: Math.floor(score) || 0, level: level || 1, date: date || Date.now() };
+    const list = (Array.isArray(board) ? board : []).concat(entry)
+      .sort((a, b) => b.score - a.score || a.date - b.date).slice(0, MAX_SCORES);
+    return { board: list, rank: list.indexOf(entry) + 1 };
+  }
+
+  function loadBoard(storage) {
+    try {
+      const b = JSON.parse(storage.getItem('astro-board'));
+      return Array.isArray(b) ? b.filter(e => e && typeof e.score === 'number').slice(0, MAX_SCORES) : [];
+    } catch (e) { return []; }
+  }
+
+  function saveBoard(storage, board) {
+    try { storage.setItem('astro-board', JSON.stringify(board)); } catch (e) {}
+  }
+
+  // Défi entre amis : "#defi=NOM:SCORE" dans le lien partagé.
+  function challengeHash(name, score) { return '#defi=' + encodeURIComponent(cleanName(name)) + ':' + Math.floor(score); }
+  function parseChallenge(hash) {
+    const m = /^#defi=([^:]+):(\d+)$/.exec(hash || '');
+    return m ? { name: cleanName(decodeURIComponent(m[1])), score: +m[2] } : null;
+  }
+
+  const api = { W, H, levelConfig, makeWave, hit, points, newState, step,
+    MAX_SCORES, cleanName, addScore, loadBoard, saveBoard, challengeHash, parseChallenge };
   if (typeof module !== 'undefined') module.exports = api; else root.Logic = api;
 })(this);

@@ -19,4 +19,16 @@ assert.strictEqual(s.level, 2);
 s.lives = 1; s.bombs = [{ x: s.player.x, y: s.player.y, w: 6, h: 12 }];
 L.step(s, 0.001, none);
 assert(s.over);
+// classement : tri, top 10, pseudo nettoyé, persistance, défi
+let r = { board: [] };
+for (let i = 1; i <= 12; i++) r = L.addScore(r.board, 'J' + i, i * 10, 1, i);
+assert.strictEqual(r.board.length, 10); assert.strictEqual(r.board[0].score, 120);
+r = L.addScore(r.board, '<b>Zoé!</b>', 75, 2, 99);
+assert.strictEqual(r.board[r.rank - 1].name, 'bZoéb'); assert.strictEqual(r.rank, 6);
+assert.strictEqual(L.cleanName('   '), 'ANONYME');
+const mem = {}; const st = { getItem: k => mem[k] || null, setItem: (k, v) => (mem[k] = v) };
+L.saveBoard(st, r.board); assert.deepStrictEqual(L.loadBoard(st), r.board);
+assert.deepStrictEqual(L.loadBoard({ getItem: () => 'pas du json' }), []);
+assert.deepStrictEqual(L.parseChallenge(L.challengeHash('Léa', 420)), { name: 'Léa', score: 420 });
+assert.strictEqual(L.parseChallenge('#x'), null);
 console.log('OK');

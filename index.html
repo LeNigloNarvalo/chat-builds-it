@@ -7,23 +7,61 @@ body{margin:0;background:#0a0a1a;color:#eee;font:16px monospace;display:flex;fle
 h1{margin:8px;color:#ffd23f;text-shadow:0 0 12px #ff4d6d;letter-spacing:4px}
 canvas{background:radial-gradient(#1b1b4a,#05050f);border:3px solid #6c5ce7;box-shadow:0 0 30px #6c5ce7;max-width:100vw;max-height:80vh}
 p{opacity:.7}
+#hs{width:480px;max-width:94vw;margin:14px 0;border:2px solid #6c5ce7;box-shadow:0 0 20px #6c5ce755;padding:10px 14px;background:#0d0d26}
+#hs h2{margin:0 0 8px;color:#ffd23f;text-align:center;letter-spacing:3px;font-size:18px}
+#hs table{width:100%;border-collapse:collapse}#hs td{padding:2px 4px}#hs td:last-child{text-align:right}
+#hs tr.me{color:#00e5ff;font-weight:bold}#hs .row{display:flex;gap:8px;margin-bottom:8px}
+#hs input{flex:1;background:#05050f;color:#fff;border:1px solid #6c5ce7;padding:6px;font:inherit}
+#hs button{background:#6c5ce7;color:#fff;border:0;padding:6px 10px;font:inherit;cursor:pointer}
+#defi{color:#ff9f43;text-align:center;margin:6px 0;display:none}
 </style></head><body>
 <h1>ASTRO ARCADE</h1>
 <canvas id="c" width="480" height="640"></canvas>
 <p>← → / Q D : bouger · Espace : tirer · Entrée : (re)lancer · tactile : glisser</p>
+<section id="hs">
+<h2>🏆 CLASSEMENT</h2>
+<div id="defi"></div>
+<div class="row"><input id="pseudo" maxlength="12" placeholder="Ton pseudo" autocomplete="off"><button id="share">Défier un ami</button></div>
+<table id="board"></table>
+</section>
 <script src="logic.js"></script>
 <script>
 const cv = document.getElementById('c'), g = cv.getContext('2d');
 const keys = {}; let s = Logic.newState(), running = false, last = 0;
 let best = +(localStorage.getItem('astro-best') || 0);
 const stars = Array.from({length: 60}, () => ({x: Math.random()*480, y: Math.random()*640, v: 20+Math.random()*80}));
+const pseudoEl = document.getElementById('pseudo'), boardEl = document.getElementById('board'), defiEl = document.getElementById('defi');
+let board = Logic.loadBoard(localStorage), lastRank = 0, saved = false;
+try { pseudoEl.value = localStorage.getItem('astro-pseudo') || ''; } catch (e) {}
+pseudoEl.addEventListener('change', () => { try { localStorage.setItem('astro-pseudo', Logic.cleanName(pseudoEl.value)); } catch (e) {} });
+function esc(x) { return String(x).replace(/[&<>"]/g, c => '&#' + c.charCodeAt(0) + ';'); }
+function renderBoard() {
+  boardEl.innerHTML = board.length ? board.map((e, i) => `<tr class="${i + 1 === lastRank ? 'me' : ''}"><td>${i + 1}.</td><td>${esc(e.name)}</td><td>niv ${e.level}</td><td>${e.score}</td></tr>`).join('')
+    : '<tr><td>Aucun score pour l\'instant — sois le premier !</td></tr>';
+}
+const challenge = Logic.parseChallenge(location.hash);
+if (challenge) { defiEl.style.display = 'block'; defiEl.textContent = `⚔ ${challenge.name} te défie : bats ${challenge.score} points !`; }
+document.getElementById('share').addEventListener('click', () => {
+  const sc = Math.max(best, board.length ? board[0].score : 0), name = pseudoEl.value;
+  const url = location.href.split('#')[0] + Logic.challengeHash(name, sc);
+  const msg = `Je te défie sur Astro Arcade : bats mes ${sc} points ! ${url}`;
+  (navigator.clipboard ? navigator.clipboard.writeText(msg) : Promise.reject()).then(() => alert('Défi copié !'), () => prompt('Copie ton défi :', msg));
+});
+function submitScore() {
+  if (saved) return; saved = true;
+  if (s.score <= 0) return;
+  const r = Logic.addScore(board, pseudoEl.value, s.score, s.level);
+  board = r.board; lastRank = r.rank; Logic.saveBoard(localStorage, board); renderBoard();
+}
+renderBoard();
 addEventListener('keydown', e => {
+  if (e.target === pseudoEl) return;
   keys[e.code] = true;
-  if (e.code === 'Enter' && (!running || s.over)) { s = Logic.newState(); running = true; }
+  if (e.code === 'Enter' && (!running || s.over)) { s = Logic.newState(); running = true; saved = false; lastRank = 0; renderBoard(); }
   if (['Space','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
 });
 addEventListener('keyup', e => (keys[e.code] = false));
-cv.addEventListener('touchstart', e => { keys.Touch = true; if (!running || s.over) { s = Logic.newState(); running = true; } });
+cv.addEventListener('touchstart', e => { keys.Touch = true; if (!running || s.over) { s = Logic.newState(); running = true; saved = false; lastRank = 0; renderBoard(); } });
 cv.addEventListener('touchmove', e => { const r = cv.getBoundingClientRect(); s.player.x = (e.touches[0].clientX - r.left) / r.width * 480 - 16; e.preventDefault(); }, {passive:false});
 cv.addEventListener('touchend', () => (keys.Touch = false));
 
@@ -33,6 +71,7 @@ function frame(t) {
   if (running) Logic.step(s, dt, {
     left: +!!(keys.ArrowLeft || keys.KeyA || keys.KeyQ), right: +!!(keys.ArrowRight || keys.KeyD),
     fire: !!(keys.Space || keys.Touch) });
+  if (s.over) submitScore();
   if (s.over && s.score > best) { best = s.score; try { localStorage.setItem('astro-best', best); } catch (e) {} }
   g.save(); g.clearRect(0, 0, 480, 640);
   if (s.shake > 0) g.translate((Math.random()-.5)*10, (Math.random()-.5)*10);
@@ -53,7 +92,7 @@ function frame(t) {
   g.textAlign = 'left'; g.fillStyle = '#888'; g.fillText('RECORD ' + best, 10, 42);
   if (s.flash) text(s.flash, 240, 300, 40, '#ffd23f');
   if (!running) { text('ASTRO ARCADE', 240, 280, 36, '#ffd23f'); text('Appuie sur Entrée', 240, 330, 20); }
-  if (s.over) { text('GAME OVER', 240, 280, 44, '#ff4d6d'); text('Score : ' + s.score, 240, 325, 22); text('Entrée pour rejouer', 240, 365, 18); }
+  if (s.over) { text('GAME OVER', 240, 280, 44, '#ff4d6d'); text('Score : ' + s.score, 240, 325, 22); if (lastRank) text('Classement : #' + lastRank + ' (' + Logic.cleanName(pseudoEl.value) + ')', 240, 350, 16, '#00e5ff'); text('Entrée pour rejouer', 240, 385, 18); }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
