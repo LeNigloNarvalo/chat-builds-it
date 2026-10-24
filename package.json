@@ -1,0 +1,9 @@
+{
+  "name": "dus",
+  "version": "0.1.0",
+  "description": "Zero-dependency CLI that shows which entries take the most disk space.",
+  "bin": { "dus": "bin/dus.js" },
+  "scripts": { "test": "node --test" },
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}
