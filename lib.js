@@ -29,23 +29,48 @@ function total(p, opts = {}, root = p) {
   return sum;
 }
 
-// Entries of dir sorted by size, biggest first. With opts.depth > 1, directories
+// Parses "size|name|type" with an optional ":asc" / ":desc" suffix into { key, desc }.
+// Default direction: descending for size, ascending for name and type.
+function parseSort(spec = 'size') {
+  const [key, dirn, extra] = spec.split(':');
+  if (!['size', 'name', 'type'].includes(key) || extra !== undefined || (dirn !== undefined && dirn !== 'asc' && dirn !== 'desc')) {
+    throw new Error('invalid sort "' + spec + '" (use size|name|type, optionally :asc or :desc)');
+  }
+  return { key, desc: dirn ? dirn === 'desc' : key === 'size' };
+}
+
+// Comparator for entries; ties fall back to name so the order is stable.
+function comparator(spec) {
+  const { key, desc } = parseSort(spec);
+  const sign = desc ? -1 : 1;
+  const byName = (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  return (a, b) => {
+    let c = 0;
+    if (key === 'size') c = a.size - b.size;
+    else if (key === 'type') c = (a.dir ? 0 : 1) - (b.dir ? 0 : 1); // directories before files when ascending
+    else c = byName(a, b);
+    return c ? sign * c : byName(a, b);
+  };
+}
+
+// Entries of dir sorted by opts.sort (default "size": biggest first). With opts.depth > 1, directories
 // get a `children` list (same shape) down to that many levels.
 function sizes(dir, opts = {}) {
   const skip = opts.skip || excluder(opts.exclude);
   const root = opts.root || dir;
   const depth = opts.depth || 1;
+  const cmp = comparator(opts.sort);
   return fs.readdirSync(dir, { withFileTypes: true })
     .filter((d) => !skip(d.name, path.relative(root, path.join(dir, d.name)).split(path.sep).join('/')))
     .map((d) => {
       const full = path.join(dir, d.name);
       const e = { name: d.name, dir: d.isDirectory(), size: total(full, { skip }, root) };
       if (e.dir && depth > 1) {
-        try { e.children = sizes(full, { skip, root, depth: depth - 1 }); } catch { e.children = []; }
+        try { e.children = sizes(full, { skip, root, depth: depth - 1, sort: opts.sort }); } catch { e.children = []; }
       }
       return e;
     })
-    .sort((a, b) => b.size - a.size);
+    .sort(cmp);
 }
 
 function format(n) {
@@ -55,4 +80,4 @@ function format(n) {
   return (i ? n.toFixed(1) : String(n)) + units[i];
 }
 
-module.exports = { total, sizes, format, excluder };
+module.exports = { total, sizes, format, excluder, parseSort };

@@ -55,3 +55,20 @@ test('depth ajoute des enfants sur N niveaux', () => {
   assert.deepStrictEqual(sizes(d, { depth: 3 })[0].children[0].children.map((e) => e.name), ['f']);
   fs.rmSync(d, { recursive: true });
 });
+
+test('sort par taille, nom ou type, croissant ou décroissant', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'dus-'));
+  fs.writeFileSync(path.join(d, 'b'), 'x'.repeat(5));
+  fs.writeFileSync(path.join(d, 'a'), 'x'.repeat(50));
+  fs.mkdirSync(path.join(d, 'z'));
+  fs.writeFileSync(path.join(d, 'z', 'f'), 'x'.repeat(10));
+  const names = (sort) => sizes(d, { sort }).map((e) => e.name);
+  assert.deepStrictEqual(names(), ['a', 'z', 'b']);
+  assert.deepStrictEqual(names('size:asc'), ['b', 'z', 'a']);
+  assert.deepStrictEqual(names('name'), ['a', 'b', 'z']);
+  assert.deepStrictEqual(names('name:desc'), ['z', 'b', 'a']);
+  assert.deepStrictEqual(names('type'), ['z', 'a', 'b']);
+  assert.deepStrictEqual(names('type:desc'), ['a', 'b', 'z']);
+  assert.throws(() => sizes(d, { sort: 'foo' }));
+  fs.rmSync(d, { recursive: true });
+});
