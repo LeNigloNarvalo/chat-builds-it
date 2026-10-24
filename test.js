@@ -39,4 +39,21 @@ for (let i = 0; i < 120; i++) L.stepFx(fx, 0.02, 640, rnd);
 assert(fx.sparks.length > 0, 'les fusées explosent en étincelles');
 for (let i = 0; i < 600; i++) L.stepFx(fx, 0.02, 640, rnd);
 assert(fx.confetti.length === 0 && fx.sparks.length === 0, 'tout disparaît à la fin');
+// mode boss : Konami, votes du chat, attaques, victoire
+const B = require('./boss.js');
+const kt = B.konamiTracker(); let fired = 0;
+['ArrowUp','ArrowUp','ArrowDown','ArrowUp','ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','KeyB','KeyA'].forEach(c => { if (kt(c)) fired++; });
+assert.strictEqual(fired, 1, 'Konami détecté une fois');
+assert.strictEqual(B.parseVote('!Spirale'), 'spirale'); assert.strictEqual(B.parseVote('3'), 'spirale'); assert.strictEqual(B.parseVote('bonjour'), null);
+const bs = L.newState(), boss = B.newBoss(); bs.enemies = [];
+assert(B.castVote(boss, 'laser', 'a') && B.castVote(boss, 'chaos', 'b') && B.castVote(boss, 'chaos', 'a'));
+assert.deepStrictEqual([boss.votes.laser, boss.votes.chaos], [0, 2], 'un vote par spectateur');
+let seen = {}; for (let i = 0; i < 100; i++) { B.step(boss, bs, 0.1, none, rnd); boss.events.forEach(e => (seen[e] = 1)); bs.lives = 3; }
+assert(seen.attack && seen['vote-start'], 'le boss alterne vote et attaque');
+assert(!B.castVote(B.newBoss(), 'inconnu', 'x'), 'attaque inconnue refusée');
+const b2 = B.newBoss(); b2.hp = 1; bs.bullets = []; b2.bullets.push({ x: b2.x + 10, y: b2.y + 10, w: 4, h: 12 });
+B.step(b2, bs, 0.001, none, rnd); assert(b2.defeated && bs.score >= 5000, 'boss vaincu');
+const b3 = B.newBoss(); b3.phase = 'attack'; b3.attack = 'pluie'; b3.timer = 9;
+b3.shots.push({ type: 'meteor', x: bs.player.x, y: bs.player.y, w: 24, h: 24, vx: 0, vy: 0 });
+const lv = bs.lives; B.step(b3, bs, 0.001, none, rnd); assert.strictEqual(bs.lives, lv - 1, 'un météore touche le joueur');
 console.log('OK');

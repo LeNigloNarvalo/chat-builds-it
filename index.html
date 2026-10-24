@@ -14,19 +14,26 @@ p{opacity:.7}
 #hs input{flex:1;background:#05050f;color:#fff;border:1px solid #6c5ce7;padding:6px;font:inherit}
 #hs button{background:#6c5ce7;color:#fff;border:0;padding:6px 10px;font:inherit;cursor:pointer}
 #fx{position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;z-index:99}
+#boss{position:fixed;left:50%;transform:translateX(-50%);bottom:8px;z-index:98;display:none;gap:8px;background:#1a0010ee;border:2px solid #ff4d6d;padding:8px;box-shadow:0 0 24px #ff4d6d}
+#boss button{background:#2a0a20;color:#fff;border:1px solid #ff4d6d;padding:6px 8px;font:inherit;cursor:pointer;position:relative;overflow:hidden;min-width:96px}
+#boss button i{position:absolute;left:0;bottom:0;height:4px;background:#ffd23f;width:0}
+#boss.on{display:flex}
+body.bossmode{animation:bg 0.6s infinite alternate}@keyframes bg{to{background:#25051a}}
 #defi{color:#ff9f43;text-align:center;margin:6px 0;display:none}
 </style></head><body>
 <h1>ASTRO ARCADE</h1>
 <canvas id="c" width="480" height="640"></canvas>
-<p>← → / Q D : bouger · Espace : tirer · Entrée : (re)lancer · tactile : glisser</p>
+<p>← → / Q D : bouger · Espace : tirer · Entrée : (re)lancer · tactile : glisser · <small>↑↑↓↓←→←→BA ?</small></p>
 <section id="hs">
 <h2>🏆 CLASSEMENT</h2>
 <div id="defi"></div>
 <div class="row"><input id="pseudo" maxlength="12" placeholder="Ton pseudo" autocomplete="off"><button id="share">Défier un ami</button></div>
 <table id="board"></table>
 </section>
+<div id="boss"></div>
 <canvas id="fx"></canvas>
 <script src="logic.js"></script>
+<script src="boss.js"></script>
 <script>
 const cv = document.getElementById('c'), g = cv.getContext('2d');
 const keys = {}; let s = Logic.newState(), running = false, last = 0;
@@ -45,6 +52,82 @@ function drawFx() {
   fx.rockets.forEach(r => { fg.globalAlpha = 1; fg.shadowBlur = 10; fg.shadowColor = '#fff'; fg.fillStyle = '#fff'; fg.fillRect(r.x - 2, r.y, 4, 14); });
   fg.globalCompositeOperation = 'source-over'; fg.shadowBlur = 0; fg.globalAlpha = 1;
   fx.confetti.forEach(c => { fg.save(); fg.translate(c.x, c.y); fg.rotate(c.rot); fg.scale(1, Math.cos(c.rot * 2)); fg.fillStyle = c.color; fg.fillRect(-c.size / 2, -c.size / 4, c.size, c.size / 2); fg.restore(); });
+}
+// --- Mode Boss Secret : Konami Code -> boss géant, le chat vote ses attaques ---
+let boss = null; const konami = Boss.konamiTracker();
+let actx = null;
+function beep(freq, dur, type, vol, slide) {
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), v = actx.createGain(), t = actx.currentTime;
+    o.type = type || 'square'; o.frequency.setValueAtTime(freq, t);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(20, slide), t + dur);
+    v.gain.setValueAtTime(vol || 0.05, t); v.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(v); v.connect(actx.destination); o.start(t); o.stop(t + dur);
+  } catch (e) {}
+}
+function jingle(notes) { notes.forEach((f, i) => setTimeout(() => beep(f, 0.12, 'square', 0.05), i * 110)); }
+const SFX = {
+  start: () => jingle([262, 330, 392, 523, 392, 523, 659, 784]),
+  shoot: () => beep(880, 0.08, 'square', 0.025, 300),
+  'boss-hit': () => beep(160, 0.1, 'sawtooth', 0.05, 60),
+  hit: () => beep(220, 0.35, 'sawtooth', 0.08, 40),
+  laser: () => beep(1200, 0.5, 'square', 0.04, 90),
+  attack: () => { beep(110, 0.4, 'sawtooth', 0.07, 55); setTimeout(() => beep(98, 0.4, 'sawtooth', 0.07, 49), 150); },
+  'vote-start': () => jingle([523, 659]),
+  vote: () => beep(990, 0.05, 'triangle', 0.05),
+  win: () => jingle([523, 659, 784, 1047, 784, 1047, 1319, 1568]),
+};
+const bossEl = document.getElementById('boss');
+function buildBossUi() {
+  bossEl.innerHTML = Boss.ATTACKS.map((a, i) => `<button data-k="${a.key}">${i + 1}. ${a.emoji} ${a.label}<br><small class="n">0</small><i></i></button>`).join('');
+  bossEl.querySelectorAll('button').forEach(b => b.addEventListener('click', () => vote(b.dataset.k, 'toi')));
+}
+buildBossUi();
+function vote(k, who) { if (boss && Boss.castVote(boss, k, who)) SFX.vote(); }
+// Faux "chat Twitch" : des spectateurs virtuels votent en direct (le vrai chat peut aussi cliquer / taper 1-4).
+const FAKE_VIEWERS = ['kevin_42', 'LaMouette', 'xX_Pixel_Xx', 'Zoé', 'MrBaguette', 'Tonton_Dev', 'neko', 'GigaChad', 'Lulu', 'ArcadeFan'];
+const FAKE_MSGS = ['!laser', '!pluie', '!spirale', '!chaos', '!chaos', '!laser'];
+setInterval(() => {
+  if (!boss || boss.defeated || boss.phase !== 'vote') return;
+  const who = FAKE_VIEWERS[Math.floor(Math.random() * FAKE_VIEWERS.length)];
+  const k = Boss.parseVote(FAKE_MSGS[Math.floor(Math.random() * FAKE_MSGS.length)]);
+  if (k) vote(k, who);
+}, 350);
+function startBoss() {
+  if (boss && !boss.defeated && !s.over) return;
+  if (!running || s.over) { s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); }
+  s.enemies = []; s.bombs = []; boss = Boss.newBoss();
+  document.body.classList.add('bossmode'); bossEl.classList.add('on');
+  SFX.start(); celebrate(1);
+}
+function endBoss() { document.body.classList.remove('bossmode'); bossEl.classList.remove('on'); if (!s.over) { s.enemies = Logic.makeWave(s.level); s.dir = 1; } boss = null; }
+function drawBoss() {
+  const b = boss, cx = b.x + b.w / 2;
+  g.save();
+  if (!b.defeated) {
+    g.shadowColor = '#ff4d6d'; g.shadowBlur = 25; g.fillStyle = b.hurt > 0 ? '#fff' : (b.phase === 'attack' ? '#ff2d55' : '#8e44ad');
+    g.fillRect(b.x, b.y + 20, b.w, b.h - 20); g.fillRect(b.x + 20, b.y, b.w - 40, 30);
+    g.fillRect(b.x - 18, b.y + 40, 18, 50); g.fillRect(b.x + b.w, b.y + 40, 18, 50);
+    g.shadowBlur = 0; g.fillStyle = '#000'; g.fillRect(cx - 55, b.y + 38, 34, 22); g.fillRect(cx + 21, b.y + 38, 34, 22);
+    g.fillStyle = b.phase === 'attack' ? '#ffd23f' : '#00e5ff'; g.fillRect(cx - 45 + Math.sin(b.t * 5) * 6, b.y + 44, 12, 10); g.fillRect(cx + 31 + Math.sin(b.t * 5) * 6, b.y + 44, 12, 10);
+    g.fillStyle = '#000'; for (let i = 0; i < 6; i++) g.fillRect(b.x + 40 + i * 24, b.y + 78, 12, 14);
+  }
+  b.shots.forEach(o => {
+    if (o.type === 'beam') {
+      if (o.warn > 0) { g.fillStyle = `rgba(255,255,80,${0.12 + 0.12 * Math.sin(b.t * 40)})`; g.fillRect(o.x + 12, o.y, 12, o.h); }
+      else { g.shadowColor = '#00e5ff'; g.shadowBlur = 25; g.fillStyle = '#fff'; g.fillRect(o.x, o.y, o.w, o.h); g.fillStyle = '#00e5ff88'; g.fillRect(o.x - 6, o.y, o.w + 12, o.h); g.shadowBlur = 0; }
+    } else if (o.type === 'meteor') { g.fillStyle = '#ff9f43'; g.shadowColor = '#ff4d6d'; g.shadowBlur = 14; g.fillRect(o.x, o.y, o.w, o.h); }
+    else { g.fillStyle = '#ff6bd6'; g.shadowColor = '#ff6bd6'; g.shadowBlur = 12; g.fillRect(o.x, o.y, o.w, o.h); }
+  });
+  g.shadowBlur = 0; g.fillStyle = '#fff'; b.bullets.forEach(u => g.fillRect(u.x, u.y, u.w, u.h));
+  g.restore();
+  // barre de vie
+  g.fillStyle = '#300'; g.fillRect(40, 56, 400, 8); g.fillStyle = '#ff4d6d'; g.fillRect(40, 56, 400 * b.hp / b.max, 8);
+  g.textAlign = 'center'; g.font = 'bold 14px monospace'; g.fillStyle = '#ffd23f';
+  g.fillText(b.phase === 'vote' ? `LE CHAT VOTE ! ${Math.ceil(b.timer)}s (touches 1-4)` : `⚠ ${Boss.ATTACKS.find(a => a.key === b.attack).label} ⚠`, 240, 48);
+  const tot = Math.max(1, Object.values(b.votes).reduce((x, y) => x + y, 0));
+  bossEl.querySelectorAll('button').forEach(btn => { const v = b.votes[btn.dataset.k]; btn.querySelector('.n').textContent = v + ' vote' + (v > 1 ? 's' : ''); btn.querySelector('i').style.width = (100 * v / tot) + '%'; btn.style.opacity = b.phase === 'vote' ? 1 : (btn.dataset.k === b.attack || b.attack === 'chaos' ? 1 : .35); });
 }
 const pseudoEl = document.getElementById('pseudo'), boardEl = document.getElementById('board'), defiEl = document.getElementById('defi');
 let board = Logic.loadBoard(localStorage), lastRank = 0, saved = false;
@@ -73,6 +156,8 @@ renderBoard();
 addEventListener('keydown', e => {
   if (e.target === pseudoEl) return;
   keys[e.code] = true;
+  if (konami(e.code)) startBoss();
+  if (boss && /^Digit[1-4]$/.test(e.code)) vote(Boss.ATTACKS[+e.code.slice(5) - 1].key, 'toi');
   if (e.code === 'Enter' && (!running || s.over)) { s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); }
   if (['Space','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
 });
@@ -84,9 +169,14 @@ cv.addEventListener('touchend', () => (keys.Touch = false));
 function text(t, x, y, size, color) { g.fillStyle = color || '#fff'; g.font = `bold ${size}px monospace`; g.textAlign = 'center'; g.fillText(t, x, y); }
 function frame(t) {
   const dt = Math.min(0.05, (t - last) / 1000 || 0); last = t;
-  if (running) Logic.step(s, dt, {
+  const inp = {
     left: +!!(keys.ArrowLeft || keys.KeyA || keys.KeyQ), right: +!!(keys.ArrowRight || keys.KeyD),
-    fire: !!(keys.Space || keys.Touch) });
+    fire: !!(keys.Space || keys.Touch) };
+  if (boss) {
+    if (running) { Boss.step(boss, s, dt, inp); boss.events.forEach(ev => SFX[ev] && SFX[ev]()); }
+    if (boss.events.includes('win')) { celebrate(2); setTimeout(() => boss && endBoss(), 3500); }
+    if (s.over) endBoss();
+  } else if (running) Logic.step(s, dt, inp);
   if (s.level > prevLevel) celebrate(1);
   prevLevel = s.level;
   if (runBase > 0 && !recordFired && s.score > runBase) { recordFired = true; celebrate(2); }
@@ -104,12 +194,15 @@ function frame(t) {
   g.fillStyle = '#fff'; s.bullets.forEach(b => g.fillRect(b.x, b.y, b.w, b.h));
   g.fillStyle = '#ff4d6d'; s.bombs.forEach(b => g.fillRect(b.x, b.y, b.w, b.h));
   s.particles.forEach(q => { g.globalAlpha = Math.max(0, q.life/0.6); g.fillStyle = q.color; g.fillRect(q.x, q.y, 3, 3); });
-  g.globalAlpha = 1; g.shadowBlur = 0; g.restore();
+  g.globalAlpha = 1; g.shadowBlur = 0;
+  if (boss) drawBoss();
+  g.restore();
   g.textAlign = 'left'; g.fillStyle = '#fff'; g.font = '16px monospace';
   g.fillText('SCORE ' + s.score, 10, 22); g.fillText('NIV ' + s.level, 200, 22);
   g.textAlign = 'right'; g.fillText('♥'.repeat(Math.max(0, s.lives)), 470, 22);
   if (s.combo > 2) text('COMBO x' + s.combo, 240, 620, 18, '#ffd23f');
   g.textAlign = 'left'; g.fillStyle = '#888'; g.fillText('RECORD ' + best, 10, 42);
+  if (boss && boss.defeated) text('BOSS VAINCU ! +5000', 240, 300, 34, '#2ed573');
   if (s.flash) text(s.flash, 240, 300, 40, '#ffd23f');
   if (!running) { text('ASTRO ARCADE', 240, 280, 36, '#ffd23f'); text('Appuie sur Entrée', 240, 330, 20); }
   if (s.over) { text('GAME OVER', 240, 280, 44, '#ff4d6d'); text('Score : ' + s.score, 240, 325, 22); if (lastRank) text('Classement : #' + lastRank + ' (' + Logic.cleanName(pseudoEl.value) + ')', 240, 350, 16, '#00e5ff'); text('Entrée pour rejouer', 240, 385, 18); }
