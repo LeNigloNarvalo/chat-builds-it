@@ -75,3 +75,18 @@ const gb = L.newState(), bb = B.newBoss(); gb.enemies = [];
 for (let i = 0; i < 60 * 60 && !gb.over && !bb.defeated; i++) B.step(bb, gb, 1 / 60, A.decide(gb, bb), rnd);
 assert(bb.hp < bb.max, "l'IA blesse le boss");
 console.log('OK IA');
+// --- Versus 2 joueurs ---
+const V = require('./versus.js');
+{
+  const m = V.newMatch(L);
+  assert(m.p[0] !== m.p[1] && m.p.length === 2, 'deux états indépendants');
+  V.stepMatch(L, m, 0.5, { left: 0, right: 1, fire: true }, { left: 1, right: 0, fire: false });
+  assert(m.p[0].player.x > m.p[1].player.x, 'chaque joueur a ses propres commandes');
+  assert(V.winner(m) === -1 && !V.vote(m, 0), 'pas de gagnant ni de vote avant la fin');
+  m.p[0].score = 100; m.p[1].score = 50; V.stepMatch(L, m, V.DURATION, none, none);
+  assert(m.over && V.winner(m) === 0, 'le meilleur score gagne');
+  assert(V.vote(m, 1) && m.votes[1] === 1, 'le chat peut voter à la fin');
+  const m2 = V.newMatch(L); m2.p[0].over = m2.p[1].over = true; V.stepMatch(L, m2, 0.01, none, none);
+  assert(m2.over && V.winner(m2) === -1, 'fin si les deux sont éliminés, égalité');
+  console.log('OK versus');
+}

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Astro Arcade — Versus 2 joueurs</title>
+<style>
+body{margin:0;background:#0a0a1a;color:#eee;font:16px monospace;display:flex;flex-direction:column;align-items:center;min-height:100vh;justify-content:center}
+h1{margin:8px;color:#ffd23f;text-shadow:0 0 12px #ff4d6d;letter-spacing:4px}
+#arena{display:flex;gap:12px;max-width:100vw}
+canvas{background:radial-gradient(#1b1b4a,#05050f);border:3px solid #6c5ce7;box-shadow:0 0 30px #6c5ce7;max-width:48vw;max-height:78vh;height:auto}
+#c2{border-color:#ff4d6d;box-shadow:0 0 30px #ff4d6d}
+p{opacity:.7;text-align:center}a{color:#00e5ff}
+#vote{display:none;gap:10px;margin:8px;align-items:center}
+#vote button{background:#6c5ce7;color:#fff;border:0;padding:8px 14px;font:inherit;cursor:pointer}
+#vote button.b2{background:#ff4d6d}
+#demo{display:none;color:#00e5ff;opacity:1;margin:4px}
+</style></head><body>
+<h1>⚔ VERSUS ⚔</h1>
+<div id="arena"><canvas id="c1" width="480" height="640"></canvas><canvas id="c2" width="480" height="640"></canvas></div>
+<p id="demo">🤖 MODE DÉMO — l'IA joue les deux vaisseaux</p>
+<div id="vote"><span>Le chat désigne le gagnant :</span><button id="v1">Vote J1 (0)</button><button id="v2" class="b2">Vote J2 (0)</button></div>
+<p><b style="color:#00e5ff">J1</b> : Q / D + Espace · <b style="color:#ff4d6d">J2</b> : ← → + Entrée (ou ↑) · Espace/Entrée pour lancer · 90 s, meilleur score gagnant · <a href="index.html">← Solo</a></p>
+<script src="logic.js"></script>
+<script src="ai.js"></script>
+<script src="versus.js"></script>
+<script>
+const cvs = [document.getElementById('c1'), document.getElementById('c2')], gs = cvs.map(c => c.getContext('2d'));
+const keys = {}; let m = null, last = 0, autoplay = false, idle = 0;
+const stars = Array.from({length: 50}, () => ({x: Math.random()*480, y: Math.random()*640, v: 20+Math.random()*80}));
+const voteEl = document.getElementById('vote'), v1 = document.getElementById('v1'), v2 = document.getElementById('v2');
+window.setAutoplay = function (on) { autoplay = !!on; idle = 0; document.getElementById('demo').style.display = autoplay ? 'block' : 'none'; };
+window.startVersus = function () { m = Versus.newMatch(Logic); voteEl.style.display = 'none'; updVotes(); };
+function updVotes() { v1.textContent = `Vote J1 (${m ? m.votes[0] : 0})`; v2.textContent = `Vote J2 (${m ? m.votes[1] : 0})`; }
+v1.onclick = () => { if (m && Versus.vote(m, 0)) updVotes(); };
+v2.onclick = () => { if (m && Versus.vote(m, 1)) updVotes(); };
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (['Space','ArrowLeft','ArrowRight','ArrowUp','Enter'].includes(e.code)) e.preventDefault();
+  if ((e.code === 'Space' || e.code === 'Enter') && (!m || m.over)) startVersus();
+});
+addEventListener('keyup', e => (keys[e.code] = false));
+function text(g, t, x, y, size, color) { g.fillStyle = color || '#fff'; g.font = `bold ${size}px monospace`; g.textAlign = 'center'; g.fillText(t, x, y); }
+function draw(i, dt) {
+  const g = gs[i], s = m ? m.p[i] : Logic.newState(), col = i ? '#ff4d6d' : '#00e5ff';
+  g.save(); g.clearRect(0, 0, 480, 640);
+  if (s.shake > 0) g.translate((Math.random()-.5)*10, (Math.random()-.5)*10);
+  g.fillStyle = '#fff'; stars.forEach(st => { if (i === 0) st.y = (st.y + st.v*dt) % 640; g.fillRect(st.x, st.y, 2, 2); });
+  const rc = ['#ff4d6d','#ff9f43','#ffd23f','#2ed573','#1e90ff','#a55eea'];
+  s.enemies.forEach(e => { g.fillStyle = rc[e.row % 6]; g.fillRect(e.x, e.y, e.w, e.h); g.fillStyle = '#000'; g.fillRect(e.x+6, e.y+6, 4, 4); g.fillRect(e.x+18, e.y+6, 4, 4); });
+  const p = s.player; g.fillStyle = col; g.shadowColor = col; g.shadowBlur = 12;
+  g.beginPath(); g.moveTo(p.x+p.w/2, p.y); g.lineTo(p.x+p.w, p.y+p.h); g.lineTo(p.x, p.y+p.h); g.fill(); g.shadowBlur = 0;
+  g.fillStyle = '#fff'; s.bullets.forEach(b => g.fillRect(b.x, b.y, b.w, b.h));
+  g.fillStyle = '#ff4d6d'; s.bombs.forEach(b => g.fillRect(b.x, b.y, b.w, b.h));
+  s.particles.forEach(q => { g.globalAlpha = Math.max(0, q.life/0.6); g.fillStyle = q.color; g.fillRect(q.x, q.y, 3, 3); });
+  g.globalAlpha = 1; g.restore();
+  g.textAlign = 'left'; g.fillStyle = col; g.font = 'bold 18px monospace'; g.fillText(`J${i+1}  ${s.score}`, 10, 24);
+  g.textAlign = 'right'; g.fillStyle = '#fff'; g.fillText('♥'.repeat(Math.max(0, s.lives)), 470, 24);
+  if (s.combo > 2) text(g, 'COMBO x' + s.combo, 240, 620, 18, '#ffd23f');
+  if (m) text(g, Math.ceil(m.time) + 's', 240, 24, 18, '#ffd23f');
+  if (!m) text(g, i ? 'Entrée pour lancer' : 'Espace pour lancer', 240, 320, 24);
+  else if (s.over && !m.over) text(g, 'ÉLIMINÉ', 240, 320, 40, '#ff4d6d');
+  if (m && m.over) {
+    const w = Versus.winner(m);
+    text(g, w === i ? '👑 ROI DE L\'ARCADE !' : w === -1 ? 'ÉGALITÉ' : 'PERDU', 240, 320, 30, w === i ? '#ffd23f' : '#aaa');
+    text(g, 'Score : ' + s.score, 240, 360, 20);
+  }
+}
+function frame(t) {
+  const dt = Math.min(0.05, (t - last) / 1000 || 0); last = t;
+  if (autoplay) {
+    if (m && !m.over) {
+      const a = m.p.map(s => Ai.decide(s, null));
+      Versus.stepMatch(Logic, m, dt, a[0], a[1]); idle = 0;
+    } else if ((idle += dt) >= 3) startVersus();
+  } else if (m && !m.over) {
+    Versus.stepMatch(Logic, m, dt,
+      { left: +!!keys.KeyQ || +!!keys.KeyA, right: +!!keys.KeyD, fire: !!keys.Space },
+      { left: +!!keys.ArrowLeft, right: +!!keys.ArrowRight, fire: !!(keys.Enter || keys.ArrowUp) });
+  }
+  if (m && m.over) voteEl.style.display = 'flex';
+  draw(0, dt); draw(1, dt);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script></body></html>
