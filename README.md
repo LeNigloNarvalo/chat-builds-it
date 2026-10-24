@@ -2,7 +2,7 @@
 
 Zero-dependency Node.js CLI: see which entries of a directory use the most disk space.
 
-    node bin/dus.js [dir] [-n 10] [--json]
+    node bin/dus.js [dir] [-n 10] [--json] [--exclude <glob>]...
 
 Run tests with `npm test`.
 
