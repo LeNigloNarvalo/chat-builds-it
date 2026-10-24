@@ -23,24 +23,29 @@ body.bossmode{animation:bg 0.6s infinite alternate}@keyframes bg{to{background:#
 #secret{position:fixed;top:10px;right:10px;z-index:6;background:#0d0d26;border:2px solid #6c5ce7;padding:8px 10px;display:flex;flex-direction:column;gap:6px;width:170px;font-size:12px}#secret[hidden]{display:none}
 #secret input{min-width:0;background:#05050f;color:#fff;border:1px solid #6c5ce7;padding:5px;font:inherit}#secret .pad{display:grid;grid-template-columns:repeat(6,1fr);gap:3px}#secret .pad button{background:#6c5ce7;color:#fff;border:0;padding:6px 0;font:inherit;cursor:pointer}#secret small{color:#8a85d6}
 h1{cursor:default;user-select:none}
+#rp{position:fixed;inset:0;z-index:200;background:#000d;display:none;flex-direction:column;align-items:center;justify-content:center;gap:8px}#rp.on{display:flex}
+#rp canvas{max-height:76vh;border-color:#ff4d6d;box-shadow:0 0 30px #ff4d6d}#rp .bar{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+#rp button{background:#6c5ce7;color:#fff;border:0;padding:8px 12px;font:inherit;cursor:pointer}#rp small{color:#aaa}
 </style></head><body>
 <h1>ASTRO ARCADE</h1>
 <div id="secret" hidden><input id="sc" placeholder="code secret…" autocomplete="off" maxlength="60" aria-label="code secret"><div class="pad"><button data-c="ArrowUp">↑</button><button data-c="ArrowDown">↓</button><button data-c="ArrowLeft">←</button><button data-c="ArrowRight">→</button><button data-c="KeyB">B</button><button data-c="KeyA">A</button></div><small id="scn"></small></div>
 <canvas id="c" width="480" height="640"></canvas>
 <p id="demo" style="display:none;color:#00e5ff;opacity:1;margin:4px">🤖 MODE DÉMO — l'IA joue (window.setAutoplay(false) pour reprendre)</p>
-<p>← → / Q D : bouger · Espace : tirer · Entrée : (re)lancer · tactile : glisser · <small>↑↑↓↓←→←→BA ?</small> · <button id="storm" style="background:#ff6b35;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">☄ Tempête (M)</button> · <a href="versus.html" style="color:#ff4d6d">⚔ Mode 2 joueurs</a></p>
+<p>← → / Q D : bouger · Espace : tirer · Entrée : (re)lancer · tactile : glisser · <small>↑↑↓↓←→←→BA ?</small> · <button id="storm" style="background:#ff6b35;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">☄ Tempête (M)</button> · <button id="rpb" style="background:#ff4d6d;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🎬 Replay (R)</button> · <a href="versus.html" style="color:#ff4d6d">⚔ Mode 2 joueurs</a></p>
 <section id="hs">
 <h2>🏆 CLASSEMENT</h2>
 <div id="defi"></div>
 <div class="row"><input id="pseudo" maxlength="12" placeholder="Ton pseudo" autocomplete="off"><button id="share">Défier un ami</button></div>
 <table id="board"></table>
 </section>
+<div id="rp"><b style="color:#ff4d6d">🎬 REPLAY DU CHAT</b><canvas id="rc" width="480" height="640"></canvas><div class="bar"><button id="rp-again">↻ Revoir</button><button id="rp-link">🔗 Copier le lien</button><button id="rp-vid">⏺ Enregistrer la vidéo</button><button id="rp-x">✕ Fermer</button></div><small id="rp-info"></small></div>
 <div id="boss"></div>
 <canvas id="fx"></canvas>
 <script src="logic.js"></script>
 <script src="boss.js"></script>
 <script src="ai.js"></script>
 <script src="meteors.js"></script>
+<script src="replay.js"></script>
 <script>
 const cv = document.getElementById('c'), g = cv.getContext('2d');
 const keys = {}; let s = Logic.newState(), running = false, last = 0;
@@ -106,7 +111,7 @@ setInterval(() => {
 }, 350);
 function startBoss() {
   if (boss && !boss.defeated && !s.over) return;
-  if (!running || s.over) { s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); }
+  if (!running || s.over) { rec = Replay.newRecorder(); recDone = false; s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); }
   s.enemies = []; s.bombs = []; boss = Boss.newBoss();
   document.body.classList.add('bossmode'); bossEl.classList.add('on');
   SFX.start(); celebrate(1);
@@ -179,18 +184,86 @@ addEventListener('keydown', e => {
   if (!e.repeat && konami(e.code)) startBoss();
   if (e.code === 'KeyM') startStorm();
   if (boss && /^Digit[1-4]$/.test(e.code)) vote(Boss.ATTACKS[+e.code.slice(5) - 1].key, 'toi');
-  if (e.code === 'Enter' && (!running || s.over)) { s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); }
+  if (e.code === 'Enter' && (!running || s.over)) { rec = Replay.newRecorder(); recDone = false; s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); }
   if (['Space','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
 });
 addEventListener('keyup', e => (keys[e.code] = false));
-cv.addEventListener('touchstart', e => { keys.Touch = true; if (!running || s.over) { s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); } });
+cv.addEventListener('touchstart', e => { keys.Touch = true; if (!running || s.over) { rec = Replay.newRecorder(); recDone = false; s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); } });
 cv.addEventListener('touchmove', e => { const r = cv.getBoundingClientRect(); s.player.x = (e.touches[0].clientX - r.left) / r.width * 480 - 16; e.preventDefault(); }, {passive:false});
 cv.addEventListener('touchend', () => (keys.Touch = false));
 
 function text(t, x, y, size, color) { g.fillStyle = color || '#fff'; g.font = `bold ${size}px monospace`; g.textAlign = 'center'; g.fillText(t, x, y); }
+// --- Replay du Chat : meilleure partie en ralenti + zoom sur les exploits, lien et vidéo à partager ---
+let rec = Replay.newRecorder(), bestRun = null, recDone = false;
+const rpEl = document.getElementById('rp'), rc = document.getElementById('rc'), rg = rc.getContext('2d'), rpInfo = document.getElementById('rp-info');
+let play = null, mediaRec = null;
+function frameDt(p) { return p.step; }
+function openReplay(frames, step, title) {
+  if (!frames || frames.length < 2) { alert('Joue (ou lance le mode démo) une partie d\'abord : aucun replay enregistré !'); return false; }
+  play = { frames, step, marks: Replay.markers(frames), idx: 0, t: 0, zoom: 1, cx: 240, cy: 400, last: 0, hold: 0 };
+  rpEl.classList.add('on'); rpInfo.textContent = title || ''; requestAnimationFrame(playTick); return true;
+}
+function playTick(now) {
+  if (!play || !rpEl.classList.contains('on')) return;
+  const p = play, dt = Math.min(0.05, (now - p.last) / 1000 || 0); p.last = now;
+  const foc = Replay.focusAt(p.marks, Math.floor(p.idx), p.step);
+  if (p.idx < p.frames.length - 1) p.idx = Math.min(p.frames.length - 1, p.idx + dt / p.step * foc.speed);
+  else { p.hold += dt; if (p.hold > 1.5) { if (mediaRec) stopVideo(); p.idx = 0; p.hold = 0; } }
+  p.t += dt;
+  const f = p.frames[Math.floor(p.idx)];
+  p.zoom += (foc.zoom - p.zoom) * Math.min(1, dt * 6);
+  p.cx += (f.px + 16 - p.cx) * Math.min(1, dt * 6);
+  const z = p.zoom, ox = Math.max(0, Math.min(480 * (1 - 1 / z), p.cx - 240 / z)), oy = Math.max(0, Math.min(640 * (1 - 1 / z), 440 - 320 / z));
+  rg.setTransform(1, 0, 0, 1, 0, 0); rg.fillStyle = '#05050f'; rg.fillRect(0, 0, 480, 640);
+  rg.save(); rg.scale(z, z); rg.translate(-ox, -oy); Replay.drawFrame(rg, f, p.t); rg.restore();
+  Replay.drawHud(rg, f, foc.mark && foc.speed < 0.95 ? foc.mark.kind : '', foc.speed);
+  requestAnimationFrame(playTick);
+}
+function stopVideo() { if (mediaRec) { const m = mediaRec; mediaRec = null; m.stop(); } }
+function recordVideo() {
+  if (!play || !window.MediaRecorder || !rc.captureStream) { alert('Enregistrement vidéo non supporté par ce navigateur : utilise le lien !'); return; }
+  const chunks = []; mediaRec = new MediaRecorder(rc.captureStream(30));
+  mediaRec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  mediaRec.onstop = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' })); a.download = 'replay-astro-arcade.webm'; a.click(); rpInfo.textContent = 'Vidéo enregistrée ! Envoie le fichier .webm à tes potes.'; };
+  play.idx = 0; play.hold = 0; mediaRec.start(); rpInfo.textContent = '⏺ Enregistrement en cours (une boucle)…';
+}
+const b64 = u8 => btoa(String.fromCharCode(...u8)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64 = t => Uint8Array.from(atob(t.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+async function shareLink() {
+  if (!play) return;
+  const base = bestRun && play.frames === bestRun.frames ? bestRun.frames : play.frames, [a, b] = Replay.bestWindow(base, 15);
+  let txt = Replay.pack(base.slice(a, b), 3), pre = 'j';
+  if (window.CompressionStream) {
+    const cs = new Blob([txt]).stream().pipeThrough(new CompressionStream('gzip'));
+    txt = new Uint8Array(await new Response(cs).arrayBuffer()); pre = 'z';
+  } else txt = new TextEncoder().encode(txt);
+  const url = location.href.split('#')[0] + '#replay=' + pre + b64(txt), msg = 'Regarde mon meilleur moment sur Astro Arcade 🎬 ' + url;
+  (navigator.clipboard ? navigator.clipboard.writeText(msg) : Promise.reject()).then(() => { rpInfo.textContent = 'Lien copié ! (' + Math.round(url.length / 1024) + ' Ko)'; }, () => prompt('Copie le lien :', msg));
+}
+async function loadSharedReplay(hash) {
+  const m = /^#replay=([jz])([\w-]+)$/.exec(hash || ''); if (!m) return;
+  try {
+    let u8 = unb64(m[2]);
+    if (m[1] === 'z') u8 = new Uint8Array(await new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+    const d = Replay.unpack(new TextDecoder().decode(u8)); openReplay(d.frames, d.step, 'Replay partagé par un ami 🎬');
+  } catch (e) { console.warn('replay illisible', e); }
+}
+function endRun() {
+  if (recDone || !s.over) return; recDone = true;
+  if (!bestRun || rec.score > bestRun.score) bestRun = { frames: rec.frames, score: rec.score };
+}
+function openBest() { if (bestRun || rec.frames.length) { const r = bestRun && (!rec.frames.length || bestRun.score >= rec.score || s.over) ? bestRun : { frames: rec.frames, score: rec.score }; openReplay(r.frames, Replay.DT, 'Meilleure partie : ' + r.score + ' pts — ralenti automatique sur les exploits'); } else openReplay(null); }
+document.getElementById('rpb').addEventListener('click', e => { openBest(); e.target.blur(); });
+document.getElementById('rp-x').addEventListener('click', () => { stopVideo(); rpEl.classList.remove('on'); play = null; });
+document.getElementById('rp-again').addEventListener('click', () => { if (play) { play.idx = 0; play.hold = 0; } });
+document.getElementById('rp-link').addEventListener('click', shareLink);
+document.getElementById('rp-vid').addEventListener('click', recordVideo);
+addEventListener('keydown', e => { if (e.code === 'KeyR' && e.target !== pseudoEl && e.target !== scEl && !e.repeat) rpEl.classList.contains('on') ? document.getElementById('rp-x').click() : openBest(); });
+loadSharedReplay(location.hash);
+window.__replay = { get best() { return bestRun; }, open: openBest };
 let autoplay = false, idle = 0;
 window.setAutoplay = function (on) { autoplay = !!on; idle = 0; document.getElementById('demo').style.display = autoplay ? 'block' : 'none'; };
-function newGame() { s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); }
+function newGame() { rec = Replay.newRecorder(); recDone = false; s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); }
 function frame(t) {
   const dt = Math.min(0.05, (t - last) / 1000 || 0); last = t;
   const inp = {
@@ -205,6 +278,8 @@ function frame(t) {
     if (boss.events.includes('win')) { celebrate(2); setTimeout(() => boss && endBoss(), 3500); }
     if (s.over) endBoss();
   } else if (running) Logic.step(s, dt, inp);
+  if (running && !s.over) Replay.capture(rec, s, boss, dt);
+  if (s.over) endRun();
   if (s.level > prevLevel) celebrate(1);
   prevLevel = s.level;
   if (runBase > 0 && !recordFired && s.score > runBase) { recordFired = true; celebrate(2); }

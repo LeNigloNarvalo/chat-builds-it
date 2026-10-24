@@ -95,3 +95,26 @@ const M = require('./meteors.js'); const ms = M.newStorm(); M.start(ms, 1);
 let sawSparks = false; for (let i = 0; i < 120; i++) { M.step(ms, 0.016, 800, 600); if (ms.sparks.length) sawSparks = true; }
 assert(sawSparks, 'les météorites explosent en étincelles');
 assert(ms.meteors.length === 0 || ms.meteors[0].trail.length > 0, 'traînée');
+// Replay du Chat : enregistrement, exploits, ralenti/zoom, sérialisation
+{
+  const R = require('./replay.js');
+  const st = L.newState(), rec = R.newRecorder();
+  for (let i = 0; i < 90; i++) {
+    st.score += i === 40 ? 200 : 0; st.combo = i > 50 ? 5 : 0; if (i === 60) st.combo = 6;
+    R.capture(rec, st, null, 1 / 30);
+  }
+  assert(rec.frames.length >= 85, 'images enregistrées à 30 Hz');
+  const marks = R.markers(rec.frames);
+  assert(marks.some(m => /COMBO/.test(m.kind)) && marks.some(m => m.kind === '+200'), 'exploits repérés');
+  const m = marks[0], f = R.focusAt(marks, m.i);
+  assert(f.speed < 1 && f.zoom > 1, 'ralenti + zoom sur un exploit');
+  assert.strictEqual(R.focusAt(marks, 0, 1 / 30).zoom >= 1, true);
+  const far = R.focusAt([{ i: 0, kind: 'x' }], 500);
+  assert(far.speed === 1 && far.zoom === 1, 'vitesse normale hors exploit');
+  const back = R.unpack(R.pack(rec.frames, 3));
+  assert.strictEqual(back.frames.length, Math.ceil(rec.frames.length / 3));
+  assert.strictEqual(back.frames[0].e.length, rec.frames[0].e.length);
+  assert.throws(() => R.unpack('{"v":1,"f":[[1]]}'), /invalide/);
+  const [a, b] = R.bestWindow(rec.frames, 1); assert(b - a === 30 && rec.frames[b - 1].sc - rec.frames[a].sc === 200);
+}
+console.log('replay OK');
