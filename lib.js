@@ -29,12 +29,22 @@ function total(p, opts = {}, root = p) {
   return sum;
 }
 
-// Entries of dir sorted by size, biggest first.
+// Entries of dir sorted by size, biggest first. With opts.depth > 1, directories
+// get a `children` list (same shape) down to that many levels.
 function sizes(dir, opts = {}) {
-  const skip = excluder(opts.exclude);
+  const skip = opts.skip || excluder(opts.exclude);
+  const root = opts.root || dir;
+  const depth = opts.depth || 1;
   return fs.readdirSync(dir, { withFileTypes: true })
-    .filter((d) => !skip(d.name, d.name))
-    .map((d) => ({ name: d.name, dir: d.isDirectory(), size: total(path.join(dir, d.name), { skip }, dir) }))
+    .filter((d) => !skip(d.name, path.relative(root, path.join(dir, d.name)).split(path.sep).join('/')))
+    .map((d) => {
+      const full = path.join(dir, d.name);
+      const e = { name: d.name, dir: d.isDirectory(), size: total(full, { skip }, root) };
+      if (e.dir && depth > 1) {
+        try { e.children = sizes(full, { skip, root, depth: depth - 1 }); } catch { e.children = []; }
+      }
+      return e;
+    })
     .sort((a, b) => b.size - a.size);
 }
 

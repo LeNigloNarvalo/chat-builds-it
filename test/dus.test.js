@@ -42,3 +42,16 @@ test('exclude ignore les motifs (nom, chemin relatif, taille du parent)', () => 
   assert.strictEqual(sizes(d).length, 2);
   fs.rmSync(d, { recursive: true });
 });
+
+test('depth ajoute des enfants sur N niveaux', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'dus-'));
+  fs.mkdirSync(path.join(d, 'a', 'b'), { recursive: true });
+  fs.writeFileSync(path.join(d, 'a', 'b', 'f'), 'x'.repeat(20));
+  fs.writeFileSync(path.join(d, 'a', 'g'), 'y');
+  assert.strictEqual(sizes(d)[0].children, undefined);
+  const two = sizes(d, { depth: 2 })[0];
+  assert.deepStrictEqual(two.children.map((e) => e.name), ['b', 'g']);
+  assert.strictEqual(two.children[0].children, undefined);
+  assert.deepStrictEqual(sizes(d, { depth: 3 })[0].children[0].children.map((e) => e.name), ['f']);
+  fs.rmSync(d, { recursive: true });
+});
