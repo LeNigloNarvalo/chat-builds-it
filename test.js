@@ -118,3 +118,19 @@ assert(ms.meteors.length === 0 || ms.meteors[0].trail.length > 0, 'traînée');
   const [a, b] = R.bestWindow(rec.frames, 1); assert(b - a === 30 && rec.frames[b - 1].sc - rec.frames[a].sc === 200);
 }
 console.log('replay OK');
+
+// loot : cœur = +1 vie (plafonné), PAC = mange les bombes et rend des vies
+{
+  const q = L.newState(); q.lives = 2;
+  assert(L.dropLoot(q, q.enemies[0], () => 0) && q.loot[0].type === 'heart');
+  assert.strictEqual(L.dropLoot(q, q.enemies[0], () => 0.99), null);
+  q.loot = [{ type: 'heart', x: q.player.x, y: q.player.y, w: 20, h: 20 }];
+  L.step(q, 0.001, none); assert.strictEqual(q.lives, 3);
+  q.lives = L.MAX_LIVES; q.loot = [{ type: 'heart', x: q.player.x, y: q.player.y, w: 20, h: 20 }];
+  L.step(q, 0.001, none); assert.strictEqual(q.lives, L.MAX_LIVES);
+  q.lives = 2; q.loot = [{ type: 'pac', x: q.player.x, y: q.player.y, w: 20, h: 20 }];
+  L.step(q, 0.001, none); assert(q.pac > 0);
+  q.bombs = [0, 1, 2].map(i => ({ x: q.player.x + 10, y: q.player.y - 10 - i * 3, w: 6, h: 12 }));
+  L.step(q, 0.001, none);
+  assert.strictEqual(q.lives, 3, '3 bombes mangées = +1 vie'); assert(q.pacEaten === 3);
+}

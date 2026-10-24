@@ -32,7 +32,7 @@
     return {
       level: 1, score: 0, lives: 3, combo: 0, dir: 1, over: false,
       player: { x: W / 2 - 16, y: H - 50, w: 32, h: 20 },
-      enemies: makeWave(1), bullets: [], bombs: [], particles: [],
+      enemies: makeWave(1), bullets: [], bombs: [], particles: [], loot: [], pac: 0, pacEaten: 0,
       cooldown: 0, bombTimer: 1, shake: 0, flash: '',
     };
   }
@@ -43,6 +43,16 @@
       s.particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0.6, color });
     }
   }
+
+  // Loot aléatoire : un ennemi tué lâche parfois un ❤ (+1 vie) ou un PAC (Pac-Man qui mange les bombes ; 3 bombes avalées = +1 vie).
+  const MAX_LIVES = 5, LOOT_CHANCE = 0.25, PAC_TIME = 6, PAC_REACH = 22;
+  function dropLoot(s, e, rnd) {
+    rnd = rnd || Math.random;
+    if (rnd() >= LOOT_CHANCE) return null;
+    const l = { type: rnd() < 0.5 ? 'heart' : 'pac', x: e.x + e.w / 2 - 10, y: e.y, w: 20, h: 20 };
+    s.loot.push(l); return l;
+  }
+  function heal(s) { if (s.lives < MAX_LIVES) s.lives++; burst(s, s.player.x + 16, s.player.y, '#ff6bd6', 16); }
 
   function step(s, dt, input) {
     if (s.over) return s;
@@ -78,10 +88,29 @@
         b.y = -100; e.hp = 0;
         s.combo++; s.score += points(e.row, s.combo);
         burst(s, e.x + e.w / 2, e.y + e.h / 2, '#ffd23f', 14);
+        dropLoot(s, e, s.rnd);
         s.shake = 0.1;
       }
     }
     s.enemies = s.enemies.filter(e => e.hp > 0);
+
+    // Loot : tombe, se ramasse au contact.
+    s.loot.forEach(l => (l.y += 110 * dt));
+    for (const l of s.loot) {
+      if (!hit(l, p)) continue;
+      l.y = H + 100;
+      if (l.type === 'heart') heal(s); else { s.pac = PAC_TIME; s.pacEaten = 0; burst(s, p.x + 16, p.y, '#ffe600', 20); }
+    }
+    s.loot = s.loot.filter(l => l.y < H + 20);
+    if (s.pac > 0) {
+      s.pac -= dt;
+      const mouth = { x: p.x - PAC_REACH, y: p.y - PAC_REACH * 2, w: p.w + PAC_REACH * 2, h: p.h + PAC_REACH * 2 };
+      for (const b of s.bombs) {
+        if (!hit(b, mouth)) continue;
+        b.y = H + 100; burst(s, b.x, b.y > H ? p.y - 20 : b.y, '#ffe600', 6);
+        if (++s.pacEaten % 3 === 0) heal(s);
+      }
+    }
 
     // Bombes vs joueur
     for (const b of s.bombs) {
@@ -95,7 +124,7 @@
 
     if (!s.enemies.length) {
       s.level++; s.score += 100 * s.level; s.enemies = makeWave(s.level);
-      s.bullets = []; s.bombs = []; s.dir = 1; s.flash = 'NIVEAU ' + s.level; s.flashT = 1.5;
+      s.bullets = []; s.bombs = []; s.loot = []; s.dir = 1; s.flash = 'NIVEAU ' + s.level; s.flashT = 1.5;
     }
     s.particles.forEach(q => { q.x += q.vx * dt; q.y += q.vy * dt; q.life -= dt; });
     s.particles = s.particles.filter(q => q.life > 0);
@@ -191,7 +220,7 @@
     return fx;
   }
 
-  const api = { newFx, confettiRain, fireworkBurst, launchRocket, celebrate, stepFx, W, H, levelConfig, makeWave, hit, points, newState, step,
+  const api = { newFx, confettiRain, fireworkBurst, launchRocket, celebrate, stepFx, W, H, levelConfig, makeWave, hit, points, newState, step, dropLoot, MAX_LIVES, PAC_TIME,
     MAX_SCORES, cleanName, addScore, loadBoard, saveBoard, challengeHash, parseChallenge };
   if (typeof module !== 'undefined') module.exports = api; else root.Logic = api;
 })(this);

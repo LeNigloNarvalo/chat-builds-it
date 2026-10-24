@@ -31,6 +31,9 @@
   // Cible à viser : le boss, sinon l'ennemi le plus bas (le plus menaçant), avec anticipation.
   function aimX(s, boss) {
     const p = s.player;
+    // Loot proche et atteignable : on va le chercher (cœur si blessé, sinon PAC).
+    const want = (s.loot || []).filter(l => l.y > 150 && l.y < p.y && (l.type === 'pac' || s.lives < 5));
+    if (want.length) { const l = want.reduce((a, b) => (b.y > a.y ? b : a)); return l.x + l.w / 2; }
     if (boss && !boss.defeated) return boss.x + boss.w / 2 + boss.dir * 35 * Math.max(0, (p.y - boss.y - boss.h) / 560) * 2;
     if (!s.enemies.length) return p.x + p.w / 2;
     const cfg = { speed: 40 + s.level * 12 };

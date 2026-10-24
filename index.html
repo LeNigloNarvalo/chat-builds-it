@@ -295,6 +295,12 @@ function frame(t) {
   g.shadowColor = '#00e5ff'; g.shadowBlur = 12; g.fillStyle = '#00e5ff';
   const p = s.player; g.beginPath(); g.moveTo(p.x+p.w/2, p.y); g.lineTo(p.x+p.w, p.y+p.h); g.lineTo(p.x, p.y+p.h); g.fill();
   g.fillStyle = '#fff'; s.bullets.forEach(b => g.fillRect(b.x, b.y, b.w, b.h));
+  s.loot.forEach(l => {
+    const cx = l.x + 10, cy = l.y + 10; g.shadowBlur = 14;
+    if (l.type === 'heart') { g.shadowColor = '#ff4d6d'; g.fillStyle = '#ff4d6d'; g.font = 'bold 24px monospace'; g.textAlign = 'center'; g.fillText('♥', cx, cy + 9); }
+    else { g.shadowColor = '#ffe600'; g.fillStyle = '#ffe600'; const m = 0.1 + 0.35 * Math.abs(Math.sin(performance.now() / 120)); g.beginPath(); g.moveTo(cx, cy); g.arc(cx, cy, 11, m, Math.PI * 2 - m); g.fill(); }
+  });
+  if (s.pac > 0) { const m = 0.15 + 0.4 * Math.abs(Math.sin(performance.now() / 90)), cx = p.x + p.w / 2, cy = p.y - 6; g.shadowColor = '#ffe600'; g.shadowBlur = 16; g.fillStyle = '#ffe600'; g.beginPath(); g.moveTo(cx, cy); g.arc(cx, cy, 24, -Math.PI / 2 + m, -Math.PI / 2 + Math.PI * 2 - m); g.fill(); }
   g.fillStyle = '#ff4d6d'; s.bombs.forEach(b => g.fillRect(b.x, b.y, b.w, b.h));
   s.particles.forEach(q => { g.globalAlpha = Math.max(0, q.life/0.6); g.fillStyle = q.color; g.fillRect(q.x, q.y, 3, 3); });
   g.globalAlpha = 1; g.shadowBlur = 0;
@@ -303,6 +309,7 @@ function frame(t) {
   g.textAlign = 'left'; g.fillStyle = '#fff'; g.font = '16px monospace';
   g.fillText('SCORE ' + s.score, 10, 22); g.fillText('NIV ' + s.level, 200, 22);
   g.textAlign = 'right'; g.fillText('♥'.repeat(Math.max(0, s.lives)), 470, 22);
+  if (s.pac > 0) { g.fillStyle = '#ffe600'; g.fillText('PAC ' + Math.ceil(s.pac) + 's  bombes ' + (s.pacEaten % 3) + '/3 → ♥', 470, 42); }
   if (s.combo > 2) text('COMBO x' + s.combo, 240, 620, 18, '#ffd23f');
   g.textAlign = 'left'; g.fillStyle = '#888'; g.fillText('RECORD ' + best, 10, 42);
   if (boss && boss.defeated) text('BOSS VAINCU ! +5000', 240, 300, 34, '#2ed573');
