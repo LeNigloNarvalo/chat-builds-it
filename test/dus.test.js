@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { sizes, format, parseSize } = require('../lib');
+const { sizes, format, parseSize, bestiole } = require('../lib');
 
 test('format', () => {
   assert.strictEqual(format(512), '512B');
@@ -103,4 +103,11 @@ test('minSize masque les entrées trop petites', () => {
   assert.strictEqual(parseSize('500'), 500);
   assert.throws(() => parseSize('abc'));
   fs.rmSync(d, { recursive: true });
+});
+
+test('bestiole grossit et couine selon la variation', () => {
+  assert.match(bestiole(10).msg, /naître/);
+  assert.match(bestiole(2048, 1024).msg, /Miam/);
+  assert.match(bestiole(1024, 2048).msg, /ménage/);
+  assert.notStrictEqual(bestiole(10).stage, bestiole(2 * 1024 ** 2).stage);
 });

@@ -104,4 +104,19 @@ function format(n) {
   return (i ? n.toFixed(1) : String(n)) + units[i];
 }
 
-module.exports = { total, sizes, format, excluder, parseSort, parseSize };
+// The disk pet: its look depends on the total size, its reaction on the change since last time.
+// prev is the previously seen total (or null on first meeting).
+function bestiole(now, prev = null) {
+  const M = 1024 ** 2;
+  const face = now < M ? '(•ᴗ•)' : now < 100 * M ? '(•o•)' : now < 1024 * M ? '(◉Д◉)' : '(@Д@)';
+  const stage = now < M ? 'minuscule' : now < 100 * M ? 'joufflue' : now < 1024 * M ? 'énorme' : 'obèse';
+  let msg = 'Coucou ! Je viens de naître dans ce dossier.';
+  if (prev !== null) {
+    if (now > prev) msg = 'Miam ! ' + format(now - prev) + ' de plus, je grossis...';
+    else if (now < prev) msg = 'Piiiii ! ' + format(prev - now) + ' de ménage, merci !';
+    else msg = 'Rien n\'a bougé, je digère.';
+  }
+  return { face, stage, size: now, msg };
+}
+
+module.exports = { total, sizes, format, excluder, parseSort, parseSize, bestiole };
