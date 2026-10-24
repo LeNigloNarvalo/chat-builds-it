@@ -31,7 +31,7 @@
 cd dus</code></pre>
 
   <h2>Utilisation</h2>
-  <pre><code>node bin/dus.js [dir] [-n 10] [--json] [--profondeur &lt;N&gt;] [--exclude &lt;glob&gt;]... [--tri size|name|type[:asc|:desc]] [--exclure-vide]</code></pre>
+  <pre><code>node bin/dus.js [dir] [-n 10] [--json] [--profondeur &lt;N&gt;] [--exclude &lt;glob&gt;]... [--tri size|name|type[:asc|:desc]] [--exclure-vide] [--min-taille &lt;taille&gt;]</code></pre>
   <ul>
     <li><code>dir</code> : le dossier à analyser (par défaut le dossier courant)</li>
     <li><code>-n</code> : nombre d'entrées affichées</li>
@@ -40,6 +40,7 @@ cd dus</code></pre>
     <li><code>--exclude</code> : ignore les entrées correspondant au motif (répétable)</li>
     <li><code>--tri</code> : trie par <code>size</code> (défaut), <code>name</code> ou <code>type</code>, avec <code>:asc</code> ou <code>:desc</code></li>
     <li><code>--exclure-vide</code> : masque les dossiers sans aucun fichier</li>
+    <li><code>--min-taille</code> : masque les entrées plus petites que le seuil (ex. <code>10M</code>)</li>
   </ul>
 
   <h2>Tests</h2>

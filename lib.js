@@ -40,6 +40,13 @@ function hasFile(p, skip, root) {
   return false;
 }
 
+// Parses a size like "10M", "1.5k", "500" (bytes) into bytes; units are powers of 1024.
+function parseSize(spec) {
+  const m = /^(\d+(?:\.\d+)?)([bkmgt]?)b?$/i.exec(String(spec).trim());
+  if (!m) throw new Error('invalid size "' + spec + '" (use e.g. 500, 10K, 10M, 1G)');
+  return Math.round(parseFloat(m[1]) * 1024 ** ['', 'k', 'm', 'g', 't'].indexOf(m[2].toLowerCase()));
+}
+
 // Parses "size|name|type" with an optional ":asc" / ":desc" suffix into { key, desc }.
 // Default direction: descending for size, ascending for name and type.
 function parseSort(spec = 'size') {
@@ -71,6 +78,7 @@ function sizes(dir, opts = {}) {
   const root = opts.root || dir;
   const depth = opts.depth || 1;
   const cmp = comparator(opts.sort);
+  const minSize = opts.minSize || 0;
   return fs.readdirSync(dir, { withFileTypes: true })
     .filter((d) => !skip(d.name, path.relative(root, path.join(dir, d.name)).split(path.sep).join('/')))
     .filter((d) => {
@@ -81,10 +89,11 @@ function sizes(dir, opts = {}) {
       const full = path.join(dir, d.name);
       const e = { name: d.name, dir: d.isDirectory(), size: total(full, { skip }, root) };
       if (e.dir && depth > 1) {
-        try { e.children = sizes(full, { skip, root, depth: depth - 1, sort: opts.sort, excludeEmpty: opts.excludeEmpty }); } catch { e.children = []; }
+        try { e.children = sizes(full, { skip, root, depth: depth - 1, sort: opts.sort, excludeEmpty: opts.excludeEmpty, minSize }); } catch { e.children = []; }
       }
       return e;
     })
+    .filter((e) => e.size >= minSize)
     .sort(cmp);
 }
 
@@ -95,4 +104,4 @@ function format(n) {
   return (i ? n.toFixed(1) : String(n)) + units[i];
 }
 
-module.exports = { total, sizes, format, excluder, parseSort };
+module.exports = { total, sizes, format, excluder, parseSort, parseSize };

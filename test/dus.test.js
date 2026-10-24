@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { sizes, format } = require('../lib');
+const { sizes, format, parseSize } = require('../lib');
 
 test('format', () => {
   assert.strictEqual(format(512), '512B');
@@ -87,7 +87,20 @@ test('excludeEmpty masque les dossiers sans fichier', () => {
 
 test('le site documente chaque option de la CLI', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'site', 'index.html'), 'utf8');
-  for (const opt of ['-n', '--json', '--profondeur', '--exclude', '--tri', '--exclure-vide']) {
+  for (const opt of ['-n', '--json', '--profondeur', '--exclude', '--tri', '--exclure-vide', '--min-taille']) {
     assert.ok(html.includes(`<code>${opt}</code>`), `option absente du site : ${opt}`);
   }
+});
+
+test('minSize masque les entrées trop petites', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'dus-'));
+  fs.writeFileSync(path.join(d, 'gros'), 'x'.repeat(2048));
+  fs.writeFileSync(path.join(d, 'petit'), 'x');
+  fs.mkdirSync(path.join(d, 'dir'));
+  fs.writeFileSync(path.join(d, 'dir', 'f'), 'x'.repeat(10));
+  assert.deepStrictEqual(sizes(d, { minSize: parseSize('1K') }).map((e) => e.name), ['gros']);
+  assert.strictEqual(parseSize('10M'), 10 * 1024 * 1024);
+  assert.strictEqual(parseSize('500'), 500);
+  assert.throws(() => parseSize('abc'));
+  fs.rmSync(d, { recursive: true });
 });
