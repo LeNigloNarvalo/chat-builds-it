@@ -26,7 +26,9 @@ h1{cursor:default;user-select:none}
 #rp{position:fixed;inset:0;z-index:200;background:#000d;display:none;flex-direction:column;align-items:center;justify-content:center;gap:8px}#rp.on{display:flex}
 #rp canvas{max-height:76vh;border-color:#ff4d6d;box-shadow:0 0 30px #ff4d6d}#rp .bar{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
 #rp button{background:#6c5ce7;color:#fff;border:0;padding:8px 12px;font:inherit;cursor:pointer}#rp small{color:#aaa}
+html.stream #hs,html.stream #rpb,html.stream #rp{display:none!important}
 </style></head><body>
+<script>if (/[?&]stream=1/.test(location.search)) document.documentElement.classList.add('stream');</script>
 <h1>ASTRO ARCADE</h1>
 <div id="secret" hidden><input id="sc" placeholder="code secret…" autocomplete="off" maxlength="60" aria-label="code secret"><div class="pad"><button data-c="ArrowUp">↑</button><button data-c="ArrowDown">↓</button><button data-c="ArrowLeft">←</button><button data-c="ArrowRight">→</button><button data-c="KeyB">B</button><button data-c="KeyA">A</button></div><small id="scn"></small></div>
 <canvas id="c" width="480" height="640"></canvas>
