@@ -31,4 +31,12 @@ L.saveBoard(st, r.board); assert.deepStrictEqual(L.loadBoard(st), r.board);
 assert.deepStrictEqual(L.loadBoard({ getItem: () => 'pas du json' }), []);
 assert.deepStrictEqual(L.parseChallenge(L.challengeHash('Léa', 420)), { name: 'Léa', score: 420 });
 assert.strictEqual(L.parseChallenge('#x'), null);
+// célébrations : confettis + feux d'artifice
+const fx = L.newFx(); let seed = 1; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+L.celebrate(fx, 2, 480, 640, rnd);
+assert(fx.confetti.length >= 240 && fx.rockets.length > 0 && fx.flash > 0);
+for (let i = 0; i < 120; i++) L.stepFx(fx, 0.02, 640, rnd);
+assert(fx.sparks.length > 0, 'les fusées explosent en étincelles');
+for (let i = 0; i < 600; i++) L.stepFx(fx, 0.02, 640, rnd);
+assert(fx.confetti.length === 0 && fx.sparks.length === 0, 'tout disparaît à la fin');
 console.log('OK');

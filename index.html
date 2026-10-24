@@ -13,6 +13,7 @@ p{opacity:.7}
 #hs tr.me{color:#00e5ff;font-weight:bold}#hs .row{display:flex;gap:8px;margin-bottom:8px}
 #hs input{flex:1;background:#05050f;color:#fff;border:1px solid #6c5ce7;padding:6px;font:inherit}
 #hs button{background:#6c5ce7;color:#fff;border:0;padding:6px 10px;font:inherit;cursor:pointer}
+#fx{position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;z-index:99}
 #defi{color:#ff9f43;text-align:center;margin:6px 0;display:none}
 </style></head><body>
 <h1>ASTRO ARCADE</h1>
@@ -24,12 +25,27 @@ p{opacity:.7}
 <div class="row"><input id="pseudo" maxlength="12" placeholder="Ton pseudo" autocomplete="off"><button id="share">Défier un ami</button></div>
 <table id="board"></table>
 </section>
+<canvas id="fx"></canvas>
 <script src="logic.js"></script>
 <script>
 const cv = document.getElementById('c'), g = cv.getContext('2d');
 const keys = {}; let s = Logic.newState(), running = false, last = 0;
 let best = +(localStorage.getItem('astro-best') || 0);
 const stars = Array.from({length: 60}, () => ({x: Math.random()*480, y: Math.random()*640, v: 20+Math.random()*80}));
+const fxCv = document.getElementById('fx'), fg = fxCv.getContext('2d'), fx = Logic.newFx();
+let prevLevel = 1, runBase = best, recordFired = false;
+function fxResize() { fxCv.width = innerWidth; fxCv.height = innerHeight; }
+addEventListener('resize', fxResize); fxResize();
+function celebrate(k) { Logic.celebrate(fx, k, fxCv.width, fxCv.height); }
+function drawFx() {
+  fg.clearRect(0, 0, fxCv.width, fxCv.height);
+  if (fx.flash > 0) { fg.fillStyle = `rgba(255,235,160,${fx.flash * 0.35})`; fg.fillRect(0, 0, fxCv.width, fxCv.height); }
+  fg.globalCompositeOperation = 'lighter';
+  fx.sparks.forEach(p => { fg.globalAlpha = Math.max(0, Math.min(1, p.life / 0.8)); fg.shadowColor = p.color; fg.shadowBlur = 14; fg.fillStyle = p.color; fg.fillRect(p.x - 2, p.y - 2, 4, 4); });
+  fx.rockets.forEach(r => { fg.globalAlpha = 1; fg.shadowBlur = 10; fg.shadowColor = '#fff'; fg.fillStyle = '#fff'; fg.fillRect(r.x - 2, r.y, 4, 14); });
+  fg.globalCompositeOperation = 'source-over'; fg.shadowBlur = 0; fg.globalAlpha = 1;
+  fx.confetti.forEach(c => { fg.save(); fg.translate(c.x, c.y); fg.rotate(c.rot); fg.scale(1, Math.cos(c.rot * 2)); fg.fillStyle = c.color; fg.fillRect(-c.size / 2, -c.size / 4, c.size, c.size / 2); fg.restore(); });
+}
 const pseudoEl = document.getElementById('pseudo'), boardEl = document.getElementById('board'), defiEl = document.getElementById('defi');
 let board = Logic.loadBoard(localStorage), lastRank = 0, saved = false;
 try { pseudoEl.value = localStorage.getItem('astro-pseudo') || ''; } catch (e) {}
@@ -57,11 +73,11 @@ renderBoard();
 addEventListener('keydown', e => {
   if (e.target === pseudoEl) return;
   keys[e.code] = true;
-  if (e.code === 'Enter' && (!running || s.over)) { s = Logic.newState(); running = true; saved = false; lastRank = 0; renderBoard(); }
+  if (e.code === 'Enter' && (!running || s.over)) { s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); }
   if (['Space','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
 });
 addEventListener('keyup', e => (keys[e.code] = false));
-cv.addEventListener('touchstart', e => { keys.Touch = true; if (!running || s.over) { s = Logic.newState(); running = true; saved = false; lastRank = 0; renderBoard(); } });
+cv.addEventListener('touchstart', e => { keys.Touch = true; if (!running || s.over) { s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); } });
 cv.addEventListener('touchmove', e => { const r = cv.getBoundingClientRect(); s.player.x = (e.touches[0].clientX - r.left) / r.width * 480 - 16; e.preventDefault(); }, {passive:false});
 cv.addEventListener('touchend', () => (keys.Touch = false));
 
@@ -71,6 +87,10 @@ function frame(t) {
   if (running) Logic.step(s, dt, {
     left: +!!(keys.ArrowLeft || keys.KeyA || keys.KeyQ), right: +!!(keys.ArrowRight || keys.KeyD),
     fire: !!(keys.Space || keys.Touch) });
+  if (s.level > prevLevel) celebrate(1);
+  prevLevel = s.level;
+  if (runBase > 0 && !recordFired && s.score > runBase) { recordFired = true; celebrate(2); }
+  if (s.over && runBase === 0 && !recordFired && s.score > 0) { recordFired = true; celebrate(2); }
   if (s.over) submitScore();
   if (s.over && s.score > best) { best = s.score; try { localStorage.setItem('astro-best', best); } catch (e) {} }
   g.save(); g.clearRect(0, 0, 480, 640);
@@ -93,6 +113,8 @@ function frame(t) {
   if (s.flash) text(s.flash, 240, 300, 40, '#ffd23f');
   if (!running) { text('ASTRO ARCADE', 240, 280, 36, '#ffd23f'); text('Appuie sur Entrée', 240, 330, 20); }
   if (s.over) { text('GAME OVER', 240, 280, 44, '#ff4d6d'); text('Score : ' + s.score, 240, 325, 22); if (lastRank) text('Classement : #' + lastRank + ' (' + Logic.cleanName(pseudoEl.value) + ')', 240, 350, 16, '#00e5ff'); text('Entrée pour rejouer', 240, 385, 18); }
+  Logic.stepFx(fx, dt, fxCv.height); drawFx();
+  if (recordFired) { g.textAlign = 'center'; text('🎆 NOUVEAU RECORD ! 🎆', 240, 70, 20, '#ffd23f'); }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

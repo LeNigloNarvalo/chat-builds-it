@@ -137,7 +137,61 @@
     return m ? { name: cleanName(decodeURIComponent(m[1])), score: +m[2] } : null;
   }
 
-  const api = { W, H, levelConfig, makeWave, hit, points, newState, step,
+  // Célébrations : confettis + feux d'artifice (victoire de vague, nouveau record).
+  const FX_COLORS = ['#ff4d6d', '#ff9f43', '#ffd23f', '#2ed573', '#00e5ff', '#a55eea', '#ffffff'];
+  const pick = rnd => FX_COLORS[Math.floor(rnd() * FX_COLORS.length)];
+
+  function newFx() { return { confetti: [], sparks: [], rockets: [], flash: 0, t: 0 }; }
+
+  // Pluie de confettis depuis le haut de l'écran, plus quelques canons latéraux.
+  function confettiRain(fx, n, w, rnd) {
+    rnd = rnd || Math.random;
+    for (let i = 0; i < n; i++) {
+      const cannon = i % 4 === 0, left = rnd() < 0.5;
+      fx.confetti.push({
+        x: cannon ? (left ? 0 : w) : rnd() * w, y: cannon ? 500 + rnd() * 100 : -20 - rnd() * 200,
+        vx: cannon ? (left ? 1 : -1) * (200 + rnd() * 400) : (rnd() - 0.5) * 120,
+        vy: cannon ? -(500 + rnd() * 500) : 80 + rnd() * 200,
+        rot: rnd() * 6.283, vr: (rnd() - 0.5) * 18, size: 6 + rnd() * 8, color: pick(rnd), life: 4 + rnd() * 2 });
+    }
+  }
+
+  function fireworkBurst(fx, x, y, rnd) {
+    rnd = rnd || Math.random;
+    const color = pick(rnd), n = 60;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * 6.283, v = 120 + rnd() * 200;
+      fx.sparks.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1.2 + rnd() * 0.6, max: 1.8, color: rnd() < 0.3 ? '#fff' : color });
+    }
+    fx.flash = Math.min(1, fx.flash + 0.5);
+  }
+
+  function launchRocket(fx, w, h, rnd) {
+    rnd = rnd || Math.random;
+    fx.rockets.push({ x: 60 + rnd() * (w - 120), y: h, vy: -(500 + rnd() * 200), top: 100 + rnd() * 250 });
+  }
+
+  // intensity 1 = victoire de vague, 2 = nouveau record (le grand spectacle).
+  function celebrate(fx, intensity, w, h, rnd) {
+    confettiRain(fx, 120 * intensity, w, rnd);
+    for (let i = 0; i < 2 + 4 * (intensity - 1) + 1; i++) launchRocket(fx, w, h, rnd);
+    fx.flash = Math.min(1, fx.flash + 0.4 * intensity);
+  }
+
+  function stepFx(fx, dt, h, rnd) {
+    fx.t += dt;
+    fx.confetti.forEach(c => { c.vy += 260 * dt; c.vx *= 1 - 0.8 * dt; c.x += c.vx * dt; c.y += c.vy * dt; c.rot += c.vr * dt; c.life -= dt; });
+    fx.confetti = fx.confetti.filter(c => c.life > 0 && c.y < (h || 640) + 30);
+    fx.rockets.forEach(r => (r.y += r.vy * dt));
+    fx.rockets.filter(r => r.y <= r.top).forEach(r => fireworkBurst(fx, r.x, r.y, rnd));
+    fx.rockets = fx.rockets.filter(r => r.y > r.top);
+    fx.sparks.forEach(p => { p.vy += 120 * dt; p.vx *= 1 - 1.2 * dt; p.vy *= 1 - 1.2 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; });
+    fx.sparks = fx.sparks.filter(p => p.life > 0);
+    fx.flash = Math.max(0, fx.flash - dt * 1.5);
+    return fx;
+  }
+
+  const api = { newFx, confettiRain, fireworkBurst, launchRocket, celebrate, stepFx, W, H, levelConfig, makeWave, hit, points, newState, step,
     MAX_SCORES, cleanName, addScore, loadBoard, saveBoard, challengeHash, parseChallenge };
   if (typeof module !== 'undefined') module.exports = api; else root.Logic = api;
 })(this);
