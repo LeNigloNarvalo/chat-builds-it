@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dus — qui occupe la place sur votre disque ?</title>
+<meta name="description" content="dus : un outil en ligne de commande sans dépendance qui montre quelles entrées d'un dossier prennent le plus de place.">
+<style>
+  :root { --bg: #fff; --fg: #1d2330; --muted: #5b6475; --accent: #0b6bcb; --code: #f2f4f8; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #11151c; --fg: #e6e9ef; --muted: #98a1b3; --accent: #5aa9ff; --code: #1b212c; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 system-ui, sans-serif; }
+  main { max-width: 42rem; margin: 0 auto; padding: 3rem 1rem; }
+  h1 { font-size: 2.5rem; margin: 0; }
+  .tagline { color: var(--muted); font-size: 1.15rem; }
+  pre { background: var(--code); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  code { font-family: ui-monospace, monospace; }
+  a { color: var(--accent); }
+  footer { color: var(--muted); margin-top: 3rem; font-size: .9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>dus</h1>
+  <p class="tagline">Voyez en un coup d'œil quelles entrées d'un dossier prennent le plus de place.</p>
+
+  <h2>Installation</h2>
+  <p>Aucune dépendance, seulement Node.js 18 ou plus.</p>
+  <pre><code>git clone &lt;url-du-depot&gt; dus
+cd dus</code></pre>
+
+  <h2>Utilisation</h2>
+  <pre><code>node bin/dus.js [dir] [-n 10] [--json]</code></pre>
+  <ul>
+    <li><code>dir</code> : le dossier à analyser (par défaut le dossier courant)</li>
+    <li><code>-n</code> : nombre d'entrées affichées</li>
+    <li><code>--json</code> : sortie lisible par une machine</li>
+  </ul>
+
+  <h2>Tests</h2>
+  <pre><code>npm test</code></pre>
+
+  <footer>Projet open source sous licence MIT, construit en direct sur Twitch.</footer>
+</main>
+</body>
+</html>

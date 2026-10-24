@@ -5,3 +5,5 @@ Zero-dependency Node.js CLI: see which entries of a directory use the most disk 
     node bin/dus.js [dir] [-n 10] [--json]
 
 Run tests with `npm test`.
+
+Site vitrine : ouvrir `site/index.html`.

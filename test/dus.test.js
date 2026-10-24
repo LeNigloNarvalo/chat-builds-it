@@ -21,3 +21,9 @@ test('sizes sorts biggest first and recurses', () => {
   assert.strictEqual(r[0].size, 100);
   fs.rmSync(d, { recursive: true });
 });
+
+test('site vitrine mentionne la commande et les options', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'site', 'index.html'), 'utf8');
+  assert.match(html, /<title>dus/);
+  for (const s of ['bin/dus.js', '--json', 'npm test']) assert.ok(html.includes(s), s);
+});
