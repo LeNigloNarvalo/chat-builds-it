@@ -24,7 +24,7 @@ body.bossmode{animation:bg 0.6s infinite alternate}@keyframes bg{to{background:#
 <h1>ASTRO ARCADE</h1>
 <canvas id="c" width="480" height="640"></canvas>
 <p id="demo" style="display:none;color:#00e5ff;opacity:1;margin:4px">🤖 MODE DÉMO — l'IA joue (window.setAutoplay(false) pour reprendre)</p>
-<p>← → / Q D : bouger · Espace : tirer · Entrée : (re)lancer · tactile : glisser · <small>↑↑↓↓←→←→BA ?</small> · <a href="versus.html" style="color:#ff4d6d">⚔ Mode 2 joueurs</a></p>
+<p>← → / Q D : bouger · Espace : tirer · Entrée : (re)lancer · tactile : glisser · <small>↑↑↓↓←→←→BA ?</small> · <button id="storm" style="background:#ff6b35;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">☄ Tempête (M)</button> · <a href="versus.html" style="color:#ff4d6d">⚔ Mode 2 joueurs</a></p>
 <section id="hs">
 <h2>🏆 CLASSEMENT</h2>
 <div id="defi"></div>
@@ -36,12 +36,15 @@ body.bossmode{animation:bg 0.6s infinite alternate}@keyframes bg{to{background:#
 <script src="logic.js"></script>
 <script src="boss.js"></script>
 <script src="ai.js"></script>
+<script src="meteors.js"></script>
 <script>
 const cv = document.getElementById('c'), g = cv.getContext('2d');
 const keys = {}; let s = Logic.newState(), running = false, last = 0;
 let best = +(localStorage.getItem('astro-best') || 0);
 const stars = Array.from({length: 60}, () => ({x: Math.random()*480, y: Math.random()*640, v: 20+Math.random()*80}));
 const fxCv = document.getElementById('fx'), fg = fxCv.getContext('2d'), fx = Logic.newFx();
+const storm = Meteors.newStorm(); function startStorm() { Meteors.start(storm, 8); }
+document.getElementById('storm').addEventListener('click', e => { startStorm(); e.target.blur(); });
 let prevLevel = 1, runBase = best, recordFired = false;
 function fxResize() { fxCv.width = innerWidth; fxCv.height = innerHeight; }
 addEventListener('resize', fxResize); fxResize();
@@ -49,6 +52,7 @@ function celebrate(k) { Logic.celebrate(fx, k, fxCv.width, fxCv.height); }
 function drawFx() {
   fg.clearRect(0, 0, fxCv.width, fxCv.height);
   if (fx.flash > 0) { fg.fillStyle = `rgba(255,235,160,${fx.flash * 0.35})`; fg.fillRect(0, 0, fxCv.width, fxCv.height); }
+  Meteors.draw(fg, storm);
   fg.globalCompositeOperation = 'lighter';
   fx.sparks.forEach(p => { fg.globalAlpha = Math.max(0, Math.min(1, p.life / 0.8)); fg.fillStyle = p.color; fg.fillRect(p.x - 2.5, p.y - 2.5, 5, 5); });
   fx.rockets.forEach(r => { fg.globalAlpha = 1; fg.fillStyle = '#fff'; fg.fillRect(r.x - 2, r.y, 4, 14); });
@@ -159,6 +163,7 @@ addEventListener('keydown', e => {
   if (e.target === pseudoEl) return;
   keys[e.code] = true;
   if (konami(e.code)) startBoss();
+  if (e.code === 'KeyM') startStorm();
   if (boss && /^Digit[1-4]$/.test(e.code)) vote(Boss.ATTACKS[+e.code.slice(5) - 1].key, 'toi');
   if (e.code === 'Enter' && (!running || s.over)) { s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); }
   if (['Space','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
@@ -215,6 +220,8 @@ function frame(t) {
   if (s.flash) text(s.flash, 240, 300, 40, '#ffd23f');
   if (!running) { text('ASTRO ARCADE', 240, 280, 36, '#ffd23f'); text('Appuie sur Entrée', 240, 330, 20); }
   if (s.over) { text('GAME OVER', 240, 280, 44, '#ff4d6d'); text('Score : ' + s.score, 240, 325, 22); if (lastRank) text('Classement : #' + lastRank + ' (' + Logic.cleanName(pseudoEl.value) + ')', 240, 350, 16, '#00e5ff'); text('Entrée pour rejouer', 240, 385, 18); }
+  if (autoplay && storm.active <= 0 && !storm.meteors.length && Math.random() < dt * 0.1) startStorm();
+  Meteors.step(storm, dt, fxCv.width, fxCv.height);
   Logic.stepFx(fx, dt, fxCv.height); drawFx();
   if (recordFired) { g.textAlign = 'center'; text('🎆 NOUVEAU RECORD ! 🎆', 240, 70, 20, '#ffd23f'); }
   requestAnimationFrame(frame);

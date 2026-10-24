@@ -90,3 +90,8 @@ const V = require('./versus.js');
   assert(m2.over && V.winner(m2) === -1, 'fin si les deux sont éliminés, égalité');
   console.log('OK versus');
 }
+// tempête de météorites : spawn, traînée, explosion en étincelles
+const M = require('./meteors.js'); const ms = M.newStorm(); M.start(ms, 1);
+let sawSparks = false; for (let i = 0; i < 120; i++) { M.step(ms, 0.016, 800, 600); if (ms.sparks.length) sawSparks = true; }
+assert(sawSparks, 'les météorites explosent en étincelles');
+assert(ms.meteors.length === 0 || ms.meteors[0].trail.length > 0, 'traînée');
