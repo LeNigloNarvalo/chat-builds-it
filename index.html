@@ -20,8 +20,12 @@ p{opacity:.7}
 #boss.on{display:flex}
 body.bossmode{animation:bg 0.6s infinite alternate}@keyframes bg{to{background:#25051a}}
 #defi{color:#ff9f43;text-align:center;margin:6px 0;display:none}
+#secret{position:fixed;top:10px;right:10px;z-index:6;background:#0d0d26;border:2px solid #6c5ce7;padding:8px 10px;display:flex;flex-direction:column;gap:6px;width:170px;font-size:12px}#secret[hidden]{display:none}
+#secret input{min-width:0;background:#05050f;color:#fff;border:1px solid #6c5ce7;padding:5px;font:inherit}#secret .pad{display:grid;grid-template-columns:repeat(6,1fr);gap:3px}#secret .pad button{background:#6c5ce7;color:#fff;border:0;padding:6px 0;font:inherit;cursor:pointer}#secret small{color:#8a85d6}
+h1{cursor:default;user-select:none}
 </style></head><body>
 <h1>ASTRO ARCADE</h1>
+<div id="secret" hidden><input id="sc" placeholder="code secret…" autocomplete="off" maxlength="60" aria-label="code secret"><div class="pad"><button data-c="ArrowUp">↑</button><button data-c="ArrowDown">↓</button><button data-c="ArrowLeft">←</button><button data-c="ArrowRight">→</button><button data-c="KeyB">B</button><button data-c="KeyA">A</button></div><small id="scn"></small></div>
 <canvas id="c" width="480" height="640"></canvas>
 <p id="demo" style="display:none;color:#00e5ff;opacity:1;margin:4px">🤖 MODE DÉMO — l'IA joue (window.setAutoplay(false) pour reprendre)</p>
 <p>← → / Q D : bouger · Espace : tirer · Entrée : (re)lancer · tactile : glisser · <small>↑↑↓↓←→←→BA ?</small> · <button id="storm" style="background:#ff6b35;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">☄ Tempête (M)</button> · <a href="versus.html" style="color:#ff4d6d">⚔ Mode 2 joueurs</a></p>
@@ -159,10 +163,20 @@ function submitScore() {
   board = r.board; lastRank = r.rank; Logic.saveBoard(localStorage, board); renderBoard();
 }
 renderBoard();
+// code secret : clic sur le titre -> champ + pavé (les flèches servent déjà à jouer, on peut donc le saisir ici)
+const secretEl = document.getElementById('secret'), scEl = document.getElementById('sc'), scn = document.getElementById('scn');
+let kProg = 0;
+function secretCode(c) { kProg = c === Boss.KONAMI[kProg] ? kProg + 1 : (c === Boss.KONAMI[0] ? 1 : 0); scn.textContent = kProg ? kProg + ' / ' + Boss.KONAMI.length : ''; if (konami(c)) { kProg = 0; scn.textContent = ''; secretEl.hidden = true; startBoss(); } }
+document.querySelector('h1').addEventListener('click', () => { secretEl.hidden = !secretEl.hidden; if (!secretEl.hidden) scEl.focus(); });
+secretEl.querySelectorAll('.pad button').forEach(b => b.addEventListener('click', () => secretCode(b.dataset.c)));
+scEl.addEventListener('input', () => {
+  const v = scEl.value.toLowerCase().replace(/[\s,;\-_.]+/g, '');
+  if (v === 'konami' || v === '↑↑↓↓←→←→ba' || v === 'hauthautbasbasgauchedroitegauchedroiteba' || v === 'upupdowndownleftrightleftrightba') { scEl.value = ''; secretEl.hidden = true; startBoss(); }
+});
 addEventListener('keydown', e => {
-  if (e.target === pseudoEl) return;
+  if (e.target === pseudoEl || e.target === scEl) return;
   keys[e.code] = true;
-  if (konami(e.code)) startBoss();
+  if (!e.repeat && konami(e.code)) startBoss();
   if (e.code === 'KeyM') startStorm();
   if (boss && /^Digit[1-4]$/.test(e.code)) vote(Boss.ATTACKS[+e.code.slice(5) - 1].key, 'toi');
   if (e.code === 'Enter' && (!running || s.over)) { s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); }
