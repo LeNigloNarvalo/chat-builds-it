@@ -34,7 +34,7 @@ assert.strictEqual(L.parseChallenge('#x'), null);
 // célébrations : confettis + feux d'artifice
 const fx = L.newFx(); let seed = 1; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
 L.celebrate(fx, 2, 480, 640, rnd);
-assert(fx.confetti.length >= 240 && fx.rockets.length > 0 && fx.flash > 0);
+assert(fx.confetti.length >= 140 && fx.rockets.length > 0 && fx.flash > 0);
 for (let i = 0; i < 120; i++) L.stepFx(fx, 0.02, 640, rnd);
 assert(fx.sparks.length > 0, 'les fusées explosent en étincelles');
 for (let i = 0; i < 600; i++) L.stepFx(fx, 0.02, 640, rnd);

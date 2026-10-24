@@ -50,8 +50,8 @@ function drawFx() {
   fg.clearRect(0, 0, fxCv.width, fxCv.height);
   if (fx.flash > 0) { fg.fillStyle = `rgba(255,235,160,${fx.flash * 0.35})`; fg.fillRect(0, 0, fxCv.width, fxCv.height); }
   fg.globalCompositeOperation = 'lighter';
-  fx.sparks.forEach(p => { fg.globalAlpha = Math.max(0, Math.min(1, p.life / 0.8)); fg.shadowColor = p.color; fg.shadowBlur = 14; fg.fillStyle = p.color; fg.fillRect(p.x - 2, p.y - 2, 4, 4); });
-  fx.rockets.forEach(r => { fg.globalAlpha = 1; fg.shadowBlur = 10; fg.shadowColor = '#fff'; fg.fillStyle = '#fff'; fg.fillRect(r.x - 2, r.y, 4, 14); });
+  fx.sparks.forEach(p => { fg.globalAlpha = Math.max(0, Math.min(1, p.life / 0.8)); fg.fillStyle = p.color; fg.fillRect(p.x - 2.5, p.y - 2.5, 5, 5); });
+  fx.rockets.forEach(r => { fg.globalAlpha = 1; fg.fillStyle = '#fff'; fg.fillRect(r.x - 2, r.y, 4, 14); });
   fg.globalCompositeOperation = 'source-over'; fg.shadowBlur = 0; fg.globalAlpha = 1;
   fx.confetti.forEach(c => { fg.save(); fg.translate(c.x, c.y); fg.rotate(c.rot); fg.scale(1, Math.cos(c.rot * 2)); fg.fillStyle = c.color; fg.fillRect(-c.size / 2, -c.size / 4, c.size, c.size / 2); fg.restore(); });
 }

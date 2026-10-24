@@ -158,7 +158,7 @@
 
   function fireworkBurst(fx, x, y, rnd) {
     rnd = rnd || Math.random;
-    const color = pick(rnd), n = 60;
+    const color = pick(rnd), n = 32;
     for (let i = 0; i < n; i++) {
       const a = (i / n) * 6.283, v = 120 + rnd() * 200;
       fx.sparks.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1.2 + rnd() * 0.6, max: 1.8, color: rnd() < 0.3 ? '#fff' : color });
@@ -173,7 +173,7 @@
 
   // intensity 1 = victoire de vague, 2 = nouveau record (le grand spectacle).
   function celebrate(fx, intensity, w, h, rnd) {
-    confettiRain(fx, 120 * intensity, w, rnd);
+    confettiRain(fx, 70 * intensity, w, rnd);
     for (let i = 0; i < 2 + 4 * (intensity - 1) + 1; i++) launchRocket(fx, w, h, rnd);
     fx.flash = Math.min(1, fx.flash + 0.4 * intensity);
   }
@@ -186,7 +186,7 @@
     fx.rockets.filter(r => r.y <= r.top).forEach(r => fireworkBurst(fx, r.x, r.y, rnd));
     fx.rockets = fx.rockets.filter(r => r.y > r.top);
     fx.sparks.forEach(p => { p.vy += 120 * dt; p.vx *= 1 - 1.2 * dt; p.vy *= 1 - 1.2 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; });
-    fx.sparks = fx.sparks.filter(p => p.life > 0);
+    fx.sparks = fx.sparks.filter(p => p.life > 0).slice(-260);
     fx.flash = Math.max(0, fx.flash - dt * 1.5);
     return fx;
   }
