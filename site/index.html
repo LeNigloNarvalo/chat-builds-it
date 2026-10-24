@@ -31,11 +31,15 @@
 cd dus</code></pre>
 
   <h2>Utilisation</h2>
-  <pre><code>node bin/dus.js [dir] [-n 10] [--json]</code></pre>
+  <pre><code>node bin/dus.js [dir] [-n 10] [--json] [--profondeur &lt;N&gt;] [--exclude &lt;glob&gt;]... [--tri size|name|type[:asc|:desc]] [--exclure-vide]</code></pre>
   <ul>
     <li><code>dir</code> : le dossier à analyser (par défaut le dossier courant)</li>
     <li><code>-n</code> : nombre d'entrées affichées</li>
     <li><code>--json</code> : sortie lisible par une machine</li>
+    <li><code>--profondeur</code> : nombre de niveaux de sous-dossiers à afficher</li>
+    <li><code>--exclude</code> : ignore les entrées correspondant au motif (répétable)</li>
+    <li><code>--tri</code> : trie par <code>size</code> (défaut), <code>name</code> ou <code>type</code>, avec <code>:asc</code> ou <code>:desc</code></li>
+    <li><code>--exclure-vide</code> : masque les dossiers sans aucun fichier</li>
   </ul>
 
   <h2>Tests</h2>

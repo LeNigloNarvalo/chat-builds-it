@@ -84,3 +84,10 @@ test('excludeEmpty masque les dossiers sans fichier', () => {
   assert.deepStrictEqual(sizes(d, { excludeEmpty: true, depth: 2 })[0].children.map((e) => e.name), ['f']);
   fs.rmSync(d, { recursive: true });
 });
+
+test('le site documente chaque option de la CLI', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'site', 'index.html'), 'utf8');
+  for (const opt of ['-n', '--json', '--profondeur', '--exclude', '--tri', '--exclure-vide']) {
+    assert.ok(html.includes(`<code>${opt}</code>`), `option absente du site : ${opt}`);
+  }
+});
