@@ -29,6 +29,17 @@ function total(p, opts = {}, root = p) {
   return sum;
 }
 
+// Does the directory tree contain at least one file (after exclusions)? Symlinks count as files.
+function hasFile(p, skip, root) {
+  for (const d of fs.readdirSync(p, { withFileTypes: true })) {
+    const full = path.join(p, d.name);
+    if (skip(d.name, path.relative(root, full).split(path.sep).join('/'))) continue;
+    if (!d.isDirectory()) return true;
+    try { if (hasFile(full, skip, root)) return true; } catch { /* unreadable entry */ }
+  }
+  return false;
+}
+
 // Parses "size|name|type" with an optional ":asc" / ":desc" suffix into { key, desc }.
 // Default direction: descending for size, ascending for name and type.
 function parseSort(spec = 'size') {
@@ -62,11 +73,15 @@ function sizes(dir, opts = {}) {
   const cmp = comparator(opts.sort);
   return fs.readdirSync(dir, { withFileTypes: true })
     .filter((d) => !skip(d.name, path.relative(root, path.join(dir, d.name)).split(path.sep).join('/')))
+    .filter((d) => {
+      if (!opts.excludeEmpty || !d.isDirectory()) return true;
+      try { return hasFile(path.join(dir, d.name), skip, root); } catch { return false; }
+    })
     .map((d) => {
       const full = path.join(dir, d.name);
       const e = { name: d.name, dir: d.isDirectory(), size: total(full, { skip }, root) };
       if (e.dir && depth > 1) {
-        try { e.children = sizes(full, { skip, root, depth: depth - 1, sort: opts.sort }); } catch { e.children = []; }
+        try { e.children = sizes(full, { skip, root, depth: depth - 1, sort: opts.sort, excludeEmpty: opts.excludeEmpty }); } catch { e.children = []; }
       }
       return e;
     })

@@ -72,3 +72,15 @@ test('sort par taille, nom ou type, croissant ou décroissant', () => {
   assert.throws(() => sizes(d, { sort: 'foo' }));
   fs.rmSync(d, { recursive: true });
 });
+
+test('excludeEmpty masque les dossiers sans fichier', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'dus-'));
+  fs.mkdirSync(path.join(d, 'vide', 'encore-vide'), { recursive: true });
+  fs.mkdirSync(path.join(d, 'plein', 'vide'), { recursive: true });
+  fs.writeFileSync(path.join(d, 'plein', 'f'), '');
+  const names = (o) => sizes(d, o).map((e) => e.name);
+  assert.deepStrictEqual(names().sort(), ['plein', 'vide']);
+  assert.deepStrictEqual(names({ excludeEmpty: true }), ['plein']);
+  assert.deepStrictEqual(sizes(d, { excludeEmpty: true, depth: 2 })[0].children.map((e) => e.name), ['f']);
+  fs.rmSync(d, { recursive: true });
+});
