@@ -7,7 +7,7 @@ const Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = 
 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
-const ACTIONS = new Set(['post', 'deletePost', 'editPost', 'toggleBookmark', 'toggleTopic', 'toggleRepost', 'toggleLike', 'react', 'quote', 'toggleFollow', 'updateProfile', 'importUser', 'send', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'appeal', 'decideAppeal', 'adminSanction', 'adminDeleteUser', 'exportUser', 'markDmRead', 'deleteConversation', 'saveDraft', 'deleteDraft', 'publishDraft', 'createList', 'updateList', 'deleteList', 'toggleListMember', 'saveSharedList', 'forgetSharedList', 'dismissSuggestion', 'saveSearch', 'deleteSearch', 'markSearchSeen', 'checkSearches', 'setNotifPrefs', 'vote', 'createGroup', 'updateGroup', 'deleteGroup', 'joinGroup', 'leaveGroup', 'handleRequest', 'inviteToGroup', 'respondInvite', 'cancelInvite', 'removeFromGroup', 'unbanFromGroup', 'setGroupMod']);
+const ACTIONS = new Set(['post', 'deletePost', 'editPost', 'toggleBookmark', 'toggleTopic', 'toggleRepost', 'toggleLike', 'react', 'quote', 'toggleFollow', 'updateProfile', 'importUser', 'send', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'appeal', 'decideAppeal', 'adminSanction', 'adminDeleteUser', 'exportUser', 'markDmRead', 'deleteConversation', 'saveDraft', 'deleteDraft', 'publishDraft', 'createList', 'updateList', 'deleteList', 'toggleListMember', 'saveSharedList', 'forgetSharedList', 'dismissSuggestion', 'saveSearch', 'deleteSearch', 'markSearchSeen', 'checkSearches', 'setNotifPrefs', 'setPrivacy', 'requestDeletion', 'cancelDeletion', 'vote', 'createGroup', 'updateGroup', 'deleteGroup', 'joinGroup', 'leaveGroup', 'handleRequest', 'inviteToGroup', 'respondInvite', 'cancelInvite', 'removeFromGroup', 'unbanFromGroup', 'setGroupMod']);
 const STATIC = new Set(['index.html', 'style.css', 'a11y.js', 'theme.js', 'social.js', 'sync.js', 'diag.js', 'app.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'notif.js', 'qrcode.js', 'stats.js']);
 const TYPES = { html: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', webmanifest: 'application/manifest+json; charset=utf-8', svg: 'image/svg+xml' };
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
@@ -53,6 +53,13 @@ function createServer(opts = {}) {
   // ---- publication planifiée : l'horloge du serveur publie les brouillons dont la date est arrivée ----
   const tick = () => { try { net.publishDue(); } catch (e) { console.error('Publication planifiée :', e); } };
   const sched = setInterval(tick, 5000); sched.unref(); tick();
+  // suppressions de compte dont le délai de grâce est écoulé (lancé après l'initialisation complète, jamais au démarrage)
+  const reap = () => {
+    try {
+      for (const n of net.dueDeletions()) if (net.finalizeDeletion(n)) { delV.run(n.toLowerCase(), n.toLowerCase()); delUser.run(n); db.prepare('DELETE FROM security_log WHERE name = ?').run(n); tfa.forget(n); dev.forget(n); }
+    } catch (e) { console.error('Suppression de compte :', e); }
+  };
+  const reaper = setInterval(reap, 5000); reaper.unref();
 
   // ---- vues des posts : une vue par lecteur, par post et par heure ; jamais celles de l'auteur lui-même ----
   const insV = db.prepare('INSERT INTO views (post, viewer, author, at) SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM views WHERE post = ? AND viewer = ? AND at > ?)'),
@@ -335,7 +342,7 @@ function createServer(opts = {}) {
       send(res, e.code >= 400 ? e.code : e.constructor === Error ? 400 : 500, { error: e.code >= 400 || e.constructor === Error ? e.message : 'Erreur interne du serveur : réessayez dans un instant' });
     }
   });
-  server.on('close', () => { clearInterval(beat); clearInterval(sched); clearInterval(mailer); if (backupTimer) clearInterval(backupTimer); for (const c of live) c.res.end(); live.clear(); db.close(); });
+  server.on('close', () => { clearInterval(beat); clearInterval(sched); clearInterval(reaper); clearInterval(mailer); if (backupTimer) clearInterval(backupTimer); for (const c of live) c.res.end(); live.clear(); db.close(); });
   return server;
 }
 

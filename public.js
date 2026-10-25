@@ -1,5 +1,5 @@
 // Pages publiques et flux : /u/pseudo, /p/id, /tag/mot (HTML avec aperçu OpenGraph) et leurs flux RSS / Atom.
-// Lisibles sans compte ; seuls les posts publics (hors communautés) des comptes non bannis sont exposés.
+// Lisibles sans compte ; seuls les posts publics (hors communautés) des comptes non bannis et n'ayant pas restreint leur confidentialité sont exposés.
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const TAG = /#([\p{L}\p{N}_]+)/gu, FEED_MAX = 30;
 
@@ -9,7 +9,8 @@ function Public(net, opts = {}) {
     : (req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http') + '://' + String(req.headers.host || 'localhost').replace(/[^\w.:\-\[\]]/g, '');
   const banned = (d, n) => { const u = d.users[lc(n)]; return !u || (u.sanction && u.sanction.type === 'ban'); };
   const shown = (d, n) => { const u = d.users[lc(n)]; return u ? u.display || u.name : n; };
-  const isPublic = (d, p) => !p.group && !banned(d, p.author);
+  const closed = (d, n, k) => { const u = d.users[lc(n)]; return !!(u && u.privacy && u.privacy[k] && u.privacy[k] !== 'all'); }; // confidentialité choisie par le compte
+  const isPublic = (d, p) => !p.group && !banned(d, p.author) && !closed(d, p.author, 'posts');
   const recent = (d, f) => d.posts.filter(p => isPublic(d, p) && f(p)).sort((a, b) => b.id - a.id);
   const tagsOf = text => new Set((String(text).match(TAG) || []).map(t => lc(t.slice(1))));
   const clip = (s, n) => { s = String(s).replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
@@ -66,7 +67,7 @@ ${posts.map(p => `<entry><title>${esc(shown(d, p.author) + ' : ' + clip(p.text, 
     if (pf) { kind = 'all'; file = pf[1]; } else if (m) { [, kind, key, file] = m; try { key = decodeURIComponent(key); } catch (e) { return miss('Page'); } } else return null;
     if (kind === 'all') { const ctx = { title: 'Cornichon — posts publics', desc: 'Tous les posts publics de Cornichon.', path: url.pathname, posts: recent(d, p => !p.replyTo).slice(0, FEED_MAX), d }; return feed(file, ctx); }
     if (kind === 'u') {
-      const u = d.users[lc(key)]; if (!u || banned(d, u.name)) return miss('Profil');
+      const u = d.users[lc(key)]; if (!u || banned(d, u.name) || closed(d, u.name, 'profile')) return miss('Profil');
       const all = recent(d, p => lc(p.author) === lc(u.name)), top = all.filter(p => !p.replyTo), name = u.display || u.name, prefix = '/u/' + encodeURIComponent(u.name);
       const desc = clip(u.bio || `Posts publics de @${u.name} sur Cornichon.`, 200);
       if (file) return feed(file, { title: `${name} (@${u.name}) — Cornichon`, desc, path: url.pathname, posts: top.slice(0, FEED_MAX), d });

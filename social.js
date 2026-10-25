@@ -52,6 +52,17 @@
   }
   const NP_LABEL = { mention: 'vous a mentionné', dm: 'vous a écrit', reply: 'a répondu à votre post', follow: 'vous suit maintenant', like: 'a aimé votre post', repost: 'a repartagé votre post', quote: 'a cité votre post', react: 'a réagi à votre post', poll: 'sondage terminé', group: 'activité dans une communauté', search: 'nouveaux résultats d’une recherche enregistrée', sanction: 'mesure de modération', hide: 'post masqué', appeal: 'appel de modération' };
 
+  // ---- confidentialité : qui voit le profil et les publications (all | followers | me) ; suppression de compte avec délai de grâce ----
+  const PRIV_LEVELS = ['all', 'followers', 'me'], GRACE_MS = 7 * 86400000;
+  const normPrivacy = o => { o = o || {}; const f = k => PRIV_LEVELS.includes(o[k]) ? o[k] : 'all'; return { profile: f('profile'), posts: f('posts') }; };
+  // `by` peut-il voir `key` (profile | posts) de `author` ? Soi-même et la modération : toujours.
+  function privOk(db, by, author, key) {
+    const u = db.users[String(author || '').toLowerCase()], lv = u && u.privacy && u.privacy[key] || 'all';
+    if (lv === 'all') return true;
+    const v = db.users[String(by || '').toLowerCase()];
+    return !!v && (v === u || !!v.admin || lv === 'followers' && v.following.includes(u.name));
+  }
+
 function Net(storage, now) {
     now = now || Date.now;
     let db;
@@ -98,6 +109,8 @@ function Net(storage, now) {
     };
     const blockedBy = (author, target) => has((db.users[lc(target)] || {}).blocked, author);
     const vis = (by, list, get) => by ? list.filter(x => !hiddenFor(by, get(x))) : list;
+    // idem pour les posts, avec en plus la confidentialité choisie par leur auteur (qui voit ses publications)
+    const visP = (by, list, get) => vis(by, list, get).filter(x => privOk(db, by, get(x), 'posts'));
     const scoreOf = p => { const h = Math.max(0, now() - p.at) / 36e5; return (1 + p.likes.length * 2 + db.posts.filter(r => r.replyTo === p.id).length * 3) * Math.pow(0.5, h / 3); };
 
     // création d'un post (sans sauvegarde) : partagée par la publication directe, les brouillons et la publication planifiée
@@ -225,6 +238,23 @@ function Net(storage, now) {
         u.pass = pass; u.epoch = (u.epoch || 0) + 1; delete db.attempts[u.name.toLowerCase()];
         save(); return u.epoch;
       },
+      privacy: n => normPrivacy(user(n).privacy),
+      setPrivacy(by, p) {
+        p = p || {}; for (const k of ['profile', 'posts']) need(p[k] === undefined || PRIV_LEVELS.includes(p[k]), 'Réglage de confidentialité invalide');
+        const u = user(by); u.privacy = normPrivacy(Object.assign({}, u.privacy, p)); save(); return u.privacy;
+      },
+      // suppression programmée : le compte reste intact pendant le délai de grâce et peut être rouvert (annulation) jusqu'à l'échéance
+      async requestDeletion(by, password) {
+        let u = user(by);
+        need(!u.admin, 'Le compte Streamer ne peut pas être supprimé');
+        need(!u.deleteAt, 'Suppression déjà programmée');
+        need(u.pass.includes('$') && u.pass === await hashPw(password || '', u.pass.split('$')[0]), 'Mot de passe incorrect');
+        load(); u = user(by); u.deleteAt = now() + GRACE_MS; save(); return u.deleteAt;
+      },
+      cancelDeletion(by) { const u = user(by); need(u.deleteAt, 'Aucune suppression programmée'); delete u.deleteAt; save(); },
+      // comptes dont le délai de grâce est écoulé
+      dueDeletions: () => Object.values(db.users).filter(u => u.deleteAt && u.deleteAt <= now() && !u.admin).map(u => u.name),
+      finalizeDeletion(name) { const u = db.users[lc(name)]; if (u && u.deleteAt && u.deleteAt <= now() && !u.admin) { purge(u); save(); return true; } return false; },
       logoutAll(name) { const u = user(name); u.epoch = (u.epoch || 0) + 1; save(); return u.epoch; },
       // suppression du compte avec ses posts, réponses, likes, abonnements, messages et notifications
       async deleteAccount(name, password) {
@@ -390,7 +420,7 @@ function Net(storage, now) {
       timeline(n, by) {
         const own = db.posts.filter(p => !p.replyTo && !p.group && p.author.toLowerCase() === n.toLowerCase()).map(p => ({ post: p, at: p.at, by: null }));
         const rt = db.reposts.filter(r => r.by.toLowerCase() === n.toLowerCase()).map(r => ({ post: db.posts.find(p => p.id === r.postId), at: r.at, by: r.by })).filter(x => x.post);
-        return vis(by, own.concat(rt), x => x.post.author).filter(x => !x.by || !hiddenFor(by, x.by)).sort((a, b) => b.at - a.at);
+        return visP(by, own.concat(rt), x => x.post.author).filter(x => !x.by || !hiddenFor(by, x.by)).sort((a, b) => b.at - a.at);
       },
       toggleLike(by, postId) {
         const p = db.posts.find(x => x.id === postId); need(p && seen(p, by), 'Post introuvable'); user(by); guard(by);
@@ -440,9 +470,9 @@ function Net(storage, now) {
         const me = user(by);
         return db.posts.filter(p => !p.replyTo && !p.group && !hiddenFor(by, p.author) && (p.author === me.name || me.following.includes(p.author))).sort((a, b) => b.id - a.id);
       },
-      explore: by => vis(by, db.posts.filter(p => !p.replyTo && !p.group), p => p.author).sort((a, b) => b.id - a.id),
-      replies: (postId, by) => vis(by, db.posts.filter(p => p.replyTo === postId), p => p.author).sort((a, b) => a.id - b.id),
-      byUser: (n, by) => vis(by, db.posts.filter(p => !p.replyTo && !p.group && p.author.toLowerCase() === n.toLowerCase()), p => p.author).sort((a, b) => b.id - a.id),
+      explore: by => visP(by, db.posts.filter(p => !p.replyTo && !p.group), p => p.author).sort((a, b) => b.id - a.id),
+      replies: (postId, by) => visP(by, db.posts.filter(p => p.replyTo === postId), p => p.author).sort((a, b) => a.id - b.id),
+      byUser: (n, by) => visP(by, db.posts.filter(p => !p.replyTo && !p.group && p.author.toLowerCase() === n.toLowerCase()), p => p.author).sort((a, b) => b.id - a.id),
       // membres proposés par l'autocomplétion @ : préfixe du pseudo ou du nom affiché, abonnements d'abord
       mentionable(q, by, limit) {
         q = lc(q).replace(/^@/, '');
@@ -456,7 +486,7 @@ function Net(storage, now) {
         q = (q || '').trim().toLowerCase(); if (!q) return { users: [], posts: [] };
         return {
           users: vis(by, Object.values(db.users).filter(u => u.name.toLowerCase().includes(q)), u => u.name),
-          posts: vis(by, db.posts.filter(p => !p.group && p.text.toLowerCase().includes(q)), p => p.author).sort((a, b) => b.id - a.id),
+          posts: visP(by, db.posts.filter(p => !p.group && p.text.toLowerCase().includes(q)), p => p.author).sort((a, b) => b.id - a.id),
         };
       },
       // ---- recherche avancée : « de:@pseudo », « depuis:AAAA-MM-JJ », « avant:AAAA-MM-JJ », « avec:image », « avec:sondage », « tri:populaire » ----
@@ -479,7 +509,7 @@ function Net(storage, now) {
         const o = typeof raw === 'string' ? api.parseSearch(raw) : raw; if (sort) o.sort = sort;
         const any = o.text || o.from || o.since != null || o.until != null || o.image || o.poll;
         if (!any) return { users: [], posts: [] };
-        let posts = vis(by, db.posts.filter(p => !p.group && !p.hidden
+        let posts = visP(by, db.posts.filter(p => !p.group && !p.hidden
           && (!o.text || p.text.toLowerCase().includes(o.text))
           && (!o.from || lc(p.author) === o.from)
           && (o.since == null || p.at >= o.since) && (o.until == null || p.at < o.until)
@@ -569,7 +599,7 @@ function Net(storage, now) {
       score: p => scoreOf(p),
       // classement des posts « en tendance », meilleur score d'abord
       ranking(limit, by) {
-        return vis(by, db.posts.filter(p => !p.replyTo && !p.group), p => p.author).map(p => ({ post: p, score: scoreOf(p) })).sort((a, b) => b.score - a.score).slice(0, limit || 5);
+        return visP(by, db.posts.filter(p => !p.replyTo && !p.group), p => p.author).map(p => ({ post: p, score: scoreOf(p) })).sort((a, b) => b.score - a.score).slice(0, limit || 5);
       },
       // hashtags du moment : score = somme des scores des posts qui les contiennent
       trendingLive(limit) {
@@ -581,12 +611,12 @@ function Net(storage, now) {
       // posts (racines et réponses) contenant le hashtag, récents d'abord
       tagFeed(tag, by) {
         tag = cleanTag(tag);
-        return vis(by, db.posts.filter(p => !p.group && !p.hidden && (p.text.toLowerCase().match(/#\w+/g) || []).includes(tag)), p => p.author).sort((a, b) => b.at - a.at);
+        return visP(by, db.posts.filter(p => !p.group && !p.hidden && (p.text.toLowerCase().match(/#\w+/g) || []).includes(tag)), p => p.author).sort((a, b) => b.at - a.at);
       },
       // sujets les plus actifs sur une fenêtre (24h | 7d) : posts, auteurs distincts, interactions
       trendingTopics(range, by, limit) {
         const span = range === '7d' ? 7 * 86400000 : 86400000, since = now() - span, c = {};
-        for (const p of vis(by, db.posts.filter(x => !x.group && !x.hidden && x.at >= since), x => x.author)) {
+        for (const p of visP(by, db.posts.filter(x => !x.group && !x.hidden && x.at >= since), x => x.author)) {
           const weight = 1 + p.likes.length * 2 + db.posts.filter(r => r.replyTo === p.id).length * 3;
           for (const t of new Set((p.text.toLowerCase().match(/#\w+/g) || []))) { const e = c[t] || (c[t] = { tag: t, count: 0, authors: new Set(), score: 0 }); e.count++; e.authors.add(p.author); e.score += weight; }
         }
@@ -596,7 +626,7 @@ function Net(storage, now) {
       // posts les plus actifs de la fenêtre (racines) : likes + réponses
       trendingPosts(range, by, limit) {
         const span = range === '7d' ? 7 * 86400000 : 86400000, since = now() - span;
-        return vis(by, db.posts.filter(p => !p.replyTo && !p.group && !p.hidden && p.at >= since), p => p.author)
+        return visP(by, db.posts.filter(p => !p.replyTo && !p.group && !p.hidden && p.at >= since), p => p.author)
           .map(p => ({ post: p, likes: p.likes.length, replies: db.posts.filter(r => r.replyTo === p.id).length }))
           .map(r => Object.assign(r, { score: r.likes * 2 + r.replies * 3 }))
           .sort((a, b) => b.score - a.score || b.post.at - a.post.at).slice(0, limit || 6);
@@ -613,7 +643,7 @@ function Net(storage, now) {
       // fil des sujets suivis
       topicsFeed(by) {
         const t = new Set(api.topics(by));
-        return vis(by, db.posts.filter(p => !p.group && !p.hidden && !p.replyTo && (p.text.toLowerCase().match(/#\w+/g) || []).some(x => t.has(x))), p => p.author).sort((a, b) => b.at - a.at).slice(0, 50);
+        return visP(by, db.posts.filter(p => !p.group && !p.hidden && !p.replyTo && (p.text.toLowerCase().match(/#\w+/g) || []).some(x => t.has(x))), p => p.author).sort((a, b) => b.at - a.at).slice(0, 50);
       },
       // profil éditable : pseudo affiché, bio, couleur d'avatar, bannière (URL d'image ou dégradé), lien web
       updateProfile(by, f) {
@@ -635,6 +665,8 @@ function Net(storage, now) {
         const u = user(by);
         return { format: 'cornichon-export', version: 1, exportedAt: now(),
           profile: { name: u.name, display: u.display || '', bio: u.bio || '', avatar: u.avatar || '', banner: u.banner || '', link: u.link || '', following: u.following.slice() },
+          privacy: normPrivacy(u.privacy), deleteAt: u.deleteAt || null, blocked: (u.blocked || []).slice(), muted: (u.muted || []).slice(), bookmarks: (u.bookmarks || []).slice(), lists: JSON.parse(JSON.stringify(u.lists || [])),
+          likes: db.posts.filter(p => p.likes.includes(u.name)).map(p => p.id), notifPrefs: u.notifPrefs || null,
           posts: db.posts.filter(p => p.author === u.name && !p.group).map(p => ({ text: p.text, at: p.at, replyTo: p.replyTo, images: p.images || [] })),
           messages: db.messages.filter(m => m.from === u.name || m.to === u.name).map(m => ({ from: m.from, to: m.to, text: m.text, at: m.at, images: m.images || [] })) };
       },
@@ -1000,9 +1032,11 @@ function Net(storage, now) {
     if (!me) throw new Error('Utilisateur introuvable');
     const lcm = me.name.toLowerCase(), users = Object.create(null);
     for (const [k, u] of Object.entries(db.users)) {
-      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, notifPrefs, ...pub } = u;
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, notifPrefs, privacy, deleteAt, ...pub } = u;
       if (lists) pub.lists = k === lcm ? lists : lists.filter(l => l.public || (l.share && (me.sharedLists || []).some(r => r.owner.toLowerCase() === k && r.id === l.id && r.token === l.share))).map(l => ({ ...l, share: null }));
-      if (k === lcm) Object.assign(pub, { dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
+      if (k !== lcm && !privOk(db, me.name, u.name, 'profile')) Object.assign(pub, { bio: '', link: '', banner: '', display: '', locked: true });
+      if (k !== lcm && !privOk(db, me.name, u.name, 'posts')) pub.lockedPosts = true;
+      if (k === lcm) Object.assign(pub, { privacy: normPrivacy(privacy), deleteAt, dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
       else if (me.admin) Object.assign(pub, { sanction });
       users[k] = JSON.parse(JSON.stringify(pub));
     }
@@ -1016,7 +1050,7 @@ function Net(storage, now) {
       return c;
     });
     return {
-      users, posts: db.posts.filter(p => !p.group || readable.has(p.group)).map(p => p.hidden && !me.admin && p.author !== me.name ? Object.assign({}, p, { text: '', images: [], poll: undefined, history: [], quoteOf: undefined }) : p), groups, reposts: db.reposts, seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), attempts: {},
+      users, posts: db.posts.filter(p => p.group ? readable.has(p.group) : privOk(db, me.name, p.author, 'posts')).map(p => p.hidden && !me.admin && p.author !== me.name ? Object.assign({}, p, { text: '', images: [], poll: undefined, history: [], quoteOf: undefined }) : p), groups, reposts: db.reposts.filter(r => { const p = db.posts.find(x => x.id === r.postId); return !p || p.group || privOk(db, me.name, p.author, 'posts'); }), seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), attempts: {},
       messages: db.messages.filter(m => m.from === me.name || m.to === me.name),
       notifs: db.notifs.filter(n => n.to === me.name),
       audit: me.admin ? (db.audit || []).slice(-300) : [], totals: me.admin ? { hiddenPosts: db.posts.filter(p => !p.replyTo && p.group && !readable.has(p.group)).length, hiddenMessages: db.messages.filter(m => m.from !== me.name && m.to !== me.name).length } : undefined,
@@ -1025,6 +1059,6 @@ function Net(storage, now) {
     };
   }
 
-  const exported = { Net, snapshot, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, REASONS };
+  const exported = { Net, snapshot, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, REASONS };
   if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);

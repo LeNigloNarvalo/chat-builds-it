@@ -451,3 +451,30 @@ console.log('ok');
   })().catch(e => { console.error(e); process.exit(1); });
 }
 })();
+
+// ---- confidentialité : visibilité du profil et des posts, suppression avec délai de grâce, export ----
+(async () => {
+  const Social = require('./social.js'), st = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
+  let clock = 3e12; const r = Social.Net(st, () => clock);
+  await r.signup('pva', 'pass1'); await r.signup('pvb', 'pass2'); await r.signup('pvc', 'pass3');
+  r.updateProfile('pva', { bio: 'ma bio' }); r.post('pva', 'secret du jour');
+  assert.strictEqual(r.explore('pvb').length, 1);
+  assert.throws(() => r.setPrivacy('pva', { posts: 'tous' }), /invalide/);
+  r.setPrivacy('pva', { posts: 'followers', profile: 'me' });
+  assert.strictEqual(r.explore('pvb').length, 0); assert.strictEqual(r.byUser('pva', 'pvb').length, 0); assert.strictEqual(r.explore('pva').length, 1, 'l’auteur voit ses posts');
+  let snap = Social.snapshot(r.db(), 'pvb');
+  assert.strictEqual(snap.posts.length, 0); assert.strictEqual(snap.users.pva.bio, ''); assert.ok(snap.users.pva.locked && snap.users.pva.lockedPosts && !snap.users.pva.privacy);
+  assert.strictEqual(Social.snapshot(r.db(), 'pva').users.pva.bio, 'ma bio');
+  r.toggleFollow('pvb', 'pva'); assert.strictEqual(r.explore('pvb').length, 1, 'abonné : accès'); assert.strictEqual(r.explore('pvc').length, 0);
+  assert.strictEqual(Social.snapshot(r.db(), 'pvb').users.pva.bio, '', 'profil « moi seul » reste fermé');
+  await assert.rejects(() => r.requestDeletion('pva', 'faux'), /incorrect/);
+  const at = await r.requestDeletion('pva', 'pass1'); assert.strictEqual(at, clock + Social.GRACE_MS);
+  await assert.rejects(() => r.requestDeletion('pva', 'pass1'), /déjà/);
+  assert.deepStrictEqual(r.dueDeletions(), []); assert.strictEqual(Social.snapshot(r.db(), 'pva').users.pva.deleteAt, at); assert.strictEqual(Social.snapshot(r.db(), 'pvb').users.pva.deleteAt, undefined);
+  r.cancelDeletion('pva'); assert.ok(!r.profile('pva').deleteAt); assert.throws(() => r.cancelDeletion('pva'), /Aucune/);
+  await r.requestDeletion('pva', 'pass1'); clock += Social.GRACE_MS - 1; assert.strictEqual(r.finalizeDeletion('pva'), false);
+  clock += 2; assert.deepStrictEqual(r.dueDeletions(), ['pva']); assert.strictEqual(r.finalizeDeletion('pva'), true);
+  assert.throws(() => r.profile('pva'), /introuvable/); assert.strictEqual(r.explore('pvb').length, 0);
+  const x = r.exportUser('pvb'); assert.ok(x.privacy && Array.isArray(x.likes) && !JSON.stringify(x).includes('$'), 'export complet sans mot de passe');
+  console.log('ok confidentialité');
+})().catch(e => { console.error(e); process.exit(1); });

@@ -50,7 +50,7 @@ const GRADS = ['linear-gradient(135deg,#9146ff,#ff4d8d)', 'linear-gradient(135de
 const bannerCss = b => !b ? GRADS[0] : b.startsWith('grad:') ? GRADS[+b.slice(5)] : `center/cover url("${encodeURI(b).replace(/"/g, '%22')}"), ${GRADS[4]}`;
 const peopleList = names => names.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)} · ${esc(prof(n).bio || '')}</span></div>`).join('') || '<p class="mut">Personne pour l’instant.</p>';
 const ago = I18n.ago;
-const go = (page, arg) => { if (page === 'security') { ses.loaded = false; ses.msg = ''; } if (page === 'settings') { tfa.loaded = false; tfa.setup = null; tfa.codes = null; } if (page === 'stats') st.loaded = false; if (page === 'dev') { dev.loaded = false; dev.fresh = null; dev.detail = null; } view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
+const go = (page, arg) => { if (page === 'security' || page === 'privacy') { ses.loaded = false; ses.msg = ''; } if (page === 'settings') { tfa.loaded = false; tfa.setup = null; tfa.codes = null; } if (page === 'stats') st.loaded = false; if (page === 'dev') { dev.loaded = false; dev.fresh = null; dev.detail = null; } view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
 // ---- fil paginé côté serveur (/api/feed) : pages de 10 posts, défilement infini, bandeau « N nouveaux posts » ----
 const PAGE = 10, fs = { scope: null, who: null, ids: [], more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: 0 };
 // clé du fil affiché : « feed », « explore » ou « list:<propriétaire>:<id> » (fil dédié d'une liste de comptes)
@@ -193,7 +193,7 @@ const ses = { data: null, loaded: false, msg: '' };
 const SEC_EVENTS = { login: '🔓 Connexion', login_fail: '⚠️ Échec de connexion', mfa_fail: '⚠️ Mauvais code de double authentification', signup: '🎉 Création du compte', logout: '🚪 Déconnexion', logout_all: '🚪 Déconnexion de tous les appareils', password_change: '🔑 Mot de passe changé', password_reset: '🔑 Mot de passe réinitialisé par e-mail', session_revoked: '🛑 Appareil révoqué', sessions_revoked: '🛑 Autres appareils révoqués' };
 async function sesLoad() {
   try { ses.data = await sync.get('/api/sessions'); } catch (e) { err = e.message; }
-  ses.loaded = true; if (view.page === 'security') refresh();
+  ses.loaded = true; if (view.page === 'security' || view.page === 'privacy') refresh();
 }
 function sessionsCard() {
   if (!ses.loaded) { sesLoad(); return '<div class="card"><h2>💻 Sessions actives</h2><p class="mut" role="status">Chargement…</p></div>'; }
@@ -211,6 +211,44 @@ document.addEventListener('click', ev => {
   if (a.startsWith('rm:')) attempt(async () => { await sync.send('/api/session-revoke', { id: a.slice(3) }); ses.msg = 'Appareil révoqué ✔'; await sesLoad(); });
   else if (a === 'rmall') { if (confirm('Déconnecter tous les autres appareils ?')) attempt(async () => { await sync.send('/api/sessions-revoke', {}); ses.msg = 'Autres appareils révoqués ✔'; await sesLoad(); }); }
 });
+
+// ---- confidentialité : visibilité du profil et des publications, export, connexions actives, suppression avec délai de grâce ----
+const PRIV_OPTS = [['all', '🌍 Tout le monde'], ['followers', '👥 Mes abonnés'], ['me', '🔒 Moi seul·e']];
+const DAY = 86400000;
+function delBanner() {
+  if (!me || !net.profile(me).deleteAt) return '';
+  const at = net.profile(me).deleteAt, left = Math.max(0, Math.ceil((at - Date.now()) / DAY));
+  return `<div class="card err" role="alert">🗑 Suppression de votre compte programmée le ${dt(at)} (dans ${left} jour${left > 1 ? 's' : ''}). <button data-privcancel>↩️ Annuler la suppression</button></div>`;
+}
+function privacyPage() {
+  const pv = net.privacy(me), u = net.profile(me), group = (key, title, help) => `<div class="card" role="radiogroup" aria-labelledby="pv-${key}"><b id="pv-${key}">${title}</b><p class="mut">${help}</p>
+    <div class="row">${PRIV_OPTS.map(([k, l]) => `<button role="radio" aria-checked="${pv[key] === k}" data-privset="${key}:${k}" class="${pv[key] === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>`;
+  return `<div class="card"><h2>🛡️ Confidentialité</h2><p class="mut">Choisis qui voit ton profil et tes publications, récupère tes données, surveille tes connexions ou supprime ton compte. Les réglages sont appliqués par le serveur (fil, recherche, pages publiques et flux RSS compris) ; la modération garde son accès.</p></div>
+    ${group('profile', '👤 Qui voit mon profil', 'Bio, lien et bannière. Les autres ne voient que ton pseudo et ton avatar si le profil est restreint, et ta page publique /u/… disparaît.')}
+    ${group('posts', '📝 Qui voit mes publications', 'Posts, réponses et repartages : masqués du fil, de l’exploration, des recherches, des tendances, de ton profil, des pages publiques et des flux RSS pour ceux qui n’y ont pas droit.')}
+    <div class="card" role="group" aria-labelledby="h-pdl"><h2 id="h-pdl">📦 Télécharger mes données</h2><p class="mut">Un fichier JSON avec ton profil, tes réglages de confidentialité, tes posts, messages, abonnements, favoris, listes, blocages, likes et la liste de tes connexions. Jamais ton mot de passe.</p>
+    <button data-privdl>⬇️ Télécharger toutes mes données</button><p class="ok" role="status">${esc(notice)}</p></div>
+    ${sessionsCard()}
+    <div class="card" role="group" aria-labelledby="h-pdel"><h2 id="h-pdel">🗑 Supprimer mon compte</h2>
+    ${u.deleteAt ? `<p class="err"><b>Suppression programmée le ${dt(u.deleteAt)}.</b> Jusqu’à cette date rien n’est effacé : annule quand tu veux, ou connecte-toi simplement pour garder ton compte.</p><button data-privcancel>↩️ Annuler la suppression</button>`
+      : net.isAdmin(me) ? '<p class="mut">Le compte Streamer ne peut pas être supprimé.</p>'
+      : `<p class="mut">Le compte, ses posts, réponses, likes, messages et abonnements seront effacés définitivement après un <b>délai de grâce de 7 jours</b>. Pendant ce délai tu peux annuler en un clic.</p>
+        <input id="pv-pw" type="password" placeholder="Mot de passe pour confirmer" autocomplete="current-password" aria-label="Mot de passe pour confirmer la suppression"><button data-privdel>🗑 Programmer la suppression dans 7 jours</button>`}</div>`;
+}
+document.addEventListener('click', ev => {
+  const b = ev.target.closest('[data-privset],[data-privdl],[data-privdel],[data-privcancel]'); if (!b || !me) return;
+  if (b.dataset.privset) { const [key, val] = b.dataset.privset.split(':'); attempt(async () => { await net.setPrivacy(me, { [key]: val }); notice = 'Confidentialité mise à jour ✔'; }); }
+  else if ('privdl' in b.dataset) attempt(async () => {
+    const data = await net.exportUser(me); data.connections = await sync.get('/api/sessions');
+    download(`cornichon-${me}-donnees.json`, JSON.stringify(data, null, 2)); notice = 'Données téléchargées ✔';
+  });
+  else if ('privdel' in b.dataset) attempt(async () => {
+    if (!confirm('Programmer la suppression de votre compte dans 7 jours ?')) return;
+    await net.requestDeletion(me, v1('#pv-pw')); notice = 'Suppression programmée ✔ : vous pouvez l’annuler jusqu’à l’échéance';
+  });
+  else if ('privcancel' in b.dataset) attempt(async () => { await net.cancelDeletion(me); notice = 'Suppression annulée ✔'; });
+});
+const v1 = s => ($(s) || {}).value;
 const qrSvg = text => { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createSvgTag(5, 3, 'QR code à scanner avec votre appli d’authentification', 'QR code TOTP'); };
 const groupCode = c => String(c).replace(/(.{4})(?=.)/g, '$1 ');
 function tfaCard() {
@@ -517,7 +555,7 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  nav.innerHTML = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : [])
+  nav.innerHTML = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : [])
     .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
   // onglets du fil : global + une entrée par liste (les siennes)
@@ -583,10 +621,10 @@ function render() {
   } else if (view.page === 'profile') {
     const name = view.arg || me, u = net.profile(name), fl = net.followers(name), self = u.name === me;
     h = `<div class="card prof"><div class="banner" style="background:${bannerCss(u.banner)}"></div><div class="pbody">${av(u.name, true)}<b class="pname">${esc(u.display || u.name)}</b> <span class="mut">@${esc(u.name)}</span>
-      <p>${esc(u.bio) || '<span class="mut">Pas de bio</span>'}</p>${u.link ? `<p><a href="${esc(u.link)}" target="_blank" rel="noopener noreferrer nofollow">🔗 ${esc(u.link.replace(/^https?:\/\//, ''))}</a></p>` : ''}
+      <p>${u.locked ? '<span class="mut">🔒 Profil privé : ce compte n’a pas ouvert son profil à tout le monde.</span>' : esc(u.bio) || '<span class="mut">Pas de bio</span>'}</p>${u.link ? `<p><a href="${esc(u.link)}" target="_blank" rel="noopener noreferrer nofollow">🔗 ${esc(u.link.replace(/^https?:\/\//, ''))}</a></p>` : ''}
       <p class="stats"><button data-sub="followers:${u.name}" class="${view.sub === 'followers' ? 'on' : ''}"><b>${I18n.num(fl.length)}</b> ${t('followers')}</button> <button data-sub="following:${u.name}" class="${view.sub === 'following' ? 'on' : ''}"><b>${I18n.num(u.following.length)}</b> ${t('following')}</button></p>` +
       `<p class="feeds"><a href="/u/${encodeURIComponent(u.name)}" target="_blank" rel="noopener">🔗 ${t('share.page')}</a> · <a href="/u/${encodeURIComponent(u.name)}/feed.xml" target="_blank" rel="noopener">📡 ${t('share.rss')}</a> · <a href="/u/${encodeURIComponent(u.name)}/atom.xml" target="_blank" rel="noopener">${t('share.atom')}</a> · <a href="/public" target="_blank" rel="noopener">${t('share.index')}</a></p>` + (self ? `<button data-page="settings">⚙️ Modifier le profil</button>` : `<button data-follow="${u.name}">${fl.includes(me) ? t('unfollow') : t('follow')}</button> <button data-chat="${u.name}">${t('message')}</button>` + (u.admin ? '' : ` <button data-mute="${u.name}" aria-pressed="${net.isMuted(me, u.name)}">${net.isMuted(me, u.name) ? '🔊 Ne plus masquer' : '🔇 Masquer'}</button> <button data-block="${u.name}" aria-pressed="${net.isBlocked(me, u.name)}">${net.isBlocked(me, u.name) ? '✅ Débloquer' : '🚫 Bloquer'}</button>`)) + (net.sanctionOf(u.name) && net.isAdmin(me) ? ` <span class="err">${sancLabel(net.sanctionOf(u.name))}</span>` : '') + `</div></div>${e}` + profileLists(u.name, self) +
-      (view.sub ? `<div class="card"><b>${view.sub === 'followers' ? 'Abonnés' : 'Abonnements'}</b> <button data-sub="">✕</button></div>` + peopleList(view.sub === 'followers' ? fl : u.following) : (net.timeline(name, me).map(t => (t.by ? `<p class="mut rt">🔁 ${esc(shown(t.by))} a repartagé</p>` : '') + postHTML(t.post)).join('') || '<p class="mut">Rien ici pour l’instant.</p>'));
+      (view.sub ? `<div class="card"><b>${view.sub === 'followers' ? 'Abonnés' : 'Abonnements'}</b> <button data-sub="">✕</button></div>` + peopleList(view.sub === 'followers' ? fl : u.following) : (net.timeline(name, me).map(t => (t.by ? `<p class="mut rt">🔁 ${esc(shown(t.by))} a repartagé</p>` : '') + postHTML(t.post)).join('') || (u.lockedPosts ? '<p class="mut">🔒 Les publications de ce compte sont privées.</p>' : '<p class="mut">Rien ici pour l’instant.</p>')));
   } else if ((view.page === 'admin' || view.page === 'mod') && net.isAdmin(me)) {
     h = adminPage(e);
   } else if (view.page === 'prefs') {
@@ -620,6 +658,8 @@ function render() {
       <div class="row"><button data-export>⬇️ Exporter en JSON</button><label class="mut">Importer un fichier <input id="imp-file" type="file" accept="application/json,.json"></label></div>
       <label for="imp-txt">Ou colle le JSON ici</label><textarea id="imp-txt" class="json" placeholder='{"format":"cornichon-export",…}'></textarea><button data-import>⬆️ Importer</button>
       <p class="ok" role="status">${esc(notice)}</p></div>`;
+  } else if (view.page === 'privacy') {
+    h = privacyPage() + e;
   } else if (view.page === 'diag') {
     const r = diag.res;
     h = `<div class="card"><h2>✅ Vérification : tout est-il fonctionnel ?</h2><button data-diag ${diag.busy ? 'disabled' : ''}>${diag.busy ? 'Vérification en cours…' : '▶ Lancer la vérification'}</button>
@@ -634,8 +674,7 @@ function render() {
       <button data-chpw>Changer le mot de passe</button> <p class="mut">Les autres appareils seront déconnectés. Après 5 connexions ratées, le pseudo est bloqué 60 s.</p></div>
       ${sessionsCard()}
       <div class="card"><b>Se déconnecter partout</b><p class="mut">Ferme toutes les sessions ouvertes, y compris celle-ci.</p><button data-logoutall>🚪 Déconnecter tous mes appareils</button></div>
-      <div class="card"><b>Supprimer mon compte</b><p class="mut">Supprime définitivement le compte, ses posts, réponses, likes et messages.</p>
-      ${net.isAdmin(me) ? '<p class="mut">Le compte Streamer ne peut pas être supprimé.</p>' : '<input id="sec-del" type="password" placeholder="Mot de passe pour confirmer"><button data-delacc>🗑 Supprimer mon compte et mes posts</button>'}</div>${e}${view.ok ? `<p class="ok">${esc(view.ok)}</p>` : ''}`;
+      <div class="card"><b>Supprimer mon compte</b><p class="mut">La suppression se programme depuis la page Confidentialité, avec un délai de grâce de 7 jours pour changer d’avis.</p><button data-page="privacy">🛡️ Aller à la page Confidentialité</button></div>${e}${view.ok ? `<p class="ok">${esc(view.ok)}</p>` : ''}`;
   } else if (view.page === 'dm') {
     const convs = net.conversations(me), others = Object.values(net.db().users).filter(u => u.name !== me && !net.isHidden(me, u.name) && !convs.some(c => c.peer === u.name));
     const prev = m => (m.from === me ? 'Vous : ' : '') + (m.text ? m.text : '📷 image');
@@ -645,7 +684,7 @@ function render() {
       ${typingHTML()}<input id="dm" placeholder="Message à ${esc(view.arg)}">${attachBox('dm')}<button data-dm>Envoyer</button></div>${e}`;
   }
   if (view.page === 'dm' && view.arg && unreadDm.peers[view.arg] && document.hasFocus()) net.markDmRead(me, view.arg).catch(() => {}); // conversation ouverte : lue
-  app.innerHTML = (mySanc ? `<div class="card err" role="alert">Mesure de modération : ${sancLabel(mySanc)} ${net.hasAppealed(me, 'sanction') ? '<span class="mut">· appel en cours d’examen</span>' : '<button data-appeal="sanction:">📨 Faire appel</button>'}</div>${view.appealing === 'sanction:' ? appealForm('sanction') : ''}` : '') + (!net.isAdmin(me) ? myAppeals() : '') + h;
+  app.innerHTML = delBanner() + (mySanc ? `<div class="card err" role="alert">Mesure de modération : ${sancLabel(mySanc)} ${net.hasAppealed(me, 'sanction') ? '<span class="mut">· appel en cours d’examen</span>' : '<button data-appeal="sanction:">📨 Faire appel</button>'}</div>${view.appealing === 'sanction:' ? appealForm('sanction') : ''}` : '') + (!net.isAdmin(me) ? myAppeals() : '') + h;
   a11yPass();
   ensureLive();
   const m = $('#more'); if (m) more.observe(m);
