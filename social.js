@@ -79,6 +79,7 @@
   async function hashPw(pw, salt) { salt = salt || randHex(16); return salt + '$' + await sha(salt + pw); }
 
     // ---- préférences de notifications (par compte) : pour chaque type, cloche / push / e-mail ; heures calmes ; résumé quotidien ----
+  const qView = (q, forOwner) => ({ id: q.id, to: q.to, from: forOwner && q.anon ? null : q.from, anon: q.anon, text: q.text, at: q.at, status: q.status, postId: q.postId });
   const NP_TYPES = ['mention', 'dm', 'reply', 'follow', 'group', 'event'], NP_CHANNELS = ['bell', 'push', 'email'];
   const NP_DEFAULT = { mention: { bell: true, push: true, email: false }, dm: { bell: false, push: true, email: false }, reply: { bell: true, push: true, email: false }, follow: { bell: true, push: true, email: false }, group: { bell: true, push: true, email: false }, event: { bell: true, push: true, email: false } };
   const hhmm = v => { const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(v || '')); return m ? m[0] : null; };
@@ -156,13 +157,14 @@ function Net(storage, now) {
         db.messages = db.messages.filter(m => m.from !== n && m.to !== n);
         for (const r of db.rooms) { r.members = r.members.filter(x => x !== n); r.msgs = r.msgs.filter(m => m.from !== n); delete r.read[lc(n)]; if (r.owner === n) r.owner = r.members[0]; }
         db.rooms = db.rooms.filter(r => r.members.length >= 2); db.msgReports = db.msgReports.filter(r => r.by !== n && r.target !== n);
-        db.drafts = db.drafts.filter(d => d.author !== n); db.media = (db.media || []).filter(m => m.owner !== n);
+        db.questions = (db.questions || []).filter(q => q.to !== n && q.from !== n); db.drafts = db.drafts.filter(d => d.author !== n); db.media = (db.media || []).filter(m => m.owner !== n);
         db.reposts = db.reposts.filter(r => r.by !== n && !gone.has(r.postId));
         db.reports = db.reports.filter(r => r.by !== n && r.target !== n); db.appeals = (db.appeals || []).filter(a => a.user !== n); db.tickets = (db.tickets || []).filter(x => x.user !== n);
         for (const x of Object.values(db.users)) { if (x.blocked) x.blocked = x.blocked.filter(f => f !== n); if (x.muted) x.muted = x.muted.filter(f => f !== n); }
         db.notifs = db.notifs.filter(x => x.from !== n && x.to !== n && !gone.has(x.postId));
         delete db.users[n.toLowerCase()]; delete db.attempts[n.toLowerCase()];
     };
+    const QA_MAX = 280, QA_PER_ASKER = 3, QA_INBOX_MAX = 200;
     const blockedBy = (author, target) => has((db.users[lc(target)] || {}).blocked, author);
     const ROOM_MAX = 8;
     // ajouter `t` à un groupe : ni l'un ni l'autre ne doit avoir bloqué l'autre ; le compte Streamer reste hors des groupes
@@ -1208,6 +1210,51 @@ function Net(storage, now) {
         else { b.push(t.name); me.following = me.following.filter(f => f !== t.name); t.following = t.following.filter(f => f !== me.name); }
         save(); return i < 0;
       },
+      // ---- questions-réponses : boîte de questions publiques, avec ou sans anonymat ----
+      // le pseudo de l'expéditeur reste dans la base (blocage, quotas, suppression de compte) mais n'est jamais envoyé au destinataire d'une question anonyme
+      setQuestionBox(by, open, anon) {
+        const me = user(by); me.qa = { open: !!open, anon: !!anon }; save(); return me.qa;
+      },
+      ask(by, to, text, anonymous) {
+        const me = user(by), t = user(to); text = String(text || '').replace(/\s+/g, ' ').trim();
+        need(me !== t, 'Impossible de vous poser une question à vous-même'); guard(by, true);
+        need(text && text.length <= QA_MAX, `Question vide ou > ${QA_MAX} caractères`);
+        need(t.qa && t.qa.open, `@${t.name} n’a pas ouvert de boîte de questions`);
+        need(!blockedBy(me.name, t.name) && !has(me.blocked, t.name), 'Impossible d’envoyer une question à ce profil'); // message identique : un blocage ne se devine pas
+        anonymous = !!anonymous; need(!anonymous || t.qa.anon, `@${t.name} n’accepte pas les questions anonymes`);
+        const qs = db.questions = db.questions || [], open = qs.filter(q => q.to === t.name && q.status === 'open');
+        need(open.filter(q => q.from === me.name).length < QA_PER_ASKER, `Vous avez déjà ${QA_PER_ASKER} questions en attente chez @${t.name}`);
+        need(open.length < QA_INBOX_MAX, `La boîte de @${t.name} est pleine pour le moment`);
+        need(!open.some(q => q.from === me.name && lc(q.text) === lc(text)), 'Cette question est déjà en attente');
+        const q = { id: id(), to: t.name, from: me.name, anon: anonymous, text, at: now(), status: 'open', postId: null };
+        qs.push(q); save(); return { id: q.id };
+      },
+      // boîte de réception du propriétaire (expéditeurs anonymes masqués) ; questions envoyées avec `sent`
+      questions(by, status) {
+        const me = user(by); return (db.questions || []).filter(q => q.to === me.name && (!status || q.status === status)).map(q => qView(q, true)).sort((a, b) => b.at - a.at);
+      },
+      sentQuestions(by) { const me = user(by); return (db.questions || []).filter(q => q.from === me.name).map(q => qView(q, false)).sort((a, b) => b.at - a.at); },
+      // réponse publique : un post lié qui cite la question (et l'auteur seulement si non anonyme)
+      answerQuestion(by, qid, text) {
+        const me = user(by), q = (db.questions || []).find(x => x.id === +qid && x.to === me.name); need(q, 'Question introuvable'); need(q.status === 'open', 'Question déjà traitée');
+        const p = makePost(me.name, text); p.question = { id: q.id, text: q.text, from: q.anon ? null : q.from };
+        q.status = 'answered'; q.postId = p.id; q.doneAt = now();
+        if (db.users[lc(q.from)]) notify(q.from, me.name, 'reply', p.id);
+        save(); return p;
+      },
+      rejectQuestion(by, qid, blockAsker) {
+        const me = user(by), q = (db.questions || []).find(x => x.id === +qid && x.to === me.name); need(q, 'Question introuvable'); need(q.status === 'open', 'Question déjà traitée');
+        q.status = 'rejected'; q.doneAt = now();
+        if (blockAsker) { // bloque l'expéditeur sans jamais révéler qui c'est, même si la question est anonyme
+          const s = db.users[lc(q.from)];
+          if (s && !s.admin && s !== me) { const b = me.blocked = me.blocked || []; if (!b.some(x => lc(x) === lc(s.name))) { b.push(s.name); me.following = me.following.filter(f => f !== s.name); s.following = s.following.filter(f => f !== me.name); } for (const o of db.questions) if (o.to === me.name && o.from === s.name && o.status === 'open') { o.status = 'rejected'; o.doneAt = now(); } }
+        }
+        save(); return true;
+      },
+      withdrawQuestion(by, qid) {
+        const me = user(by), qs = db.questions || [], i = qs.findIndex(x => x.id === +qid && x.from === me.name && x.status === 'open'); need(i >= 0, 'Question introuvable ou déjà traitée');
+        qs.splice(i, 1); save(); return true;
+      },
       // masquer : tout disparaît du fil sans prévenir la personne, qui peut toujours écrire
       toggleMute(by, target) {
         const me = user(by), t = user(target);
@@ -1596,6 +1643,7 @@ function Net(storage, now) {
       messages: db.messages.filter(m => m.from === me.name || m.to === me.name),
       notifs: db.notifs.filter(n => n.to === me.name),
       rooms: db.rooms.filter(r => r.members.includes(me.name)).map(r => ({ ...r, msgs: r.msgs.slice(-200) })),
+      questions: (db.questions || []).filter(q => q.to === me.name || q.from === me.name).map(q => ({ ...qView(q, q.to === me.name), mine: q.from === me.name })),
       msgReports: me.admin ? db.msgReports.filter(r => r.status === 'open') : db.msgReports.filter(r => r.by === me.name && r.status === 'open').map(r => ({ id: r.id, room: r.room, msgId: r.msgId, by: r.by, status: r.status })),
       peerReadAt: Object.fromEntries(Object.values(db.users).filter(u => u.name !== me.name && !(u.blocked || []).includes(me.name) && !(me.blocked || []).includes(u.name) && (u.dmReadAt || {})[lcm]).map(u => [u.name.toLowerCase(), u.dmReadAt[lcm]])),
       peerRead: Object.fromEntries(Object.values(db.users).filter(u => u.name !== me.name && !(u.blocked || []).includes(me.name) && !(me.blocked || []).includes(u.name) && (u.dmRead || {})[lcm]).map(u => [u.name.toLowerCase(), u.dmRead[lcm]])),

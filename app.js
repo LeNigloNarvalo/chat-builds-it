@@ -608,7 +608,7 @@ function postHTML(p, thread) {
   const hid = p.hidden, seeHidden = hid && (p.author === me || net.isAdmin(me));
   const modBanner = hid ? `<div class="err" role="status">🙈 Post masqué par la modération (${esc(hid.reason || '')}).${p.author === me ? (net.hasAppealed(me, 'hide', p.id) ? ' Appel en cours d’examen.' : ` <button data-appeal="hide:${p.id}">📨 Faire appel</button>`) : ''}</div>${view.appealing === 'hide:' + p.id ? appealForm('hide', p.id) : ''}` : '';
   return `<div class="card post" data-pid="${p.id}">${av(p.author)}<span class="who" data-user="${p.author}">${esc(shown(p.author))}</span>${tbadges(p.author)} <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span> ${edited}${p.group ? groupTag(p.group) : ''}${pinned ? ' <span class="badge pinb" title="Épinglé en haut du profil">📌 Épinglé</span>' : ''}
-  ${modBanner}${hid && !seeHidden ? '<p class="mut">Ce contenu a été masqué par la modération.</p>' : body + quoteCard(p) + pollH}${histHTML}${view.reporting === p.id ? reportForm(p.id) : ''}<div class="acts"><button data-like="${p.id}" class="${liked ? 'on' : ''}">♥ ${p.likes.length}</button><button data-picker="${p.id}" aria-expanded="${view.picker === p.id}" aria-label="Réagir avec un émoji">😊</button>
+  ${modBanner}${hid && !seeHidden ? '<p class="mut">Ce contenu a été masqué par la modération.</p>' : questionCard(p) + body + quoteCard(p) + pollH}${histHTML}${view.reporting === p.id ? reportForm(p.id) : ''}<div class="acts"><button data-like="${p.id}" class="${liked ? 'on' : ''}">♥ ${p.likes.length}</button><button data-picker="${p.id}" aria-expanded="${view.picker === p.id}" aria-label="Réagir avec un émoji">😊</button>
   <button data-open="${p.id}">💬 ${n}</button>${!p.replyTo && p.author !== me ? `<button data-repost="${p.id}" class="${rp ? 'on' : ''}" aria-pressed="${rp}" aria-label="${rp ? t('post.unrepost') : t('post.repost')}">🔁 ${rc}</button>` : rc ? `<span class="mut">🔁 ${rc}</span>` : ''}
   ${!p.group && me ? `<button data-quote="${p.id}" class="${view.quoting === p.id ? 'on' : ''}" aria-label="Citer le post" title="Citer">❝ ${net.quoteCount(p.id)}</button>` : ''}${p.author !== me && !net.isAdmin(p.author) ? `<button data-report="${p.id}" class="${net.hasReported(me, p.id) ? 'on' : ''}" aria-label="${net.hasReported(me, p.id) ? t('post.reported') : t('post.report')}" ${net.hasReported(me, p.id) ? 'disabled' : ''}>🚩</button>` : ''}${view.page === 'foryou' && !mine ? `<button data-why="${p.id}" class="${view.why === p.id ? 'on' : ''}" aria-expanded="${view.why === p.id}" title="Voir pourquoi ce post est proposé">❔ Pourquoi ?</button><button data-less="${p.id}" title="Voir moins de contenus comme celui-ci">👎 Moins de ça</button>` : ''}<a class="btn" href="/p/${p.id}" target="_blank" rel="noopener" aria-label="${t('share.page')}" title="${t('share.page')}">🔗</a><button data-bm="${p.id}" class="${saved ? 'on' : ''}" aria-pressed="${saved}" aria-label="${saved ? t('post.unbookmark') : t('post.bookmark')}">${saved ? '🔖' : '📑'}</button>${mine && !p.replyTo && !p.group ? `<button data-pin="${p.id}" class="${pinned ? 'on' : ''}" aria-pressed="${!!pinned}" aria-label="${pinned ? 'Désépingler du profil' : 'Épingler en haut du profil'}" title="${pinned ? 'Désépingler' : 'Épingler (3 maximum)'}">📌</button>` : ''}${mine ? `<button data-warn="${p.id}" class="${p.warn ? 'on' : ''}" aria-pressed="${!!p.warn}" aria-label="${p.warn ? 'Retirer l’avertissement de contenu' : 'Marquer comme contenu sensible'}" title="${p.warn ? 'Retirer l’avertissement' : 'Marquer comme sensible'}">⚠️</button>` : ''}${net.canEdit(me, p.id) && !editing ? `<button data-edit="${p.id}" aria-label="${t('post.edit')}">✏️</button>` : ''}${p.author === me || net.isAdmin(me) ? `<button data-del="${p.id}">🗑</button>` : ''}</div>${view.page === 'foryou' && view.why === p.id ? `<div class="card" role="status"><b>❔ Pourquoi ce post ?</b><ul>${net.whyShown(me, p.id).map(r => `<li>${esc(r)}</li>`).join('')}</ul></div>` : ''}${reactionsHTML(p)}${view.quoting === p.id ? `<div class="card quoteform"><label>Votre commentaire<textarea id="quote-txt" maxlength="280"></textarea></label>${quoteCard({ quoteOf: p.id })}<button data-sendquote="${p.id}">Citer</button> <button data-cancelquote>Annuler</button></div>` : ''}</div>`;
 }
@@ -1115,7 +1115,7 @@ function renderPage() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['fts', '⚡ Recherche rapide'], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['media', `🖼 Médias ${net.media(me).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['help', '❓ Aide'], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
+  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['fts', '⚡ Recherche rapide'], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['media', `🖼 Médias ${net.media(me).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['qa', `❓ Questions ${net.questions(me, 'open').length || ''}`], ['profile', t('nav.profile')], ['help', '❓ Aide'], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
   const MAIN = ['feed', 'explore', 'fts', 'dm', 'profile'], btn = ([k, l]) => { const [ic, ...rest] = String(l).split(' '); return `<button data-page="${k}" class="${view.page === k ? 'on' : ''}" aria-label="${esc(rest.join(' ').trim() || l)}">${ic}<span class="lt"> ${rest.join(' ')}</span></button>`; };
   const main = MAIN.map(k => items.find(x => x[0] === k)), more = items.filter(x => !MAIN.includes(x[0]));
   const moreOn = more.some(x => x[0] === view.page), badge = more.some(x => /\d/.test(x[1].replace(/^\S+\s*/, ''))) ? ' •' : '';
@@ -1152,6 +1152,7 @@ function renderPage() {
   else if (view.page === 'stats') h = statsPage(e);
   else if (view.page === 'groups') h = groupsPage(e);
   else if (view.page === 'events') h = eventsPage(e);
+  else if (view.page === 'qa') h = qaPage(e);
   else if (view.page === 'group') h = groupPage(e, paged);
   else if (view.page === 'lists') h = listsPage(e);
   else if (view.page === 'list') h = listPage(e, paged);
@@ -1212,6 +1213,7 @@ function renderPage() {
       <p>${u.locked ? '<span class="mut">🔒 Profil privé : ce compte n’a pas ouvert son profil à tout le monde.</span>' : esc(u.bio) || '<span class="mut">Pas de bio</span>'}</p>${u.link ? `<p><a href="${esc(u.link)}" target="_blank" rel="noopener noreferrer nofollow">🔗 ${esc(u.link.replace(/^https?:\/\//, ''))}</a></p>` : ''}
       <p class="stats"><button data-sub="followers:${u.name}" class="${view.sub === 'followers' ? 'on' : ''}"><b>${I18n.num(fl.length)}</b> ${t('followers')}</button> <button data-sub="following:${u.name}" class="${view.sub === 'following' ? 'on' : ''}"><b>${I18n.num(u.following.length)}</b> ${t('following')}</button></p>` +
       `<p class="feeds"><a href="/u/${encodeURIComponent(u.name)}" target="_blank" rel="noopener">🔗 ${t('share.page')}</a> · <a href="/u/${encodeURIComponent(u.name)}/feed.xml" target="_blank" rel="noopener">📡 ${t('share.rss')}</a> · <a href="/u/${encodeURIComponent(u.name)}/atom.xml" target="_blank" rel="noopener">${t('share.atom')}</a> · <a href="/public" target="_blank" rel="noopener">${t('share.index')}</a></p>` + (self ? `<button data-page="settings">⚙️ Modifier le profil</button>` : `<button data-follow="${u.name}">${fl.includes(me) ? t('unfollow') : t('follow')}</button> <button data-chat="${u.name}">${t('message')}</button>` + (u.admin ? '' : ` <button data-mute="${u.name}" aria-pressed="${net.isMuted(me, u.name)}">${net.isMuted(me, u.name) ? '🔊 Ne plus masquer' : '🔇 Masquer'}</button> <button data-block="${u.name}" aria-pressed="${net.isBlocked(me, u.name)}">${net.isBlocked(me, u.name) ? '✅ Débloquer' : '🚫 Bloquer'}</button>`)) + (net.sanctionOf(u.name) && net.isAdmin(me) ? ` <span class="err">${sancLabel(net.sanctionOf(u.name))}</span>` : '') + `</div></div>${e}` + profileLists(u.name, self) +
+      askCard(u) +
       trustCard(u.name) +
       (view.sub ? `<div class="card"><b>${view.sub === 'followers' ? 'Abonnés' : 'Abonnements'}</b> <button data-sub="">✕</button></div>` + peopleList(view.sub === 'followers' ? fl : u.following) : (pinnedTop(name) + net.timeline(name, me).filter(t => t.by || !pinIds(name).has(t.post.id)).map(t => (t.by ? `<p class="mut rt">🔁 ${esc(shown(t.by))} a repartagé</p>` : '') + postHTML(t.post)).join('') || (u.lockedPosts ? '<p class="mut">🔒 Les publications de ce compte sont privées.</p>' : '<p class="mut">Rien ici pour l’instant.</p>')));
   } else if (view.page === 'modcenter') {
@@ -1423,6 +1425,54 @@ function eventsPage(e) {
   if (tab === 'new') return head + form;
   return head + (shownList.map(eventCard).join('') || `<p class="mut">${tab === 'agenda' ? 'Ton agenda est vide : réponds « Je viens » à un événement ou crée le tien.' : 'Aucun événement à venir : crée le premier !'}</p>`);
 }
+// ---- questions-réponses : boîte de questions (anonymes ou non) ouverte depuis le profil ----
+const QA_STATUS = { open: 'À traiter', answered: 'Répondues', rejected: 'Rejetées' };
+// la question à laquelle un post répond (le pseudo n'apparaît que si l'auteur n'était pas anonyme)
+function questionCard(p) {
+  if (!p.question) return '';
+  const q = p.question;
+  return `<div class="qcard qa-q" role="group" aria-label="Question posée"><span class="mut">❓ ${q.from ? `Question de <span class="who" data-user="${esc(q.from)}">@${esc(q.from)}</span>` : '🕶 Question anonyme'}</span><p>${rich(q.text)}</p></div>`;
+}
+// formulaire d'envoi, affiché sur le profil d'un membre qui a ouvert sa boîte
+function askCard(u) {
+  const box = u.qa;
+  if (u.name === me) return `<div class="card"><b>❓ Ma boîte de questions</b> <span class="mut">${box && box.open ? 'ouverte' : 'fermée'}</span> <button data-qa="page">Gérer mes questions</button></div>`;
+  if (!box || !box.open) return '';
+  return `<div class="card" id="qa-ask"><b>❓ Poser une question à @${esc(u.name)}</b>${qaSent === u.name ? ' <span class="ok" role="status">Question envoyée ✔</span>' : ''}
+    <textarea id="qa-text" maxlength="280" rows="2" placeholder="Votre question…" aria-label="Votre question"></textarea>
+    <div class="row">${box.anon ? '<label class="inl"><input id="qa-anon" type="checkbox" checked> 🕶 Rester anonyme</label>' : '<span class="mut">Questions anonymes désactivées : votre pseudo sera visible.</span>'}
+    <button data-qa="ask:${esc(u.name)}">Envoyer</button></div>
+    <p class="mut">${u.name} choisit s’il y répond en public ou non. Même anonyme, vous restez soumis au blocage et à la limitation de débit.</p></div>`;
+}
+function qaPage(e) {
+  const box = net.profile(me).qa || { open: false, anon: true }, tab = QA_STATUS[view.tab] ? view.tab : 'open';
+  const all = net.questions(me), inbox = all.filter(q => q.status === tab), sent = net.sentQuestions(me);
+  const who = q => q.from ? `<span class="who" data-user="${esc(q.from)}">@${esc(q.from)}</span>` : '🕶 Anonyme';
+  const item = q => `<div class="card qa-item" data-qid="${q.id}"><span class="mut">${who(q)} · ${ago(q.at)}</span><p>${rich(q.text)}</p>${q.status === 'open'
+    ? `<textarea id="qa-ans-${q.id}" maxlength="280" rows="2" placeholder="Votre réponse publique…" aria-label="Réponse publique"></textarea><div class="row"><button class="on" data-qa="answer:${q.id}">📣 Répondre en public</button><button data-qa="reject:${q.id}">🗑 Rejeter</button><button data-qa="block:${q.id}" title="Rejette et bloque l’expéditeur sans jamais révéler son identité">🚫 Rejeter et bloquer</button></div>`
+    : q.postId ? `<button class="lnk" data-open="${q.postId}">Voir ma réponse</button>` : '<span class="mut">Rejetée</span>'}</div>`;
+  return `<div class="card"><h2>❓ Questions-réponses</h2>
+    <p class="mut">Ouvrez une boîte de questions sur votre profil : chacun peut vous écrire, avec ou sans anonymat. Vous triez, répondez en public (un post lié à la question) ou rejetez.</p>
+    <label class="inl"><input id="qa-open" type="checkbox" ${box.open ? 'checked' : ''}> Ma boîte de questions est ouverte</label>
+    <label class="inl"><input id="qa-allow-anon" type="checkbox" ${box.anon ? 'checked' : ''}> Autoriser les questions anonymes</label>
+    <button data-qa="box">Enregistrer</button></div>${e}
+    <div class="card tabs" role="tablist" aria-label="Boîte de réception">${Object.entries(QA_STATUS).map(([k, l]) => `<button role="tab" aria-selected="${tab === k}" class="${tab === k ? 'on' : ''}" data-qa="tab:${k}">${l} ${all.filter(q => q.status === k).length}</button>`).join('')}</div>
+    ${inbox.map(item).join('') || `<p class="mut">Aucune question ${tab === 'open' ? 'en attente' : tab === 'answered' ? 'répondue' : 'rejetée'}.</p>`}
+    <div class="card"><b>📤 Mes questions envoyées</b>${sent.map(q => `<p>à <span class="who" data-user="${esc(q.to)}">@${esc(q.to)}</span> ${q.anon ? '🕶' : ''} · <span class="mut">${QA_STATUS[q.status].toLowerCase()} · ${ago(q.at)}</span><br>${esc(q.text)} ${q.postId ? `<button class="lnk" data-open="${q.postId}">Voir la réponse</button>` : ''}${q.status === 'open' ? ` <button class="lnk" data-qa="withdraw:${q.id}">retirer</button>` : ''}</p>`).join('') || '<p class="mut">Vous n’avez posé aucune question.</p>'}</div>`;
+}
+document.addEventListener('click', ev => {
+  const d = ev.target.closest('[data-qa]'); if (!d || !me) return;
+  const [act, a] = d.dataset.qa.split(':'), v = id => ($(id) || {}).value, chk = id => !!($(id) || {}).checked;
+  if (act === 'page') go('qa');
+  else if (act === 'tab') { view.tab = a; err = ''; render(); }
+  else if (act === 'box') attempt(() => net.setQuestionBox(me, chk('#qa-open'), chk('#qa-allow-anon')));
+  else if (act === 'ask') attempt(async () => { await net.ask(me, a, v('#qa-text'), chk('#qa-anon')); $('#qa-text').value = ''; qaSent = a; setTimeout(() => { qaSent = ''; render(); }, 4000); });
+  else if (act === 'answer') attempt(() => net.answerQuestion(me, +a, v('#qa-ans-' + a)));
+  else if (act === 'reject') attempt(() => net.rejectQuestion(me, +a, false));
+  else if (act === 'block') { if (confirm('Rejeter et bloquer cet expéditeur ? Son identité ne vous sera pas révélée.')) attempt(() => net.rejectQuestion(me, +a, true)); }
+  else if (act === 'withdraw') attempt(() => net.withdrawQuestion(me, +a));
+});
+let qaSent = '';
 document.addEventListener('click', ev => {
   const d = ev.target.closest('[data-ev]'); if (!d || !me) return;
   const [act, a, b] = d.dataset.ev.split(':'), v = id => ($(id) || {}).value;

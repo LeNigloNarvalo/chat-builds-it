@@ -12,6 +12,7 @@ const RULES = {
   login: { label: 'Connexion', ip: [20, 10 * MIN], acct: [10, 10 * MIN] },
   post: { label: 'Posts', ip: [60, 10 * MIN], acct: [20, 10 * MIN] },
   message: { label: 'Messages', ip: [90, 10 * MIN], acct: [30, 10 * MIN] },
+  ask: { label: 'Questions', ip: [30, 10 * MIN], acct: [10, 10 * MIN] },
   captcha: { label: 'Défi anti-robot', ip: [30, 10 * MIN] },
 };
 const SOFT = 0.6; // au-delà de 60 % du plafond, chaque action est ralentie
