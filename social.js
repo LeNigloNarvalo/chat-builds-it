@@ -473,7 +473,7 @@
       // { total, peers: { pseudo: n } } : messages reçus après le curseur de lecture, hors comptes bloqués/masqués
       unreadDm(by) {
         const me = user(by), r = me.dmRead || {}, peers = {}; let total = 0;
-        for (const m of db.messages) if (m.to === me.name && m.id > (r[lc(m.from)] || 0) && !hiddenFor(by, m.from)) { peers[m.from] = (peers[m.from] || 0) + 1; total++; }
+        for (const m of db.messages) if (m.to === me.name && m.id > (r[lc(m.from)] || 0) && m.id > (((me.dmCleared || {})[lc(m.from)]) || 0) && !hiddenFor(by, m.from)) { peers[m.from] = (peers[m.from] || 0) + 1; total++; }
         return { total, peers };
       },
       // pagination par curseur (id décroissant) : scope « feed » (abonnements) ou « explore » ; `after` compte les posts plus récents
@@ -486,8 +486,33 @@
       },
       conversation(a, b) {
         if (hiddenFor(a, b)) return [];
+        const cut = ((user(a).dmCleared || {})[lc(b)]) || 0;
         a = a.toLowerCase(); b = b.toLowerCase();
-        return db.messages.filter(m => [m.from.toLowerCase(), m.to.toLowerCase()].sort().join() === [a, b].sort().join());
+        return db.messages.filter(m => m.id > cut && [m.from.toLowerCase(), m.to.toLowerCase()].sort().join() === [a, b].sort().join());
+      },
+      // liste des discussions 1-à-1 de `by` (la plus récente d'abord) : { peer, last, unread }
+      conversations(by) {
+        const me = user(by), un = api.unreadDm(by).peers, out = new Map();
+        for (const m of db.messages) {
+          if (m.from !== me.name && m.to !== me.name) continue;
+          const peer = m.from === me.name ? m.to : m.from;
+          if (!db.users[lc(peer)] || hiddenFor(by, peer)) continue;
+          if (m.id <= (((me.dmCleared || {})[lc(peer)]) || 0)) continue;
+          out.set(peer, { peer, last: m, unread: un[peer] || 0 });
+        }
+        return [...out.values()].sort((x, y) => y.last.id - x.last.id);
+      },
+      // supprime l'échange pour `by` seulement (l'autre membre le garde) ; purge réelle quand les deux l'ont supprimé
+      deleteConversation(by, peer) {
+        const me = user(by), t = user(peer), k = lc(t.name);
+        const ids = db.messages.filter(m => (m.from === me.name && m.to === t.name) || (m.from === t.name && m.to === me.name)).map(m => m.id);
+        need(ids.length, 'Aucun échange à supprimer');
+        const last = Math.max(...ids);
+        (me.dmCleared = me.dmCleared || {})[k] = last;
+        (me.dmRead = me.dmRead || {})[k] = Math.max((me.dmRead || {})[k] || 0, last);
+        const cut = ((t.dmCleared || {})[lc(me.name)]) || 0;
+        db.messages = db.messages.filter(m => !(ids.includes(m.id) && m.id <= last && m.id <= cut));
+        save();
       },
       // ---- blocage / masquage (listes personnelles stockées sur le compte) ----
       // bloquer : masque tout + coupe les abonnements dans les deux sens + interdit réponses, DM et abonnement
@@ -725,9 +750,9 @@
     if (!me) throw new Error('Utilisateur introuvable');
     const lcm = me.name.toLowerCase(), users = Object.create(null);
     for (const [k, u] of Object.entries(db.users)) {
-      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, email, emailPending, lists, dismissed, ...pub } = u;
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, ...pub } = u;
       if (lists) pub.lists = k === lcm ? lists : lists.filter(l => l.public);
-      if (k === lcm) Object.assign(pub, { dismissed, blocked, muted, bookmarks, sanction, sanctions, dmRead, email, emailPending });
+      if (k === lcm) Object.assign(pub, { dismissed, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
       else if (me.admin) Object.assign(pub, { sanction });
       users[k] = JSON.parse(JSON.stringify(pub));
     }

@@ -146,10 +146,22 @@ const showOffline = () => { const o = document.getElementById('offline'); if (o)
 window.addEventListener('online', () => { showOffline(); sync.poll().then(feedFresh); }); window.addEventListener('offline', showOffline); showOffline();
 const clearOffline = () => { if ('serviceWorker' in navigator && navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage('clear-data'); };
 // à chaque changement de données : affiche les nouvelles mentions / réponses / abonnés selon les réglages
+// nouveaux messages privés reçus (via le flux temps réel) : notification système si l'appli est en arrière-plan
+let dmSeen = null;
+function dmNotify() {
+  const ids = net.db().messages.filter(m => m.to === me).map(m => m.id), top = ids.reduce((a, b) => Math.max(a, b), 0);
+  if (dmSeen === null) { dmSeen = top; return; }
+  const fresh = net.db().messages.filter(m => m.to === me && m.id > dmSeen && !net.isHidden(me, m.from)); dmSeen = Math.max(dmSeen, top);
+  if (!fresh.length || typeof Notification === 'undefined' || Notification.permission !== 'granted' || !Notif.load(store).enabled) return;
+  if (!document.hidden && view.page === 'dm' && fresh.every(m => m.from === view.arg)) return;
+  const m = fresh[fresh.length - 1];
+  try { new Notification('✉️ ' + shown(m.from), { body: (m.text || '📷 image').slice(0, 100), icon: 'icon.svg', tag: 'dm-' + m.from }); } catch (e) {}
+}
 function notifyNew() {
   if (!me || !Notif.supported()) return;
   const list = net.notifications(me), r = Notif.pick(list, Notif.load(store), Notif.seenGet(store, me));
   Notif.seenSet(store, me, r.seen);
+  dmNotify();
   if (Notification.permission !== 'granted') return;
   if (!document.hidden && view.page === 'notifs') return;
   for (const n of r.show.slice(-5)) Notif.show(n, shown(n.from));
@@ -499,9 +511,11 @@ function render() {
       <div class="card"><b>Supprimer mon compte</b><p class="mut">Supprime définitivement le compte, ses posts, réponses, likes et messages.</p>
       ${net.isAdmin(me) ? '<p class="mut">Le compte Streamer ne peut pas être supprimé.</p>' : '<input id="sec-del" type="password" placeholder="Mot de passe pour confirmer"><button data-delacc>🗑 Supprimer mon compte et mes posts</button>'}</div>${e}${view.ok ? `<p class="ok">${esc(view.ok)}</p>` : ''}`;
   } else if (view.page === 'dm') {
-    const peers = Object.values(net.db().users).filter(u => u.name !== me && !net.isHidden(me, u.name));
-    h = `<div class="card">${peers.map(u => `<button data-chat="${u.name}" class="${view.arg === u.name ? 'on' : ''}">${esc(u.name)}${unreadDm.peers[u.name] ? ` <b class="badge" aria-label="${unreadDm.peers[u.name]} non lu(s)">${unreadDm.peers[u.name]}</b>` : ''}${typingNow().includes(u.name) ? ' ✍️' : ''}</button>`).join(' ') || '<span class="mut">Personne d’autre pour l’instant.</span>'}</div>`;
-    if (view.arg) h += `<div class="card" style="display:grid;gap:6px">${net.conversation(me, view.arg).map(m => `<div class="msg ${m.from === me ? 'me' : ''}">${m.text ? esc(m.text) : ''}${gallery(m.images, 'm', m.id)}</div>`).join('') || '<span class="mut">Dites bonjour 👋</span>'}
+    const convs = net.conversations(me), others = Object.values(net.db().users).filter(u => u.name !== me && !net.isHidden(me, u.name) && !convs.some(c => c.peer === u.name));
+    const prev = m => (m.from === me ? 'Vous : ' : '') + (m.text ? m.text : '📷 image');
+    h = `<div class="card"><h2>✉️ Mes conversations ${unreadDm.total ? `<b class="badge">${unreadDm.total}</b>` : ''}</h2><ul class="convs" style="list-style:none;padding:0;margin:0;display:grid;gap:6px">${convs.map(c => `<li><button data-chat="${esc(c.peer)}" class="${view.arg === c.peer ? 'on' : ''}" style="width:100%;text-align:left"><b>${esc(shown(c.peer))}</b>${c.unread ? ` <b class="badge" aria-label="${c.unread} non lu(s)">${c.unread}</b>` : ''}${typingNow().includes(c.peer) ? ' ✍️' : ''} <span class="mut">· ${ago(c.last.at)}</span><br><span class="${c.unread ? '' : 'mut'}">${esc(prev(c.last).slice(0, 80))}</span></button></li>`).join('') || '<li class="mut">Aucune conversation : choisis quelqu’un ci-dessous.</li>'}</ul></div>
+      <div class="card"><b>Nouvelle discussion</b><br>${others.map(u => `<button data-chat="${esc(u.name)}" class="${view.arg === u.name ? 'on' : ''}">${esc(u.name)}</button>`).join(' ') || '<span class="mut">Personne d’autre pour l’instant.</span>'}</div>`;
+    if (view.arg) h += `<div class="card" style="display:grid;gap:6px"><div class="row"><b>💬 ${esc(shown(view.arg))}</b> ${view.askDelDm ? `<span class="err">Supprimer cet échange de ton côté ?</span> <button data-dmdelyes>Oui, supprimer</button> <button data-dmdelno>Annuler</button>` : net.conversation(me, view.arg).length ? `<button data-dmdel>🗑 Supprimer l’échange</button>` : ''}</div>${net.conversation(me, view.arg).map(m => `<div class="msg ${m.from === me ? 'me' : ''}">${m.text ? esc(m.text) : ''}${gallery(m.images, 'm', m.id)}</div>`).join('') || '<span class="mut">Dites bonjour 👋</span>'}
       ${typingHTML()}<input id="dm" placeholder="Message à ${esc(view.arg)}">${attachBox('dm')}<button data-dm>Envoyer</button></div>${e}`;
   }
   if (view.page === 'dm' && view.arg && unreadDm.peers[view.arg] && document.hasFocus()) net.markDmRead(me, view.arg).catch(() => {}); // conversation ouverte : lue
@@ -915,6 +929,9 @@ document.addEventListener('click', ev => {
   else if ('sdismiss' in D) attempt(() => net.dismissSuggestion(me, D.sdismiss));
   else if ('follow' in D) attempt(() => net.toggleFollow(me, D.follow));
   else if ('chat' in D) go('dm', D.chat);
+  else if ('dmdel' in D) { view.askDelDm = true; render(); }
+  else if ('dmdelno' in D) { view.askDelDm = false; render(); }
+  else if ('dmdelyes' in D) attempt(async () => { await net.deleteConversation(me, view.arg); view.askDelDm = false; });
   else if ('dm' in D) attempt(async () => { await net.send(me, view.arg, v('#dm'), pend.dm); pend.dm = []; });
   else if ('search' in D) go('search', D.search);
   else if ('dosearch' in D) go('search', v('#q'));

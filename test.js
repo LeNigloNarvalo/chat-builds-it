@@ -308,3 +308,20 @@ console.log('ok');
   await n.deleteAccount('own', 'pass1'); assert.strictEqual(n.groups().length, 0); assert.strictEqual(n.db().posts.length, 0);
   console.log('ok communautés');
 })().catch(e => { console.error(e); process.exit(1); });
+
+// messages privés : liste des conversations, suppression d'un échange (côté de chacun)
+(async () => {
+  const st = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
+  const q = Net(st);
+  await q.signup('mia', 'passmia1'); await q.signup('noe', 'passnoe1'); await q.signup('oli', 'passoli1');
+  await q.send('mia', 'noe', 'salut'); await q.send('oli', 'noe', 'hey'); await q.send('noe', 'mia', 'coucou');
+  assert.deepStrictEqual(q.conversations('noe').map(c => [c.peer, c.unread]), [['mia', 1], ['oli', 1]]);
+  q.deleteConversation('noe', 'mia');
+  assert.strictEqual(q.conversation('noe', 'mia').length, 0); assert.strictEqual(q.conversation('mia', 'noe').length, 2);
+  assert.deepStrictEqual(q.conversations('noe').map(c => c.peer), ['oli']); assert.strictEqual(q.unreadDm('noe').total, 1);
+  await q.send('mia', 'noe', 'encore'); assert.strictEqual(q.conversation('noe', 'mia').length, 1);
+  q.deleteConversation('mia', 'noe'); q.deleteConversation('noe', 'mia');
+  assert.ok(q.db().messages.every(m => m.from === 'oli'));
+  assert.throws(() => q.deleteConversation('mia', 'noe'));
+  console.log('ok messages privés : conversations et suppression');
+})();
