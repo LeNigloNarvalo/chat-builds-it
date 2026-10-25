@@ -360,7 +360,7 @@ function adminPage(e) {
         ${u.admin ? '' : adm.del === u.name ? `<div class="row" role="alert"><b>Supprimer définitivement @${esc(u.name)} et tout son contenu ?</b><button data-adel="${esc(u.name)}">Oui, supprimer</button><button data-adelno>Annuler</button></div>`
         : `<div class="row"><button data-asanc="${esc(u.name)}:suspend">⏸ Suspendre</button><button data-asanc="${esc(u.name)}:warn">⚠️ Avertir</button><button data-asanc="${esc(u.name)}:ban">⛔ Bannir</button>${u.sanction ? `<button data-lift="${esc(u.name)}">🔓 Lever</button>` : ''}<button data-adelask="${esc(u.name)}">🗑 Supprimer</button></div>`}</div>`).join('') || '<p class="mut">Aucun utilisateur ne correspond.</p>');
   }
-  const tile = (n, l) => `<div class="card tile"><b>${I.num(n || 0)}</b><span class="mut">${l}</span></div>`;
+  const tile = (n, l) => `<div class="card tile"><b>${I18n.num(n || 0)}</b><span class="mut">${l}</span></div>`;
   return head + `<div class="tiles">${tile(S.users, 'utilisateurs')}${tile(S.newUsers7, 'nouveaux (7 j)')}${tile(S.posts, 'posts')}${tile(S.posts24, 'posts / 24 h')}${tile(S.replies, 'réponses')}${tile(S.likes, 'likes')}${tile(S.messages, 'messages privés')}${tile(S.groups, 'communautés')}${tile(S.openReports, 'signalements ouverts')}${tile(S.closedReports, 'signalements traités')}${tile(S.suspended, 'comptes suspendus')}${tile(S.banned, 'comptes bannis')}</div>`;
 }
 let curDraft = null, draftMsg = '';
