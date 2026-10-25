@@ -134,3 +134,10 @@ console.log('replay OK');
   L.step(q, 0.001, none);
   assert.strictEqual(q.lives, 3, '3 bombes mangées = +1 vie'); assert(q.pacEaten === 3);
 }
+// mode disco : chaque beat rapporte des points, bonus si tir sur le beat
+const D = require('./disco.js');
+{ const d = D.newDisco(), st = L.newState(); d.on = true;
+  assert.strictEqual(D.step(d, st, D.BEAT * 2.1, false), 2); assert.strictEqual(st.score, 20);
+  D.step(d, st, 0.01, true); D.step(d, st, D.BEAT, true); assert(st.score >= 20 + 25, 'bonus sur le beat');
+  const off = D.newDisco(); assert.strictEqual(D.step(off, st, 5, false), 0); }
+console.log('disco ok');
