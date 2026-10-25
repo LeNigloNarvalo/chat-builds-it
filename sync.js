@@ -44,6 +44,12 @@
     net.login = async (name, password) => open(await req('/api/login', 'POST', { name, password }));
     net.ensureStreamer = async () => open(await req('/api/stream-session', 'POST', {}));
     net.changePassword = async (by, oldPw, newPw) => { await open(await req('/api/password', 'POST', { oldPw, newPw })); };
+    net.setEmail = async (by, email) => { const j = await req('/api/email', 'POST', { email }); await pull(true); return j; };
+    net.removeEmail = async () => { await req('/api/email-remove', 'POST', {}); await pull(true); };
+    // récupération (sans session) : ne touche pas à la session de cet appareil
+    net.forgot = async id => { await req('/api/forgot', 'POST', { id }); };
+    net.reset = (token, password) => req('/api/reset', 'POST', { token, password });
+    net.verifyEmail = async token => { const j = await req('/api/verify-email', 'POST', { token }); if (session()) await pull(true).catch(() => {}); return j; };
     net.logoutAll = async () => { await req('/api/logout-all', 'POST', {}); forget(); };
     net.deleteAccount = async (by, password) => { await req('/api/delete-account', 'POST', { password }); forget(); };
     // flux temps réel (SSE lu avec fetch pour garder l'en-tête Authorization) ; reconnexion automatique, interrogation en secours

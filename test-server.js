@@ -2,7 +2,7 @@
 const assert = require('assert'), os = require('os'), path = require('path'), fs = require('fs');
 const { createServer } = require('./server.js'), Social = require('./social.js');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cornichon-')), dbFile = path.join(dir, 't.db');
-const server = createServer({ db: dbFile, authPerMin: 1000 });
+const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicUrl: 'http://x.test', mail: (to, subject, text) => outbox.push({ to, subject, text }) });
 (async () => {
   await new Promise(ok => server.listen(0, '127.0.0.1', ok));
   const base = 'http://127.0.0.1:' + server.address().port;
@@ -78,6 +78,29 @@ const server = createServer({ db: dbFile, authPerMin: 1000 });
   assert.strictEqual((await view()).total, 1); assert.strictEqual((await view()).peers.alice, 1);
   await act(b.token, 'markDmRead', 'alice'); assert.strictEqual((await view()).total, 0);
   ac.abort();
+  // e-mail vérifié + mot de passe oublié par lien à usage unique
+  const tok = m => /\?(?:reset|verify)=([0-9a-f]{64})/.exec(m.text)[1];
+  assert.strictEqual((await call('/api/email', np2.token, { email: 'pas-un-mail' })).status, 400);
+  const em = await call('/api/email', np2.token, { email: 'Alice@Example.org' }); assert.strictEqual(em.verified, false); assert.strictEqual(outbox.length, 1);
+  await call('/api/forgot', null, { id: 'alice' }); assert.strictEqual(outbox.length, 1, 'e-mail non vérifié : aucune récupération');
+  assert.strictEqual((await call('/api/verify-email', null, { token: 'a'.repeat(64) })).status, 400);
+  const vt = tok(outbox[0]), ver = await call('/api/verify-email', null, { token: vt }); assert.strictEqual(ver.ok, true);
+  assert.strictEqual((await call('/api/verify-email', null, { token: vt })).status, 400, 'lien de confirmation à usage unique');
+  const sa = (await call('/api/state?v=-1', np2.token)).state; assert.strictEqual(sa.users.alice.email, 'alice@example.org');
+  assert.ok(!JSON.stringify((await call('/api/state?v=-1', b.token)).state).includes('example.org'), 'e-mail privé');
+  assert.strictEqual((await call('/api/email', b.token, { email: 'alice@example.org' })).status, 400, 'adresse déjà prise');
+  const f1 = (await call('/api/forgot', null, { id: 'alice@example.org' })).ok, f2 = (await call('/api/forgot', null, { id: 'inconnu' })).ok;
+  assert.ok(f1 && f2 && outbox.length === 2 && outbox[1].to === 'alice@example.org');
+  await call('/api/forgot', null, { id: 'alice' }); const rt = tok(outbox[2]);
+  assert.strictEqual((await call('/api/reset', null, { token: tok(outbox[1]), password: 'xxxxxx' })).status, 400, 'ancien lien invalidé');
+  assert.strictEqual((await call('/api/reset', null, { token: rt, password: 'abc' })).status, 400);
+  const dev = await call('/api/login', null, { name: 'alice', password: 'nouveau1' });
+  const rr = await call('/api/reset', null, { token: rt, password: 'reinit99' }); assert.strictEqual(rr.ok, true);
+  assert.strictEqual((await call('/api/reset', null, { token: rt, password: 'autre123' })).status, 400, 'lien de réinitialisation à usage unique');
+  assert.strictEqual((await call('/api/state?v=-1', dev.token)).status, 401); assert.strictEqual((await call('/api/state?v=-1', np2.token)).status, 401);
+  assert.strictEqual((await call('/api/login', null, { name: 'alice', password: 'nouveau1' })).status, 400);
+  const np3 = await call('/api/login', null, { name: 'alice', password: 'reinit99' }); assert.ok(np3.token);
+  np2.token = np3.token;
   // persistance : redémarrage sur le même fichier
   const raw = fs.readFileSync(dbFile); assert.ok(!raw.includes('secret2') && !raw.includes('nouveau1'));
   await new Promise(ok => server.close(ok));

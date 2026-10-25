@@ -105,6 +105,38 @@
         u.pass = pass; u.epoch = (u.epoch || 0) + 1; // les autres appareils sont déconnectés
         save(); return u.epoch;
       },
+      // ---- e-mail vérifié : « emailPending » attend la confirmation par lien, « email » est vérifié (unique, jamais public) ----
+      emailOk: e => /^[^\s@]{1,64}@[^\s@.]+(\.[^\s@.]+)+$/.test(e) && e.length <= 120,
+      setEmail(name, email) {
+        email = String(email || '').trim().toLowerCase();
+        need(api.emailOk(email), 'Adresse e-mail invalide');
+        load(); const u = user(name);
+        need(!Object.values(db.users).some(x => x !== u && x.email === email), 'Cette adresse est déjà utilisée');
+        if (u.email === email) { delete u.emailPending; save(); return { email, verified: true }; }
+        u.emailPending = email; save(); return { email, verified: false };
+      },
+      removeEmail(name) { load(); const u = user(name); delete u.email; delete u.emailPending; save(); },
+      // confirmation : n'aboutit que si l'adresse en attente est toujours celle du lien
+      confirmEmail(name, email) {
+        load(); const u = user(name);
+        need(u.emailPending && u.emailPending === email, 'Lien périmé : demandez une nouvelle confirmation');
+        need(!Object.values(db.users).some(x => x !== u && x.email === email), 'Cette adresse est déjà utilisée');
+        u.email = email; delete u.emailPending; save(); return u.name;
+      },
+      // seuls les e-mails VÉRIFIÉS permettent la récupération ; accepte un pseudo ou une adresse
+      findRecoverable(id) {
+        id = String(id || '').trim().toLowerCase(); load();
+        const u = db.users[id] || Object.values(db.users).find(x => x.email === id);
+        return u && u.email && !u.admin ? { name: u.name, email: u.email } : null;
+      },
+      // réinitialisation par lien : nouveau mot de passe, sessions révoquées (époque), verrou d'essais levé
+      async resetPassword(name, newPw) {
+        need((newPw || '').length >= 4, 'Nouveau mot de passe trop court (4 min)');
+        const pass = await hashPw(newPw);
+        load(); const u = user(name);
+        u.pass = pass; u.epoch = (u.epoch || 0) + 1; delete db.attempts[u.name.toLowerCase()];
+        save(); return u.epoch;
+      },
       logoutAll(name) { const u = user(name); u.epoch = (u.epoch || 0) + 1; save(); return u.epoch; },
       // suppression du compte avec ses posts, réponses, likes, abonnements, messages et notifications
       async deleteAccount(name, password) {
@@ -418,8 +450,8 @@
     if (!me) throw new Error('Utilisateur introuvable');
     const lcm = me.name.toLowerCase(), users = Object.create(null);
     for (const [k, u] of Object.entries(db.users)) {
-      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, ...pub } = u;
-      if (k === lcm) Object.assign(pub, { blocked, muted, bookmarks, sanction, sanctions, dmRead });
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, email, emailPending, ...pub } = u;
+      if (k === lcm) Object.assign(pub, { blocked, muted, bookmarks, sanction, sanctions, dmRead, email, emailPending });
       else if (me.admin) Object.assign(pub, { sanction });
       users[k] = JSON.parse(JSON.stringify(pub));
     }

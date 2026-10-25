@@ -19,6 +19,7 @@ function createServer(opts = {}) {
   const db = new DatabaseSync(dbFile);
   db.exec(`PRAGMA journal_mode=WAL;
     CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS tokens (hash TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL, expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, name TEXT NOT NULL, epoch INTEGER NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL);`);
   const getRow = db.prepare('SELECT v, version FROM kv WHERE k = ?'), putRow = db.prepare(`INSERT INTO kv (k, v, version) VALUES (?, ?, 1)
     ON CONFLICT(k) DO UPDATE SET v = excluded.v, version = version + 1`);
@@ -52,6 +53,30 @@ function createServer(opts = {}) {
     return { name: net.profile(s.name).name, hash: s.hash };
   }
 
+  // ---- liens à usage unique (confirmation d'e-mail, mot de passe oublié) : seul le hachage du jeton est stocké ----
+  const TOKEN_MS = { verify: 24 * 3600000, reset: 30 * 60000 };
+  const insT = db.prepare('INSERT INTO tokens (hash, kind, name, email, expires) VALUES (?, ?, ?, ?, ?)'), getT = db.prepare('SELECT * FROM tokens WHERE hash = ?'),
+    delT = db.prepare('DELETE FROM tokens WHERE hash = ?'), delTUser = db.prepare('DELETE FROM tokens WHERE name = ? AND kind = ?'), purgeT = db.prepare('DELETE FROM tokens WHERE expires < ?');
+  const makeToken = (kind, name, email) => {
+    const token = crypto.randomBytes(32).toString('hex'), now = Date.now();
+    purgeT.run(now); delTUser.run(name, kind); insT.run(sha(token), kind, name, email, now + TOKEN_MS[kind]); // un seul lien valide à la fois
+    return token;
+  };
+  // consommation atomique : le jeton est supprimé AVANT usage, donc jamais utilisable deux fois
+  const takeToken = (kind, token) => {
+    const m = /^[0-9a-f]{64}$/.exec(String(token || '')); const t = m && getT.get(sha(m[0]));
+    if (!t || t.kind !== kind) throw new Http(400, 'Lien invalide ou déjà utilisé');
+    delT.run(t.hash); if (t.expires < Date.now()) throw new Http(400, 'Lien expiré : demandez-en un nouveau');
+    return t;
+  };
+  // « envoi » : sans SMTP, chaque e-mail est écrit dans data/outbox.log et sur la console du serveur (opts.mail pour brancher un vrai envoi)
+  const mail = opts.mail || ((to, subject, text) => {
+    const entry = `--- ${new Date().toISOString()} · à : ${to} · ${subject}\n${text}\n`;
+    console.log('✉️  ' + entry);
+    if (dbFile !== ':memory:') try { fs.appendFileSync(path.join(path.dirname(dbFile), 'outbox.log'), entry, { mode: 0o600 }); } catch (e) {}
+  });
+  const origin = () => process.env.PUBLIC_URL || opts.publicUrl || 'http://localhost:' + (server.address() ? server.address().port : 8080);
+
   // ---- limite de débit par IP sur les routes d'authentification ----
   const hits = new Map();
   const limited = req => {
@@ -76,13 +101,31 @@ function createServer(opts = {}) {
   async function api(req, res, url) {
     const route = req.method + ' ' + url.pathname;
     if (route === 'GET /api/health') return send(res, 200, { ok: true });
-    if (/^POST \/api\/(signup|login|stream-session)$/.test(route) && limited(req)) throw new Http(429, 'Trop de requêtes : réessayez dans une minute');
+    if (/^POST \/api\/(signup|login|stream-session|forgot|reset|verify-email)$/.test(route) && limited(req)) throw new Http(429, 'Trop de requêtes : réessayez dans une minute');
     if (route === 'POST /api/signup') { const b = await body(req); const name = await net.signup(b.name, b.password, b.bio); return send(res, 200, openSession(name)); }
     if (route === 'POST /api/login') { const b = await body(req); const name = await net.login(String(b.name || ''), String(b.password || '')); return send(res, 200, openSession(name)); }
     // vue du stream : ouvre le vrai compte « Streamer » SANS mot de passe, uniquement depuis la machine du serveur
     if (route === 'POST /api/stream-session') {
       if (!loopback(req)) throw new Http(403, 'Réservé à la machine du stream');
       return send(res, 200, openSession(await net.ensureStreamer()));
+    }
+    // récupération de compte (sans session) : réponse identique que le compte existe ou non
+    if (route === 'POST /api/forgot') {
+      const b = await body(req), u = net.findRecoverable(b.id);
+      if (u) mail(u.email, 'Cornichon : réinitialisation du mot de passe', `Bonjour @${u.name},\n\nPour choisir un nouveau mot de passe (lien à usage unique, valable 30 minutes) :\n${origin()}/?reset=${makeToken('reset', u.name, u.email)}\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez ce message.`);
+      return send(res, 200, { ok: true });
+    }
+    if (route === 'POST /api/reset') {
+      const b = await body(req), pw = String(b.password || '');
+      if (pw.length < 4) throw new Http(400, 'Nouveau mot de passe trop court (4 min)');
+      const t = takeToken('reset', b.token), u = net.findRecoverable(t.name);
+      if (!u || u.email !== t.email) throw new Http(400, 'Lien invalide : l\'adresse du compte a changé');
+      await net.resetPassword(t.name, pw); delUser.run(t.name); delTUser.run(t.name, 'reset'); // toutes les sessions actives sont révoquées
+      return send(res, 200, { ok: true, name: t.name });
+    }
+    if (route === 'POST /api/verify-email') {
+      const b = await body(req), t = takeToken('verify', b.token);
+      return send(res, 200, { ok: true, name: net.confirmEmail(t.name, t.email), email: t.email });
     }
     const me = auth(req); if (!me) throw new Http(401, 'Session expirée : reconnectez-vous');
     if (route === 'GET /api/state') {
@@ -107,6 +150,13 @@ function createServer(opts = {}) {
       if (to !== me.name && !net.isHidden(to, me.name) && !net.isBlocked(me.name, to) && !net.isBlocked(to, me.name)) for (const c of live) if (c.name === to) emit(c, 'typing', { from: me.name });
       return send(res, 200, { ok: true });
     }
+    if (route === 'POST /api/email') {
+      const b = await body(req); if (limited(req)) throw new Http(429, 'Trop de requêtes : réessayez dans une minute');
+      const r = net.setEmail(me.name, b.email);
+      if (!r.verified) mail(r.email, 'Cornichon : confirmez votre adresse e-mail', `Bonjour @${me.name},\n\nConfirmez cette adresse (lien valable 24 h) :\n${origin()}/?verify=${makeToken('verify', me.name, r.email)}\n\nSi ce n'est pas vous, ignorez ce message.`);
+      return send(res, 200, r);
+    }
+    if (route === 'POST /api/email-remove') { net.removeEmail(me.name); delTUser.run(me.name, 'verify'); delTUser.run(me.name, 'reset'); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/logout') { delS.run(me.hash); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/logout-all') { net.logoutAll(me.name); delUser.run(me.name); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/password') {

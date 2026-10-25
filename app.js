@@ -15,6 +15,11 @@ let th = Theme.load(store);
 const applyTheme = () => Theme.apply(th, document);
 applyTheme();
 let notice = '';
+// liens reçus par e-mail (?verify=… / ?reset=…) : lus puis retirés de l'URL pour ne pas rester dans l'historique
+let LINK = (() => { const q = new URLSearchParams(location.search), k = q.get('reset') ? 'reset' : q.get('verify') ? 'verify' : null;
+  if (!k) return null; const token = q.get(k); q.delete('reset'); q.delete('verify'); history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q : '')); return { kind: k, token }; })();
+let authMode = 'login'; // 'login' | 'forgot'
+let linkMsg = ''; // résultat du lien ouvert (confirmation / réinitialisation)
 // l'utilisateur connecté est celui que le serveur reconnaît pour la session de cet appareil
 let me = null;
 const checkSession = () => { me = sync.me(); };
@@ -153,10 +158,28 @@ function render() {
   $('#me').innerHTML = me ? `${STREAM ? '<b>🔴 STREAM</b> ' : ''}@${esc(me)}${net.isAdmin(me) ? ' 👑 admin' : ''} <button data-logout>Quitter</button>` : '';
   if (booting) { nav.innerHTML = ''; app.innerHTML = '<p class="mut" role="status">Connexion au serveur…</p>'; return; }
   if (me && !sync.online()) $('#me').innerHTML += ' <span class="err" role="status">⚠ hors ligne</span>';
+  if (LINK && LINK.kind === 'reset' && !linkMsg) {
+    nav.innerHTML = '';
+    app.innerHTML = `<div class="card"><h2>🔑 Nouveau mot de passe</h2><p class="mut">Ce lien ne fonctionne qu'une fois et expire au bout de 30 minutes. Vos sessions ouvertes seront fermées.</p>
+      <input id="rs-pw" type="password" placeholder="Nouveau mot de passe (4 min)" autocomplete="new-password"><input id="rs-pw2" type="password" placeholder="Confirmer" autocomplete="new-password">
+      <button data-doreset>Changer le mot de passe</button><p class="err" role="alert">${esc(err)}</p></div>`;
+    return;
+  }
+  if (!me && linkMsg) {
+    nav.innerHTML = ''; app.innerHTML = `<div class="card"><h2>Cornichon</h2><p role="status" class="${/✔/.test(linkMsg) ? 'ok' : 'err'}">${esc(linkMsg)}</p><button data-endlink>Aller à la connexion</button></div>`;
+    return;
+  }
+  if (!me && authMode === 'forgot') {
+    nav.innerHTML = '';
+    app.innerHTML = `<div class="card"><h2>🔑 Mot de passe oublié</h2><p class="mut">Indiquez votre pseudo ou l'adresse e-mail vérifiée de votre compte : un lien à usage unique (30 min) y sera envoyé.</p>
+      <input id="fg-id" placeholder="Pseudo ou e-mail" autocomplete="username"><button data-doforgot>Envoyer le lien</button> <button data-backlogin>Retour</button>
+      <p class="err" role="alert">${esc(err)}</p><p class="ok" role="status">${esc(notice)}</p></div>`;
+    return;
+  }
   if (!me) {
     nav.innerHTML = '';
     app.innerHTML = `<div class="card"><h2>Bienvenue dans le bocal Cornichon</h2><input id="u" placeholder="Pseudo"><input id="pw" type="password" placeholder="Mot de passe"><input id="bio" placeholder="Bio (inscription)">
-    <button data-login>Connexion</button> <button data-signup>Créer un compte</button><p class="err">${esc(err)}</p></div>`;
+    <button data-login>Connexion</button> <button data-signup>Créer un compte</button> <button class="lnk" data-forgot>Mot de passe oublié ?</button><p class="err">${esc(err)}</p>${linkMsg ? `<p class="ok" role="status">${esc(linkMsg)}</p>` : ''}</div>`;
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
@@ -231,7 +254,11 @@ function render() {
     h = `<div class="card"><h2>✅ Vérification : tout est-il fonctionnel ?</h2><button data-diag ${diag.busy ? 'disabled' : ''}>${diag.busy ? 'Vérification en cours…' : '▶ Lancer la vérification'}</button>
       ${r ? `<p role="status"><b class="${r.every(x => x.ok) ? 'ok' : 'err'}">${esc(Diag.summary(r))}</b></p><ul class="diag">${r.map(x => `<li>${x.ok ? '✅' : '❌'} <b>${esc(x.name)}</b> <span class="mut">${esc(x.detail)}</span></li>`).join('')}</ul>` : '<p class="mut">Teste le serveur, la session, la synchro, le fil, le temps réel et le navigateur.</p>'}</div>`;
   } else if (view.page === 'security') {
-    h = `<div class="card"><h2>🔒 Sécurité</h2><b>Changer le mot de passe</b>
+    const mu = net.profile(me), em = mu.email ? `<p>✅ <b>${esc(mu.email)}</b> <span class="ok">vérifiée</span></p>` : '', pend = mu.emailPending ? `<p>⏳ <b>${esc(mu.emailPending)}</b> <span class="mut">en attente de confirmation : ouvrez le lien reçu.</span></p>` : '';
+    h = `<div class="card"><h2>🔒 Sécurité</h2><b>✉️ Adresse e-mail</b>${em}${pend}${!mu.email && !mu.emailPending ? '<p class="mut">Aucune adresse : ajoutez-en une pour pouvoir récupérer votre compte.</p>' : ''}
+      <input id="sec-mail" type="email" placeholder="${mu.email ? 'Changer d\'adresse' : 'votre@adresse.fr'}" autocomplete="email"><button data-setmail>${mu.emailPending ? 'Renvoyer le lien de confirmation' : 'Envoyer le lien de confirmation'}</button>${mu.email || mu.emailPending ? ' <button data-rmmail>Retirer</button>' : ''}
+      <p class="mut">Seule une adresse vérifiée permet « Mot de passe oublié ». Jamais visible par les autres.</p></div>
+      <div class="card"><b>Changer le mot de passe</b>
       <input id="sec-old" type="password" placeholder="Mot de passe actuel" autocomplete="current-password"><input id="sec-new" type="password" placeholder="Nouveau mot de passe (4 min)" autocomplete="new-password"><input id="sec-new2" type="password" placeholder="Confirmer le nouveau mot de passe" autocomplete="new-password">
       <button data-chpw>Changer le mot de passe</button> <p class="mut">Les autres appareils seront déconnectés. Après 5 connexions ratées, le pseudo est bloqué 60 s.</p></div>
       <div class="card"><b>Se déconnecter partout</b><p class="mut">Ferme toutes les sessions ouvertes, y compris celle-ci.</p><button data-logoutall>🚪 Déconnecter tous mes appareils</button></div>
@@ -342,7 +369,7 @@ function themeClick(D, v) {
 }
 
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift]');
+  const d = ev.target.closest('*[data-page],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
   if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
@@ -354,6 +381,16 @@ document.addEventListener('click', ev => {
     if (v('#sec-new') !== v('#sec-new2')) throw new Error('La confirmation ne correspond pas');
     await net.changePassword(me, v('#sec-old'), v('#sec-new')); view = { page: 'security', ok: 'Mot de passe modifié ✔ (autres appareils déconnectés)' };
   });
+  else if ('forgot' in D) { authMode = 'forgot'; err = ''; notice = ''; render(); }
+  else if ('backlogin' in D) { authMode = 'login'; err = ''; notice = ''; render(); }
+  else if ('doforgot' in D) attempt(async () => { await net.forgot(null, v('#fg-id')); notice = 'Si un compte correspond à une adresse vérifiée, un lien vient d\'être envoyé ✔'; });
+  else if ('doreset' in D) attempt(async () => {
+    if (v('#rs-pw') !== v('#rs-pw2')) throw new Error('La confirmation ne correspond pas');
+    const r = await net.reset(LINK.token, v('#rs-pw')); linkMsg = `Mot de passe de @${r.name} modifié ✔ — toutes les sessions ont été fermées, reconnectez-vous.`; me = null; sync.logout();
+  });
+  else if ('endlink' in D) { LINK = null; linkMsg = ''; authMode = 'login'; err = ''; render(); }
+  else if ('setmail' in D) attempt(async () => { const r = await net.setEmail(me, v('#sec-mail')); view = { page: 'security', ok: r.verified ? 'Cette adresse est déjà vérifiée ✔' : `Lien de confirmation envoyé à ${r.email} ✔` }; });
+  else if ('rmmail' in D) attempt(async () => { await net.removeEmail(me); view = { page: 'security', ok: 'Adresse retirée ✔' }; });
   else if ('logoutall' in D) attempt(async () => { await net.logoutAll(me); me = null; view = { page: 'feed' }; });
   else if ('delacc' in D) attempt(async () => {
     if (!confirm('Supprimer définitivement votre compte et tous vos posts ?')) return;
@@ -428,7 +465,9 @@ render();
 // démarrage : première synchro avec le serveur, puis interrogation régulière (les changements des autres appareils arrivent seuls)
 (async () => {
   try { await sync.pull(true); } catch (e) { err = e.message; }
+  if (LINK && LINK.kind === 'verify') { try { const r = await net.verifyEmail(LINK.token); linkMsg = `Adresse ${r.email} vérifiée pour @${r.name} ✔`; } catch (e) { linkMsg = e.message; } }
   booting = false; checkSession();
+  if (linkMsg && me) { /✔/.test(linkMsg) ? view = { page: 'security', ok: linkMsg } : err = linkMsg; linkMsg = ''; LINK = null; }
   if (STREAM) await attempt(async () => { if (me !== 'Streamer') openSession(await net.ensureStreamer()); view = { page: 'theme' }; }); else render();
   // temps réel : le serveur annonce chaque changement (SSE) ; l'interrogation ne sert plus que de secours
   setInterval(() => { if (!sync.connected()) sync.poll().then(feedFresh); }, 2000);
