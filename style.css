@@ -151,3 +151,7 @@ mark { background: #ffe066; color: #000; border-radius: 3px; padding: 0 2px; }
 @keyframes spin{to{transform:rotate(360deg)}}@keyframes sh{to{background-position:-200% 0}}
 @media(prefers-reduced-motion:reduce){.spin,.skel i{animation:none}}
 #netbar{position:sticky;top:0;z-index:6;text-align:center;padding:8px 12px;font-size:.875rem;background:var(--err);color:#fff;display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap}#netbar.back{background:var(--ok)}#netbar button{padding:2px 10px;background:rgba(255,255,255,.2);color:#fff;border-color:rgba(255,255,255,.5)}
+.hbtn{padding:2px 8px;border-radius:50%}
+.ovl{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh}.ovlbox{width:min(560px,92vw);max-height:70vh;overflow:auto}
+.tourbox{position:fixed;right:16px;bottom:16px;width:min(340px,92vw);z-index:60;box-shadow:0 8px 30px rgba(0,0,0,.5)}.tour-hl{outline:3px solid var(--acc);outline-offset:3px;border-radius:8px;position:relative;z-index:55}
+kbd{border:1px solid var(--bd);border-bottom-width:2px;border-radius:5px;padding:1px 6px;font:12px ui-monospace,monospace;background:var(--card)}

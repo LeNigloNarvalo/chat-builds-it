@@ -2,7 +2,7 @@
 // Chaque appel relit le storage (lecture-modification-écriture) : aucune copie ancienne n'est conservée en mémoire.
 (function (root) {
   const KEY = 'twitchgram.v1';
-  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], appeals: [], verifs: [], badgeLog: [], drafts: [], media: [], groups: [], events: [], rooms: [], msgReports: [], audit: [], seq: 1, attempts: Object.create(null) });
+  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], appeals: [], tickets: [], verifs: [], badgeLog: [], drafts: [], media: [], groups: [], events: [], rooms: [], msgReports: [], audit: [], seq: 1, attempts: Object.create(null) });
   const MAX_PINS = 3, MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000, POLL_MAX_MIN = 7 * 1440, MAX_OWN_GROUPS = 10, MAX_RULES = 600;
 
   const EV_ANSWERS = ['yes', 'maybe', 'no'], EV_REMINDS = [0, 15, 60, 180, 1440], EV_GRACE = 3 * 3600000, MAX_EVENTS = 30;
@@ -148,7 +148,7 @@ function Net(storage, now) {
         db.rooms = db.rooms.filter(r => r.members.length >= 2); db.msgReports = db.msgReports.filter(r => r.by !== n && r.target !== n);
         db.drafts = db.drafts.filter(d => d.author !== n); db.media = (db.media || []).filter(m => m.owner !== n);
         db.reposts = db.reposts.filter(r => r.by !== n && !gone.has(r.postId));
-        db.reports = db.reports.filter(r => r.by !== n && r.target !== n); db.appeals = (db.appeals || []).filter(a => a.user !== n);
+        db.reports = db.reports.filter(r => r.by !== n && r.target !== n); db.appeals = (db.appeals || []).filter(a => a.user !== n); db.tickets = (db.tickets || []).filter(x => x.user !== n);
         for (const x of Object.values(db.users)) { if (x.blocked) x.blocked = x.blocked.filter(f => f !== n); if (x.muted) x.muted = x.muted.filter(f => f !== n); }
         db.notifs = db.notifs.filter(x => x.from !== n && x.to !== n && !gone.has(x.postId));
         delete db.users[n.toLowerCase()]; delete db.attempts[n.toLowerCase()];
@@ -1192,6 +1192,28 @@ function Net(storage, now) {
         const u = user(by), l = db.appeals || [];
         return u.admin ? l.filter(a => a.status === 'open').sort((a, b) => a.at - b.at) : l.filter(a => a.user === u.name).sort((a, b) => b.at - a.at);
       },
+      // ---- centre d'aide : demandes au support avec suivi (statut + échanges) ; un admin voit tout, un membre voit les siennes ----
+      openTicket(by, category, subject, text) {
+        const u = user(by); subject = String(subject || '').trim(); text = String(text || '').trim();
+        need(['question', 'bug', 'account', 'idea', 'abuse'].includes(category), 'Catégorie inconnue');
+        need(subject.length >= 3 && subject.length <= 80, 'Sujet : 3 à 80 caractères'); need(text.length >= 10 && text.length <= 1000, 'Décrivez votre demande : 10 à 1000 caractères');
+        db.tickets = db.tickets || [];
+        need(db.tickets.filter(x => x.user === u.name && x.status !== 'closed').length < 5, 'Déjà 5 demandes ouvertes : attendez une réponse ou clôturez-en une');
+        const tk = { id: id(), user: u.name, category, subject, status: 'open', at: now(), upd: now(), msgs: [{ from: u.name, staff: false, text, at: now() }] };
+        db.tickets.push(tk); save(); return tk;
+      },
+      tickets(by) { const u = user(by), l = db.tickets || []; return (u.admin ? l : l.filter(x => x.user === u.name)).slice().sort((a, b) => b.upd - a.upd); },
+      replyTicket(by, ticketId, text) {
+        const u = user(by), tk = (db.tickets || []).find(x => x.id === ticketId); text = String(text || '').trim();
+        need(tk && (u.admin || tk.user === u.name), 'Demande introuvable'); need(tk.status !== 'closed', 'Demande clôturée : ouvrez-en une nouvelle');
+        need(text.length >= 2 && text.length <= 1000, 'Message : 2 à 1000 caractères');
+        const staff = !!u.admin && tk.user !== u.name;
+        tk.msgs.push({ from: u.name, staff, text, at: now() }); tk.upd = now(); tk.status = staff ? 'answered' : 'open'; save(); return tk;
+      },
+      closeTicket(by, ticketId) {
+        const u = user(by), tk = (db.tickets || []).find(x => x.id === ticketId);
+        need(tk && (u.admin || tk.user === u.name), 'Demande introuvable'); tk.status = 'closed'; tk.upd = now(); save(); return tk;
+      },
       hasAppealed: (by, kind, postId) => (db.appeals || []).some(a => lc(a.user) === lc(by) && a.kind === kind && a.postId === (postId || null) && a.status === 'open'),
       decideAppeal(by, appealId, accept, answer) {
         need(api.isAdmin(by), 'Réservé à l’administrateur');
@@ -1449,6 +1471,7 @@ function Net(storage, now) {
       audit: me.admin ? (db.audit || []).slice(-300) : [], totals: me.admin ? { hiddenPosts: db.posts.filter(p => !p.replyTo && p.group && !readable.has(p.group)).length, hiddenMessages: db.messages.filter(m => m.from !== me.name && m.to !== me.name).length } : undefined,
       verifs: me.admin ? (db.verifs || []).slice(-200) : (db.verifs || []).filter(v => v.user === me.name),
       badgeLog: me.admin ? (db.badgeLog || []).slice(-500) : (db.badgeLog || []).filter(e => e.user === me.name),
+      tickets: me.admin ? (db.tickets || []).slice(-300) : (db.tickets || []).filter(x => x.user === me.name),
       appeals: me.admin ? (db.appeals || []).slice(-200) : (db.appeals || []).filter(a => a.user === me.name),
       reports: me.admin ? db.reports : db.reports.filter(r => r.by === me.name).map(r => ({ id: r.id, postId: r.postId, by: r.by, status: r.status })),
     };

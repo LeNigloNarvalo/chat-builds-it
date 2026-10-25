@@ -1065,7 +1065,7 @@ function renderPage() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['fts', '⚡ Recherche rapide'], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['media', `🖼 Médias ${net.media(me).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
+  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['fts', '⚡ Recherche rapide'], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['media', `🖼 Médias ${net.media(me).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['help', '❓ Aide'], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
   const MAIN = ['feed', 'explore', 'fts', 'dm', 'profile'], btn = ([k, l]) => { const [ic, ...rest] = String(l).split(' '); return `<button data-page="${k}" class="${view.page === k ? 'on' : ''}" aria-label="${esc(rest.join(' ').trim() || l)}">${ic}<span class="lt"> ${rest.join(' ')}</span></button>`; };
   const main = MAIN.map(k => items.find(x => x[0] === k)), more = items.filter(x => !MAIN.includes(x[0]));
   const moreOn = more.some(x => x[0] === view.page), badge = more.some(x => /\d/.test(x[1].replace(/^\S+\s*/, ''))) ? ' •' : '';
@@ -1158,6 +1158,8 @@ function renderPage() {
     h = modCenter(e);
   } else if ((view.page === 'admin' || view.page === 'mod') && net.isAdmin(me)) {
     h = adminPage(e);
+  } else if (view.page === 'help') {
+    h = helpPage();
   } else if (view.page === 'prefs') {
     h = prefsPage() + e;
   } else if (view.page === 'blocks') {
@@ -1469,6 +1471,112 @@ document.addEventListener('keydown', ev => {
 });
 const download = (name, text) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); };
 
+
+// ---- Centre d'aide : FAQ, guides, raccourcis, support avec suivi, palette Ctrl+K, visite guidée, thème par appareil ----
+var hs = { q: Help.load(store).q, open: -1, guide: -1, ticket: null, tab: 'faq' };
+var palette = null; // { q, sel } quand la palette de commandes est ouverte
+var tour = null; // index de l'étape de la visite en cours
+const TCAT = { question: '❓ Question', bug: '🐞 Problème technique', account: '👤 Mon compte', idea: '💡 Idée', abuse: '🚩 Abus' };
+const TSTAT = { open: ['🟡', 'Ouverte'], answered: ['🟢', 'Répondue'], closed: ['⚫', 'Clôturée'] };
+const THEME_ICON = { auto: '🌓', dark: '🌙', light: '☀️' }, THEME_LABEL = { auto: 'automatique', dark: 'sombre', light: 'clair' };
+function themeBtnSync() {
+  const b = document.querySelector('[data-themebtn]'); if (!b) return;
+  b.textContent = THEME_ICON[prefs.theme]; b.title = b.ariaLabel = 'Thème de cet appareil : ' + THEME_LABEL[prefs.theme] + ' (cliquer pour changer)';
+}
+function cycleTheme() { prefs = A11y.save(store, { theme: Help.nextTheme(prefs.theme) }); applyPrefs(); themeBtnSync(); if (view.page === 'settings') refresh(); }
+function faqHtml() {
+  const ids = Help.search(hs.q);
+  return ids.length ? ids.map(i => { const [cat, q, a] = Help.FAQ[i], open = hs.open === i || (hs.q && ids.length <= 3);
+    return `<details class="card" data-faq="${i}" ${open ? 'open' : ''}><summary><b>${esc(q)}</b> <span class="mut">· ${esc(cat)}</span></summary><p>${esc(a)}</p></details>`; }).join('')
+    : States.empty('🔍', 'Aucun résultat', 'Essayez d’autres mots, ou posez votre question au support.', '<button data-hact="tab" data-harg="support">🛟 Contacter le support</button>');
+}
+function ticketThread(tk) {
+  const [ic, lb] = TSTAT[tk.status] || TSTAT.open;
+  return `<div class="card" data-ticket="${tk.id}"><b>#${tk.id} · ${esc(tk.subject)}</b> <span class="mut">· ${TCAT[tk.category] || ''} · ${ic} ${lb} · ${ago(tk.upd)}${net.isAdmin(me) ? ' · @' + esc(tk.user) : ''}</span>
+    ${tk.msgs.map(m => `<div class="card" style="${m.staff ? 'border-left:4px solid var(--ok)' : ''}"><b>${m.staff ? '🛡 Support' : '@' + esc(m.from)}</b> <span class="mut">${ago(m.at)}</span><br>${esc(m.text)}</div>`).join('')}
+    ${tk.status === 'closed' ? '' : `<textarea id="h-rep-${tk.id}" maxlength="1000" placeholder="Votre réponse…" aria-label="Réponse à la demande ${tk.id}"></textarea><div class="row"><button data-hact="reply" data-harg="${tk.id}">Répondre</button><button data-hact="close" data-harg="${tk.id}">Clôturer la demande</button></div>`}</div>`;
+}
+function supportHtml() {
+  const l = net.tickets(me), open = l.filter(x => x.status !== 'closed').length;
+  return `<div class="card"><h2>🛟 Contacter le support</h2><p class="mut">Décrivez votre problème : nous répondons dans ce fil, vous suivez ici le statut de chaque demande. N’indiquez jamais votre mot de passe.</p>
+    <select id="h-cat" aria-label="Catégorie">${Object.entries(TCAT).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
+    <input id="h-sub" maxlength="80" placeholder="Sujet (3 à 80 caractères)" aria-label="Sujet"><textarea id="h-txt" maxlength="1000" placeholder="Décrivez votre demande (10 à 1000 caractères)" aria-label="Description"></textarea>
+    <button data-hact="send">Envoyer la demande</button><p class="err" role="alert">${esc(err)}</p></div>
+    <h3>Mes demandes ${open ? `<span class="mut">· ${open} en cours</span>` : ''}</h3>${l.length ? l.map(ticketThread).join('') : States.empty('📭', 'Aucune demande', 'Vos demandes au support apparaîtront ici avec leur statut.')}`;
+}
+function helpPage() {
+  const tabs = [['faq', '❓ FAQ'], ['guides', '📖 Guides'], ['shortcuts', '⌨️ Raccourcis'], ['support', '🛟 Support']];
+  const nav = `<div class="row" role="tablist" aria-label="Centre d’aide">${tabs.map(([k, l]) => `<button role="tab" data-hact="tab" data-harg="${k}" class="${hs.tab === k ? 'on' : ''}" aria-selected="${hs.tab === k}">${l}</button>`).join('')}</div>`;
+  let b;
+  if (hs.tab === 'guides') b = Help.GUIDES.map(([k, title, steps]) => `<details class="card" ${hs.guide === k ? 'open' : ''} data-guide="${k}"><summary><b>${title}</b></summary><ol>${steps.map(s => `<li>${esc(s)}</li>`).join('')}</ol></details>`).join('');
+  else if (hs.tab === 'shortcuts') b = `<div class="card"><h2>⌨️ Raccourcis clavier</h2><table>${Help.SHORTCUTS.map(([k, d]) => `<tr><td>${k.split(' + ').map(x => `<kbd>${esc(x)}</kbd>`).join(' + ')}</td><td>${esc(d)}</td></tr>`).join('')}</table><button data-hact="palette">Ouvrir la palette (Ctrl+K)</button></div>`;
+  else if (hs.tab === 'support') b = supportHtml();
+  else b = `<div class="card"><input id="h-q" type="search" value="${esc(hs.q)}" placeholder="Rechercher dans la FAQ…" aria-label="Rechercher dans la FAQ" autocomplete="off"></div><div id="h-res" role="region" aria-live="polite">${faqHtml()}</div>`;
+  return `<div class="card"><h1>❓ Centre d’aide</h1><p class="mut">FAQ, guides pas à pas, raccourcis clavier et support avec suivi.</p><div class="row"><button data-hact="tour">🧑‍🏫 Relancer la visite guidée</button><button data-hact="palette">⌨️ Palette Ctrl+K</button></div></div>${nav}${b}`;
+}
+// palette de commandes
+function paletteDraw() {
+  let el = document.getElementById('cmdk');
+  if (!palette) { if (el) el.remove(); return; }
+  const list = Help.filter(palette.q); palette.sel = Math.max(0, Math.min(palette.sel, list.length - 1)); palette.list = list;
+  if (!el) { el = document.createElement('div'); el.id = 'cmdk'; el.className = 'ovl'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.setAttribute('aria-label', 'Palette de commandes'); document.body.appendChild(el);
+    el.innerHTML = '<div class="card ovlbox"><input id="cmdk-q" role="combobox" aria-expanded="true" aria-controls="cmdk-l" placeholder="Tapez une commande… (Échap pour fermer)" aria-label="Commande" autocomplete="off"><div id="cmdk-l" role="listbox"></div></div>'; document.getElementById('cmdk-q').focus(); }
+  document.getElementById('cmdk-l').innerHTML = list.length ? list.map((c, i) => `<button role="option" aria-selected="${i === palette.sel}" data-hcmd="${i}" class="${i === palette.sel ? 'on' : ''}" style="display:block;width:100%;text-align:left">${esc(c[1])}</button>`).join('') : '<p class="mut">Aucune commande.</p>';
+}
+function paletteRun(c) {
+  palette = null; paletteDraw(); if (!c) return; const id = c[0];
+  if (id === 'theme') cycleTheme(); else if (id === 'tour') tourStart();
+  else if (id.startsWith('go:')) { const [, pg, tab] = id.split(':'); if (!me) return; if (tab) hs.tab = tab; else if (pg === 'help') hs.tab = 'faq'; go(pg); }
+}
+// visite guidée
+function tourDraw() {
+  let el = document.getElementById('tour');
+  document.querySelectorAll('.tour-hl').forEach(x => x.classList.remove('tour-hl'));
+  if (tour === null) { if (el) el.remove(); return; }
+  const s = Help.TOUR[tour], last = tour === Help.TOUR.length - 1;
+  if (!el) { el = document.createElement('div'); el.id = 'tour'; el.className = 'card tourbox'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Visite guidée'); document.body.appendChild(el); }
+  el.innerHTML = `<b>${esc(s[0])}</b><p>${esc(s[1])}</p><p class="mut">Étape ${tour + 1}/${Help.TOUR.length}</p><div class="row">${tour > 0 ? '<button data-hact="tourprev">← Précédent</button>' : ''}<button data-hact="tourend" data-harg="skipped">${last ? 'Fermer' : 'Passer'}</button><button class="on" data-hact="${last ? 'tourend' : 'tournext'}" data-harg="done">${last ? 'Terminer 🎉' : 'Suivant →'}</button></div>`;
+  if (s[2]) { const t0 = document.querySelector(s[2]); if (t0) t0.classList.add('tour-hl'); }
+  el.querySelector('.on').focus();
+}
+function tourStart() { tour = 0; tourDraw(); }
+function tourEnd(state) { tour = null; Help.save(store, { tour: state }); tourDraw(); }
+function helpAuto() { if (me && !STREAM && tour === null && !Help.load(store).tour) setTimeout(() => { if (me && tour === null && !Help.load(store).tour) tourStart(); }, 600); }
+document.addEventListener('click', ev => {
+  const t0 = ev.target.closest('[data-themebtn],[data-helpbtn],[data-hact],[data-hcmd]'); if (!t0) { if (palette && ev.target.id === 'cmdk') { palette = null; paletteDraw(); } return; }
+  const D = t0.dataset;
+  if ('themebtn' in D) return cycleTheme();
+  if ('helpbtn' in D) { hs.tab = 'faq'; return go('help'); }
+  if ('hcmd' in D) return paletteRun(palette && palette.list[+D.hcmd]);
+  const a = D.hact, g = D.harg;
+  if (a === 'tab') { hs.tab = g; err = ''; render(); }
+  else if (a === 'palette') { palette = { q: '', sel: 0 }; paletteDraw(); }
+  else if (a === 'tour') tourStart();
+  else if (a === 'tournext') { tour++; tourDraw(); } else if (a === 'tourprev') { tour--; tourDraw(); } else if (a === 'tourend') tourEnd(g);
+  else if (a === 'send') attempt(async () => { await net.openTicket(me, document.getElementById('h-cat').value, document.getElementById('h-sub').value, document.getElementById('h-txt').value); });
+  else if (a === 'reply') attempt(async () => { const x = document.getElementById('h-rep-' + g); await net.replyTicket(me, +g, x.value); });
+  else if (a === 'close') attempt(async () => { await net.closeTicket(me, +g); });
+});
+document.addEventListener('input', ev => {
+  if (ev.target.id === 'h-q') { hs.q = ev.target.value; Help.save(store, { q: hs.q }); document.getElementById('h-res').innerHTML = faqHtml(); }
+  else if (ev.target.id === 'cmdk-q' && palette) { palette.q = ev.target.value; palette.sel = 0; paletteDraw(); }
+});
+document.addEventListener('toggle', ev => { const d = ev.target; if (d.dataset && d.dataset.faq !== undefined) hs.open = d.open ? +d.dataset.faq : -1; }, true);
+document.addEventListener('keydown', ev => {
+  const typing = ev.target.matches && ev.target.matches('input,textarea,select,[contenteditable]');
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'k') { ev.preventDefault(); palette = palette ? null : { q: '', sel: 0 }; paletteDraw(); return; }
+  if (palette) {
+    if (ev.key === 'Escape') { ev.preventDefault(); palette = null; paletteDraw(); }
+    else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); const n = palette.list.length || 1; palette.sel = (palette.sel + (ev.key === 'ArrowDown' ? 1 : n - 1)) % n; paletteDraw(); }
+    else if (ev.key === 'Enter') { ev.preventDefault(); paletteRun(palette.list[palette.sel]); }
+    else if (ev.key === 'Tab') ev.preventDefault();
+    return;
+  }
+  if (tour !== null && ev.key === 'Escape') { tourEnd('skipped'); return; }
+  if (ev.key === '?' && !typing && !ev.ctrlKey && !ev.metaKey && me && !lb) { ev.preventDefault(); hs.tab = 'faq'; go('help'); }
+});
+window.addEventListener('storage', ev => { if (ev.key === A11Y_KEY) themeBtnSync(); });
+themeBtnSync();
 
 // ---- Studio de thème ----
 const hsl2hex = (h, s, l) => { s /= 100; l /= 100; const k = n => (n + h / 30) % 12, a = s * Math.min(l, 1 - l), f = n => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1))))); return '#' + [f(0), f(8), f(4)].map(x => x.toString(16).padStart(2, '0')).join(''); };
@@ -1837,6 +1945,7 @@ render();
   if (new URLSearchParams(location.search).get('notif') && me) view = { page: 'notifs' };
   if (SHARED && me) { const s = SHARED; SHARED = null; await attempt(async () => { const r = await net.saveSharedList(me, s.owner, s.id, s.token); view = { page: 'list', arg: { owner: r.owner, id: r.id } }; }); }
   if (linkMsg && me) { /✔/.test(linkMsg) ? view = { page: 'security', ok: linkMsg } : err = linkMsg; linkMsg = ''; LINK = null; }
+  helpAuto();
   if (STREAM) await attempt(async () => { if (me !== 'Streamer') openSession(await net.ensureStreamer()); view = { page: 'fts' }; }); else render();
   // temps réel : le serveur annonce chaque changement (SSE) ; l'interrogation ne sert plus que de secours
   setInterval(() => { if (!sync.connected()) sync.poll().then(feedFresh); }, 2000);
