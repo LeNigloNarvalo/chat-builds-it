@@ -614,3 +614,23 @@ console.log('ok');
     console.log('ok badges de confiance');
   }
 })().catch(e => { console.error(e); process.exit(1); });
+
+// ---- vidéos et messages vocaux ----
+{
+  const S = require('./social.js'); const ok = (c, m) => { if (!c) { console.error('ÉCHEC', m); process.exit(1); } };
+  const vid = { kind: 'video', src: 'data:video/webm;base64,AAAA', dur: 3.2 }, aud = { kind: 'audio', src: 'data:audio/webm;codecs=opus;base64,AAAA', dur: 5 };
+  ok(S.cleanMedia([vid])[0].kind === 'video' && S.cleanMedia([aud])[0].dur === 5, 'media valides');
+  ok(S.cleanImages([vid, aud]).length === 0, 'cleanImages ignore les médias');
+  for (const bad of [[vid, aud], [{ kind: 'video', src: 'data:image/png;base64,AAAA' }], [{ kind: 'video', src: 'data:video/webm;base64,' + 'A'.repeat(2100000) }], [{ kind: 'x', src: 'data:video/webm;base64,AA' }]]) { let t = false; try { S.cleanMedia(bad); } catch (e) { t = true; } ok(t, 'média refusé'); }
+  ok(S.cleanMedia([{ kind: 'audio', src: aud.src, dur: 9999 }])[0].dur === S.MAX_AUDIO_S, 'durée plafonnée');
+  console.log('médias ok');
+}
+(async () => {
+  const S = require('./social.js'), m2 = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } }, n2 = S.Net(m2);
+  await n2.signup('vera', 'pass1'); await n2.signup('vlad', 'pass2');
+  const aud = { kind: 'audio', src: 'data:audio/webm;base64,AAAA', dur: 4 }, vid = { kind: 'video', src: 'data:video/webm;base64,AAAA', dur: 2 };
+  const p = await n2.post('vera', '', null, [vid]); assert.strictEqual(p.media[0].kind, 'video'); assert.ok(!p.images);
+  await n2.send('vera', 'vlad', '', [aud]); assert.strictEqual(n2.conversation('vlad', 'vera').pop().media[0].kind, 'audio');
+  assert.throws(() => n2.send('vera', 'vlad', '', [aud, vid]), /seule/);
+  console.log('médias réseau ok');
+})().catch(e => { console.error(e); process.exit(1); });

@@ -35,12 +35,27 @@
   function cleanImages(list) {
     list = list == null ? [] : list;
     if (!Array.isArray(list)) throw new Error('Images invalides');
+    list = list.filter(i => !(i && i.kind)); // les vidéos et messages vocaux passent par cleanMedia
     if (list.length > MAX_IMAGES) throw new Error('4 images maximum');
     return list.map(i => {
       const src = String((i && i.src) || '');
       if (!IMG_RE.test(src)) throw new Error('Image invalide (JPEG, PNG, WebP ou GIF)');
       if (src.length > MAX_IMG_CHARS) throw new Error('Image trop lourde');
       return { src, alt: String((i && i.alt) || '').trim().slice(0, 200) };
+    });
+  }
+  // vidéos courtes et messages vocaux : un seul par post/message, en data URL (compressés côté navigateur), durée et taille limitées
+  const MAX_MEDIA_CHARS = 2000000, MAX_VIDEO_S = 15, MAX_AUDIO_S = 120, MEDIA_RE = { video: /^data:video\/(webm|mp4)(;codecs=[A-Za-z0-9.,]+)?;base64,[A-Za-z0-9+\/=]+$/, audio: /^data:audio\/(webm|ogg|mp4|mpeg|wav)(;codecs=[A-Za-z0-9.,]+)?;base64,[A-Za-z0-9+\/=]+$/ };
+  function cleanMedia(list) {
+    const l = (Array.isArray(list) ? list : []).filter(i => i && i.kind);
+    if (l.length > 1) throw new Error('Une seule vidéo ou un seul message vocal par envoi');
+    return l.map(i => {
+      const kind = i.kind, src = String(i.src || '');
+      if (kind !== 'video' && kind !== 'audio') throw new Error('Type de média invalide');
+      if (!MEDIA_RE[kind].test(src)) throw new Error(kind === 'video' ? 'Vidéo invalide (WebM ou MP4)' : 'Message vocal invalide');
+      if (src.length > MAX_MEDIA_CHARS) throw new Error(kind === 'video' ? 'Vidéo trop lourde (1,5 Mo max)' : 'Message vocal trop lourd (1,5 Mo max)');
+      const dur = Math.max(0, Math.min(+i.dur || 0, kind === 'video' ? MAX_VIDEO_S : MAX_AUDIO_S));
+      return { kind, src, dur: Math.round(dur * 10) / 10, alt: String(i.alt || '').trim().slice(0, 200) };
     });
   }
   // médiathèque personnelle : images compressées + miniature (faites dans le navigateur), texte alternatif, quota de stockage par compte
@@ -170,8 +185,8 @@ function Net(storage, now) {
     const evt = eid => { const e = db.events.find(x => x.id === +eid); need(e, 'Événement introuvable'); return e; };
     const evVisible = (e, n) => { if (!e.group) return true; const g = db.groups.find(x => x.id === e.group); return !!g && canRead(g, n); };
     const makePost = (author, text, replyTo, images, poll, group) => {
-        text = (text || '').trim(); images = cleanImages(images);
-        need((text || images.length) && text.length <= 280, 'Message vide ou > 280 caractères');
+        text = (text || '').trim(); const media = cleanMedia(images); images = cleanImages(images);
+        need((text || images.length || media.length) && text.length <= 280, 'Message vide ou > 280 caractères');
         user(author); guard(author, true);
         let gid = group ? +group : null;
         if (replyTo) { const tp = db.posts.find(p => p.id === replyTo); need(tp, 'Post introuvable'); need(!blockedBy(author, tp.author), 'Cet utilisateur vous a bloqué : réponse impossible'); if (tp.group) gid = tp.group; }
@@ -180,6 +195,7 @@ function Net(storage, now) {
         const p = { id: id(), author: user(author).name, text, at: now(), likes: [], replyTo: replyTo || null };
         if (g) p.group = g.id;
         if (images.length) p.images = images;
+        if (media.length) p.media = media;
         if (poll) {
           need(!replyTo, 'Un sondage ne peut pas être une réponse');
           const opts = (poll.options || []).map(o => String(o || '').trim()).filter(Boolean);
@@ -828,13 +844,14 @@ function Net(storage, now) {
         save(); return r;
       },
       send(from, to, text, images) {
-        text = (text || '').trim(); images = cleanImages(images);
-        need((text || images.length) && text.length <= 500, 'Message invalide');
+        text = (text || '').trim(); const media = cleanMedia(images); images = cleanImages(images);
+        need((text || images.length || media.length) && text.length <= 500, 'Message invalide');
         user(from); guard(from, true); const t = user(to);
         need(!blockedBy(from, to), 'Cet utilisateur vous a bloqué : message impossible');
         need(!has(user(from).blocked, to), 'Débloquez cet utilisateur pour lui écrire');
         const m = { id: id(), from: user(from).name, to: t.name, text, at: now() };
         if (images.length) m.images = images;
+        if (media.length) m.media = media;
         db.messages.push(m);
         // entrée « dm » (une par expéditeur tant qu'elle n'est pas lue) : visible dans la cloche selon les préférences, base des e-mails et du résumé
         const open = db.notifs.find(n => n.type === 'dm' && n.to === t.name && n.from === m.from && !n.read);
@@ -926,10 +943,10 @@ function Net(storage, now) {
       // messages visibles par `by` : ceux des comptes qu'il a bloqués ou masqués disparaissent
       roomMessages(by, rid) { const r = api.room(by, rid); return r.msgs.filter(m => !hiddenFor(by, m.from)); },
       sendRoom(by, rid, text, images) {
-        text = (text || '').trim(); images = cleanImages(images);
-        need((text || images.length) && text.length <= 500, 'Message invalide');
+        text = (text || '').trim(); const media = cleanMedia(images); images = cleanImages(images);
+        need((text || images.length || media.length) && text.length <= 500, 'Message invalide');
         const me = user(by), r = api.room(by, rid); guard(by, true);
-        const m = { id: id(), from: me.name, text, at: now() }; if (images.length) m.images = images;
+        const m = { id: id(), from: me.name, text, at: now() }; if (images.length) m.images = images; if (media.length) m.media = media;
         r.msgs.push(m); if (r.msgs.length > 500) r.msgs = r.msgs.slice(-500);
         r.read[lc(me.name)] = m.id;
         for (const n of r.members) {
@@ -1418,6 +1435,6 @@ function Net(storage, now) {
     };
   }
 
-  const exported = { Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, REASONS, MEDIA_QUOTA, BADGES };
+  const exported = { Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
   if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);

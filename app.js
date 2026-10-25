@@ -173,8 +173,71 @@ async function prepImage(file) {
   throw new Error(`« ${file.name} » : image trop lourde`);
 }
 const gallery = (images, kind, id) => !images || !images.length ? '' : `<div class="gal n${images.length}">${images.map((im, i) => `<button class="gi" data-gal="${kind}:${id}:${i}" aria-label="Agrandir l’image ${i + 1} sur ${images.length}${im.alt ? ' : ' + esc(im.alt) : ''}"><img src="${im.src}" alt="${esc(im.alt || 'Image jointe ' + (i + 1))}" loading="lazy"></button>`).join('')}</div>`;
-const attachBox = key => `<div class="att"><label class="filebtn">📷 Ajouter des images<input type="file" id="img-${key}" data-pick="${key}" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden></label> <span class="mut">${pend[key].length}/${MAX_IMG} · redimensionnées automatiquement</span>
-  <div class="prev">${pend[key].map((im, i) => `<div class="pv"><img src="${im.src}" alt="Aperçu ${i + 1}"><input id="alt-${key}-${i}" data-alt="${key}:${i}" maxlength="200" placeholder="Texte alternatif (décris l’image)" aria-label="Texte alternatif de l’image ${i + 1}" value="${esc(im.alt)}"><button data-rmimg="${key}:${i}" aria-label="Retirer l’image ${i + 1}">✕</button></div>`).join('')}</div></div>`;
+const MAX_MEDIA_CHARS = 1900000, MAX_VIDEO_S = Social.MAX_VIDEO_S, MAX_AUDIO_S = Social.MAX_AUDIO_S;
+const nImg = key => pend[key].filter(x => !x.kind).length, hasMedia = key => pend[key].some(x => x.kind);
+const fmtDur = s => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
+const readURL = f => new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => ko(new Error('Lecture impossible')); r.readAsDataURL(f); });
+// vidéo courte : gardée telle quelle si elle est légère, sinon recompressée (480 px, ~500 kbit/s, 15 s max) avec MediaRecorder
+async function prepVideo(file) {
+  if (!/^video\//.test(file.type)) throw new Error(`« ${file.name} » : format non pris en charge`);
+  if (file.size > 60 * 1024 * 1024) throw new Error(`« ${file.name} » : vidéo trop volumineuse (60 Mo max avant compression)`);
+  const url = URL.createObjectURL(file), v = document.createElement('video');
+  v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = url;
+  try {
+    await new Promise((ok, ko) => { v.onloadedmetadata = ok; v.onerror = () => ko(new Error(`« ${file.name} » : vidéo illisible`)); });
+    const dur = isFinite(v.duration) ? v.duration : MAX_VIDEO_S;
+    if (/^video\/(webm|mp4)/.test(file.type) && dur <= MAX_VIDEO_S + 0.3 && file.size * 1.37 < MAX_MEDIA_CHARS * 0.9) {
+      const src = await readURL(file); if (src.length <= MAX_MEDIA_CHARS) return { kind: 'video', src, dur, alt: '' };
+    }
+    if (typeof MediaRecorder === 'undefined' || !HTMLCanvasElement.prototype.captureStream) throw new Error('Compression vidéo indisponible sur ce navigateur : choisis une vidéo plus courte (WebM/MP4 légère)');
+    const k = Math.min(1, 480 / Math.max(v.videoWidth || 480, v.videoHeight || 480)), c = document.createElement('canvas');
+    c.width = Math.max(2, Math.round((v.videoWidth || 480) * k / 2) * 2); c.height = Math.max(2, Math.round((v.videoHeight || 270) * k / 2) * 2);
+    const g = c.getContext('2d'), stream = c.captureStream(24);
+    v.muted = false; v.volume = 0; await v.play();
+    const vs = v.captureStream ? v.captureStream() : null; if (vs) vs.getAudioTracks().forEach(a => stream.addTrack(a));
+    const mime = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'].find(m => MediaRecorder.isTypeSupported(m));
+    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 450000, audioBitsPerSecond: 40000 }), parts = [];
+    rec.ondataavailable = e => e.data.size && parts.push(e.data);
+    const done = new Promise(ok => { rec.onstop = ok; });
+    let alive = true; const draw = () => { if (!alive) return; g.drawImage(v, 0, 0, c.width, c.height); if (v.ended || v.currentTime >= MAX_VIDEO_S) { alive = false; rec.stop(); } else requestAnimationFrame(draw); };
+    rec.start(500); draw(); v.onended = () => { if (alive) { alive = false; rec.stop(); } };
+    await done; v.pause();
+    const blob = new Blob(parts, { type: (rec.mimeType || mime || 'video/webm').split(';')[0] }), src = await readURL(blob);
+    if (src.length > MAX_MEDIA_CHARS) throw new Error(`« ${file.name} » : vidéo trop lourde même compressée (essaie plus court)`);
+    return { kind: 'video', src, dur: Math.min(dur, MAX_VIDEO_S), alt: '' };
+  } finally { URL.revokeObjectURL(url); }
+}
+// message vocal : enregistrement micro (Opus 32 kbit/s), arrêt automatique à 2 minutes
+const vrec = { key: null, mr: null, parts: [], t0: 0, timer: null };
+async function voiceToggle(key) {
+  if (vrec.mr) { vrec.mr.stop(); return; }
+  if (!navigator.mediaDevices || typeof MediaRecorder === 'undefined') { err = 'Enregistrement vocal indisponible sur ce navigateur'; return refresh(); }
+  if (hasMedia(key)) { err = 'Une seule vidéo ou un seul message vocal par envoi'; return refresh(); }
+  let stream; try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { err = 'Micro refusé ou introuvable'; return refresh(); }
+  const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'].find(m => MediaRecorder.isTypeSupported(m));
+  const mr = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 32000 }); vrec.mr = mr; vrec.key = key; vrec.parts = []; vrec.t0 = Date.now(); err = '';
+  mr.ondataavailable = e => e.data.size && vrec.parts.push(e.data);
+  mr.onstop = async () => {
+    clearInterval(vrec.timer); stream.getTracks().forEach(t => t.stop());
+    const dur = (Date.now() - vrec.t0) / 1000, k = vrec.key; vrec.mr = null; vrec.key = null;
+    try {
+      const src = await readURL(new Blob(vrec.parts, { type: (mr.mimeType || 'audio/webm').split(';')[0] }));
+      if (dur < 0.5) err = 'Message vocal trop court'; else if (src.length > MAX_MEDIA_CHARS) err = 'Message vocal trop lourd'; else if (!hasMedia(k)) pend[k].push({ kind: 'audio', src, dur: Math.min(dur, MAX_AUDIO_S), alt: '' });
+    } catch (e) { err = e.message; }
+    refresh();
+  };
+  mr.start(); vrec.timer = setInterval(() => {
+    const s = (Date.now() - vrec.t0) / 1000, el = document.getElementById('vrec-t'); if (el) el.textContent = fmtDur(s);
+    if (s >= MAX_AUDIO_S && vrec.mr) vrec.mr.stop();
+  }, 250);
+  refresh();
+}
+// lecteur intégré : <video>/<audio> natifs avec commandes, charge les métadonnées seulement
+const mediaPlayer = media => !media || !media.length ? '' : media.map(m => m.kind === 'video'
+  ? `<figure class="mplay"><video src="${m.src}" controls playsinline preload="metadata" aria-label="${esc(m.alt || 'Vidéo jointe')}"></video><figcaption class="mut">🎬 Vidéo${m.dur ? ' · ' + fmtDur(m.dur) : ''}</figcaption></figure>`
+  : `<figure class="mplay voice"><figcaption>🎙 Message vocal${m.dur ? ' · ' + fmtDur(m.dur) : ''}</figcaption><audio src="${m.src}" controls preload="metadata" aria-label="Message vocal"></audio></figure>`).join('');
+const attachBox = key => `<div class="att"><label class="filebtn">📷 Ajouter des images<input type="file" id="img-${key}" data-pick="${key}" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden></label> <label class="filebtn">🎬 Vidéo<input type="file" id="vid-${key}" data-pickvid="${key}" accept="video/*" hidden></label> ${vrec.key === key ? `<button type="button" class="rec on" data-voice="${key}" aria-label="Arrêter l’enregistrement">⏹ Arrêter <span id="vrec-t" role="timer">${fmtDur((Date.now() - vrec.t0) / 1000)}</span></button>` : `<button type="button" class="rec" data-voice="${key}" aria-label="Enregistrer un message vocal">🎙 Message vocal</button>`} <span class="mut">${nImg(key)}/${MAX_IMG} images · vidéo ${MAX_VIDEO_S} s max · vocal ${MAX_AUDIO_S / 60} min max · compressés automatiquement</span>
+  <div class="prev">${pend[key].map((im, i) => im.kind ? `<div class="pv wide">${mediaPlayer([im])}<button data-rmimg="${key}:${i}" aria-label="Retirer ${im.kind === 'video' ? 'la vidéo' : 'le message vocal'}">✕</button></div>` : `<div class="pv"><img src="${im.src}" alt="Aperçu ${i + 1}"><input id="alt-${key}-${i}" data-alt="${key}:${i}" maxlength="200" placeholder="Texte alternatif (décris l’image)" aria-label="Texte alternatif de l’image ${i + 1}" value="${esc(im.alt)}"><button data-rmimg="${key}:${i}" aria-label="Retirer l’image ${i + 1}">✕</button></div>`).join('')}</div></div>`;
 function lightbox() {
   const o = document.getElementById('lb'); if (o) o.remove();
   if (!lb) return;
@@ -484,7 +547,7 @@ function postHTML(p, thread) {
   const saved = net.isBookmarked(me, p.id), rp = net.hasReposted(me, p.id), rc = net.repostCount(p.id), hist = p.history || [];
   const edited = p.editedAt ? `<button class="lnk" data-hist="${p.id}" aria-expanded="${view.hist === p.id}">${t('post.edited', { n: hist.length + 1 })}</button>` : '';
   const histHTML = p.editedAt && view.hist === p.id ? `<div class="hist"><b>Historique des modifications</b>${hist.map((h, i) => `<div class="mut">v${i + 1} · ${ago(h.at)} · ${esc(h.text)} ${net.canEdit(me, p.id) ? `<button class="lnk" data-restore="${p.id}:${i}">restaurer</button>` : ''}</div>`).join('')}<div>v${hist.length + 1} (actuelle) · ${esc(p.text)}</div></div>` : '';
-  const body = editing ? `<textarea id="edit-txt" maxlength="280">${esc(view.restore && view.restore.id === p.id ? view.restore.text : p.text)}</textarea><button data-saveedit="${p.id}">${t('post.save')}</button> <button data-canceledit>${t('post.cancel')}</button> <span class="mut">${Math.ceil(net.editLeft(p.id) / 60000)} min restantes</span>` : `${p.text ? `<p>${tx && tx.text ? rich(tx.text) : rich(p.text)}</p>` : ''}${p.text ? translateBar(p, tx) : ''}${gallery(p.images, 'p', p.id)}`;
+  const body = editing ? `<textarea id="edit-txt" maxlength="280">${esc(view.restore && view.restore.id === p.id ? view.restore.text : p.text)}</textarea><button data-saveedit="${p.id}">${t('post.save')}</button> <button data-canceledit>${t('post.cancel')}</button> <span class="mut">${Math.ceil(net.editLeft(p.id) / 60000)} min restantes</span>` : `${p.text ? `<p>${tx && tx.text ? rich(tx.text) : rich(p.text)}</p>` : ''}${p.text ? translateBar(p, tx) : ''}${gallery(p.images, 'p', p.id)}${mediaPlayer(p.media)}`;
   const pollH = pollHTML(p), tx = trans[p.id];
   const hid = p.hidden, seeHidden = hid && (p.author === me || net.isAdmin(me));
   const modBanner = hid ? `<div class="err" role="status">🙈 Post masqué par la modération (${esc(hid.reason || '')}).${p.author === me ? (net.hasAppealed(me, 'hide', p.id) ? ' Appel en cours d’examen.' : ` <button data-appeal="hide:${p.id}">📨 Faire appel</button>`) : ''}</div>${view.appealing === 'hide:' + p.id ? appealForm('hide', p.id) : ''}` : '';
@@ -507,7 +570,7 @@ function roomView(e) {
   const role = n => n === r.owner ? '👑 créateur' : (r.admins || []).includes(n) ? '🛡 admin' : '';
   // indicateur de lecture sur chacun de MES messages : qui l'a lu parmi les autres membres
   const body = ms.map(m => { const seen = m.from === me ? net.roomSeenBy(me, rid, m.id) : [], others = r.members.filter(n => n !== me).length;
-    return `<div class="msg ${m.from === me ? 'me' : ''}">${m.from === me ? '' : `<b>${esc(shown(m.from))}</b> `}${m.text ? esc(m.text) : ''}${gallery(m.images, 'rm', m.id)} ${repBtn(rid, m)}${m.from !== me ? '' : seen.length ? `<div class="mut" role="status">✓✓ Vu ${seen.length >= others ? 'par tous' : `par ${seen.map(n => esc(shown(n))).join(', ')}`}</div>` : '<div class="mut">✓ Envoyé</div>'}</div>`; }).join('') || '<span class="mut">Dites bonjour 👋</span>';
+    return `<div class="msg ${m.from === me ? 'me' : ''}">${m.from === me ? '' : `<b>${esc(shown(m.from))}</b> `}${m.text ? esc(m.text) : ''}${gallery(m.images, 'rm', m.id)}${mediaPlayer(m.media)} ${repBtn(rid, m)}${m.from !== me ? '' : seen.length ? `<div class="mut" role="status">✓✓ Vu ${seen.length >= others ? 'par tous' : `par ${seen.map(n => esc(shown(n))).join(', ')}`}</div>` : '<div class="mut">✓ Envoyé</div>'}</div>`; }).join('') || '<span class="mut">Dites bonjour 👋</span>';
   const addable = Object.values(net.db().users).filter(u => !r.members.includes(u.name) && !u.admin && !net.isHidden(me, u.name) && !net.isBlocked(u.name, me));
   const panel = `<details class="card" ${view.roomInfo ? 'open' : ''} data-roominfo><summary><b>⚙️ Membres et réglages du groupe (${r.members.length}/8)</b></summary>
     ${admin ? `<div class="row"><label class="inl">Nom du groupe <input id="room-rename" value="${esc(r.name)}" maxlength="40"></label> <button data-roomrename>Renommer</button></div>` : ''}
@@ -1093,13 +1156,13 @@ function render() {
   } else if (view.page === 'dm') {
     const cq = ['convs', ''], cfloor = pagerFloor('convs', ''), cready = pagerReady('convs', ''), convs = cready ? net.conversations(me).filter(c => c.last.id >= cfloor) : [], allConvs = net.conversations(me);
     const others = Object.values(net.db().users).filter(u => u.name !== me && !net.isHidden(me, u.name) && !allConvs.some(c => c.peer === u.name)), OTH = 30;
-    const prev = m => (m.from === me ? 'Vous : ' : '') + (m.text ? m.text : '📷 image');
+    const prev = m => (m.from === me ? 'Vous : ' : '') + (m.text ? m.text : m.media && m.media.length ? (m.media[0].kind === 'audio' ? '🎙 message vocal' : '🎬 vidéo') : '📷 image');
     const rl = net.rooms(me), roomsHTML = `<div class="card"><b>👥 Groupes privés</b>${view.newRoom ? `<div style="display:grid;gap:6px"><label>Nom du groupe <input id="room-name" maxlength="40"></label><fieldset><legend>Membres (jusqu’à 7)</legend>${others.concat(allConvs.map(c => ({ name: c.peer }))).filter((u, i, a) => a.findIndex(x => x.name === u.name) === i && !net.isAdmin(u.name) && !net.isBlocked(me, u.name)).slice(0, 60).map(u => `<label class="inl"><input type="checkbox" name="room-m" value="${esc(u.name)}"> ${esc(u.name)}</label>`).join(' ')}</fieldset><div class="row"><button data-roomcreate>Créer le groupe</button> <button data-roomnewno>Annuler</button></div></div>` : '<button data-roomnew>➕ Nouveau groupe</button>'}
-      <ul class="convs" style="list-style:none;padding:0;margin:6px 0 0;display:grid;gap:6px">${rl.map(c => `<li><button data-chat="#${c.room.id}" class="${view.arg === '#' + c.room.id ? 'on' : ''}" style="width:100%;text-align:left"><b>👥 ${esc(c.room.name)}</b>${c.unread ? ` <b class="badge" aria-label="${c.unread} non lu(s)">${c.unread}</b>` : ''} <span class="mut">· ${c.room.members.length} membres${c.last ? ' · ' + ago(c.last.at) : ''}</span>${c.last ? `<br><span class="${c.unread ? '' : 'mut'}">${esc((shown(c.last.from) + ' : ' + (c.last.text || '📷 image')).slice(0, 80))}</span>` : ''}</button></li>`).join('') || '<li class="mut">Aucun groupe pour l’instant.</li>'}</ul></div>`;
+      <ul class="convs" style="list-style:none;padding:0;margin:6px 0 0;display:grid;gap:6px">${rl.map(c => `<li><button data-chat="#${c.room.id}" class="${view.arg === '#' + c.room.id ? 'on' : ''}" style="width:100%;text-align:left"><b>👥 ${esc(c.room.name)}</b>${c.unread ? ` <b class="badge" aria-label="${c.unread} non lu(s)">${c.unread}</b>` : ''} <span class="mut">· ${c.room.members.length} membres${c.last ? ' · ' + ago(c.last.at) : ''}</span>${c.last ? `<br><span class="${c.unread ? '' : 'mut'}">${esc((shown(c.last.from) + ' : ' + (c.last.text || (c.last.media && c.last.media.length ? (c.last.media[0].kind === 'audio' ? '🎙 message vocal' : '🎬 vidéo') : '📷 image'))).slice(0, 80))}</span>` : ''}</button></li>`).join('') || '<li class="mut">Aucun groupe pour l’instant.</li>'}</ul></div>`;
     h = roomsHTML + `<div class="card"><h2>✉️ Mes conversations ${unreadDm.total ? `<b class="badge">${unreadDm.total}</b>` : ''}</h2><ul class="convs" style="list-style:none;padding:0;margin:0;display:grid;gap:6px">${convs.map(c => `<li><button data-chat="${esc(c.peer)}" class="${view.arg === c.peer ? 'on' : ''}" style="width:100%;text-align:left"><b>${esc(shown(c.peer))}</b>${c.unread ? ` <b class="badge" aria-label="${c.unread} non lu(s)">${c.unread}</b>` : ''}${typingNow().includes(c.peer) ? ' ✍️' : ''} <span class="mut">· ${ago(c.last.at)}</span><br><span class="${c.unread ? '' : 'mut'}">${esc(prev(c.last).slice(0, 80))}</span></button></li>`).join('') || (cready ? '<li class="mut">Aucune conversation : choisis quelqu’un ci-dessous.</li>' : '<li class="mut" role="status">Chargement des conversations…</li>')}</ul>${moreBtn('convs', 'Conversations plus anciennes')}</div>
       <div class="card"><b>Nouvelle discussion</b><br>${others.slice(0, OTH).map(u => `<button data-chat="${esc(u.name)}" class="${view.arg === u.name ? 'on' : ''}">${esc(u.name)}</button>`).join(' ')}${others.length > OTH ? ` <span class="mut">… et ${others.length - OTH} autres (utilise la recherche ou un profil pour écrire)</span>` : ''}${others.length ? '' : '<span class="mut">Personne d’autre pour l’instant.</span>'}</div>`;
     if (isRoom(view.arg)) h += roomView(e);
-    else if (view.arg) h += `<div class="card" style="display:grid;gap:6px"><div class="row"><b>💬 ${esc(shown(view.arg))}</b> ${view.askDelDm ? `<span class="err">Supprimer cet échange de ton côté ?</span> <button data-dmdelyes>Oui, supprimer</button> <button data-dmdelno>Annuler</button>` : net.conversation(me, view.arg).length ? `<button data-dmdel>🗑 Supprimer l’échange</button>` : ''}</div>${(() => { const dq = 'peer=' + encodeURIComponent(view.arg), dr = pagerReady('dm', dq), fl = pagerFloor('dm', dq), ms = dr ? net.conversation(me, view.arg).filter(m => m.id >= fl) : []; return !dr ? '<span class="mut" role="status">Chargement des messages…</span>' : moreBtn('dm', '⬆ Messages plus anciens') + ((view.repMsg && !view.repMsg.room ? msgReportForm() : '') + (() => { const lm = net.conversation(me, view.arg).filter(x => x.from === me).pop(), pr = net.peerRead(me, view.arg); return ms.map(m => `<div class="msg ${m.from === me ? 'me' : ''}">${m.text ? esc(m.text) : ''}${gallery(m.images, 'm', m.id)} ${repBtn(null, m)}${lm && m.id === lm.id ? (pr >= m.id ? '<div class="mut" role="status">✓✓ Vu</div>' : '<div class="mut">✓ Envoyé</div>') : ''}</div>`).join(''); })() || '<span class="mut">Dites bonjour 👋</span>'); })()}
+    else if (view.arg) h += `<div class="card" style="display:grid;gap:6px"><div class="row"><b>💬 ${esc(shown(view.arg))}</b> ${view.askDelDm ? `<span class="err">Supprimer cet échange de ton côté ?</span> <button data-dmdelyes>Oui, supprimer</button> <button data-dmdelno>Annuler</button>` : net.conversation(me, view.arg).length ? `<button data-dmdel>🗑 Supprimer l’échange</button>` : ''}</div>${(() => { const dq = 'peer=' + encodeURIComponent(view.arg), dr = pagerReady('dm', dq), fl = pagerFloor('dm', dq), ms = dr ? net.conversation(me, view.arg).filter(m => m.id >= fl) : []; return !dr ? '<span class="mut" role="status">Chargement des messages…</span>' : moreBtn('dm', '⬆ Messages plus anciens') + ((view.repMsg && !view.repMsg.room ? msgReportForm() : '') + (() => { const lm = net.conversation(me, view.arg).filter(x => x.from === me).pop(), pr = net.peerRead(me, view.arg); return ms.map(m => `<div class="msg ${m.from === me ? 'me' : ''}">${m.text ? esc(m.text) : ''}${gallery(m.images, 'm', m.id)}${mediaPlayer(m.media)} ${repBtn(null, m)}${lm && m.id === lm.id ? (pr >= m.id ? '<div class="mut" role="status">✓✓ Vu</div>' : '<div class="mut">✓ Envoyé</div>') : ''}</div>`).join(''); })() || '<span class="mut">Dites bonjour 👋</span>'); })()}
       ${typingHTML()}<input id="dm" placeholder="Message à ${esc(view.arg)}">${attachBox('dm')}<button data-dm>Envoyer</button></div>${e}`;
   }
   if (view.page === 'dm' && isRoom(view.arg) && unreadDm.rooms[+view.arg.slice(1)] && document.hasFocus()) net.markRoomRead(me, +view.arg.slice(1)).catch(() => {});
@@ -1682,13 +1745,22 @@ document.addEventListener('change', async ev => {
   const t = ev.target; if (!t.dataset || !t.dataset.pick) return;
   const key = t.dataset.pick, files = [...t.files]; err = '';
   for (const f of files) {
-    if (pend[key].length >= MAX_IMG) { err = `${MAX_IMG} images maximum`; break; }
+    if (nImg(key) >= MAX_IMG) { err = `${MAX_IMG} images maximum`; break; }
     try { pend[key].push(await prepImage(f)); } catch (e) { err = e.message; }
   }
   refresh();
 });
+document.addEventListener('change', async ev => {
+  const t = ev.target; if (!t.dataset || !t.dataset.pickvid) return;
+  const key = t.dataset.pickvid, f = t.files[0]; err = ''; if (!f) return;
+  if (hasMedia(key)) { err = 'Une seule vidéo ou un seul message vocal par envoi'; return refresh(); }
+  notice = '⏳ Compression de la vidéo…'; refresh();
+  try { pend[key].push(await prepVideo(f)); } catch (e) { err = e.message; }
+  notice = ''; refresh();
+});
+document.addEventListener('click', ev => { const b = ev.target.closest('[data-voice]'); if (b) voiceToggle(b.dataset.voice); });
 // texte alternatif : mémorisé à la frappe
-document.addEventListener('input', ev => { const d = ev.target.dataset; if (d && d.alt) { const [k, i] = d.alt.split(':'); if (pend[k][+i]) pend[k][+i].alt = ev.target.value; } });
+document.addEventListener('input', ev => { const d = ev.target.dataset; if (d && d.alt) { const [k, i] = d.alt.split(':'); if (pend[k][+i] && !pend[k][+i].kind) pend[k][+i].alt = ev.target.value; } });
 // plein écran : Échap ferme, flèches naviguent, Tab reste dans la visionneuse
 document.addEventListener('keydown', ev => {
   if (!lb) return;
