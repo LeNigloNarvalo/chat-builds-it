@@ -113,6 +113,19 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   assert.strictEqual((await call('/api/login', null, { name: 'alice', password: 'nouveau1' })).status, 400);
   const np3 = await call('/api/login', null, { name: 'alice', password: 'reinit99' }); assert.ok(np3.token);
   np2.token = np3.token;
+  // alerte de connexion suspecte : nouvel appareil → e-mail avec lien « ce n'était pas moi » (à usage unique) qui déconnecte tout
+  const n0 = outbox.length, loginUa = ua => fetch(base + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': ua }, body: JSON.stringify({ name: 'alice', password: 'reinit99' }) }).then(r => r.json());
+  await loginUa('Mozilla/5.0 (X11; Linux) Firefox/120.0'); assert.strictEqual(outbox.length, n0 + 1, 'nouvel appareil : alerte');
+  assert.ok(/connexion suspecte/.test(outbox[n0].subject) && outbox[n0].to === 'alice@example.org');
+  await loginUa('Mozilla/5.0 (X11; Linux) Firefox/120.0'); assert.strictEqual(outbox.length, n0 + 1, 'appareil connu : pas d\'alerte');
+  const sec = /\?secure=([0-9a-f]{64})/.exec(outbox[n0].text)[1];
+  assert.strictEqual((await call('/api/secure-account', null, { token: 'b'.repeat(64) })).status, 400);
+  assert.strictEqual((await call('/api/secure-account', null, { token: sec })).ok, true);
+  assert.strictEqual((await call('/api/secure-account', null, { token: sec })).status, 400, 'lien d\'alerte à usage unique');
+  assert.strictEqual((await call('/api/state?v=-1', np3.token)).status, 401, 'sessions révoquées');
+  assert.ok(/\?reset=/.test(outbox[outbox.length - 1].text), 'lien de réinitialisation envoyé');
+  const rt2 = tok(outbox[outbox.length - 1]); assert.strictEqual((await call('/api/reset', null, { token: rt2, password: 'reinit99' })).ok, true);
+  np2.token = (await call('/api/login', null, { name: 'alice', password: 'reinit99' })).token; assert.ok(np2.token);
   // brouillons privés + publication planifiée par l'horloge du serveur
   const at = Date.now() + 1200;
   const dr = await act(np2.token, 'saveDraft', null, 'programmé !', [], { scheduledAt: at }); assert.ok(dr.result.id);

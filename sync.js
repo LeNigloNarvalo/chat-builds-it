@@ -60,6 +60,7 @@
     // récupération (sans session) : ne touche pas à la session de cet appareil
     net.forgot = async id => { await req('/api/forgot', 'POST', { id }); };
     net.reset = (token, password) => req('/api/reset', 'POST', { token, password });
+    net.secureAccount = token => req('/api/secure-account', 'POST', { token });
     net.verifyEmail = async token => { const j = await req('/api/verify-email', 'POST', { token }); if (session()) await pull(true).catch(() => {}); return j; };
     net.logoutAll = async () => { await req('/api/logout-all', 'POST', {}); forget(); };
     net.deleteAccount = async (by, password) => { await req('/api/delete-account', 'POST', { password }); forget(); };

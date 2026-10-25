@@ -103,7 +103,7 @@ function createServer(opts = {}) {
   }
 
   // ---- liens à usage unique (confirmation d'e-mail, mot de passe oublié) : seul le hachage du jeton est stocké ----
-  const TOKEN_MS = { verify: 24 * 3600000, reset: 30 * 60000 };
+  const TOKEN_MS = { verify: 24 * 3600000, reset: 30 * 60000, alert: 7 * 86400000 };
   const insT = db.prepare('INSERT INTO tokens (hash, kind, name, email, expires) VALUES (?, ?, ?, ?, ?)'), getT = db.prepare('SELECT * FROM tokens WHERE hash = ?'),
     delT = db.prepare('DELETE FROM tokens WHERE hash = ?'), delTUser = db.prepare('DELETE FROM tokens WHERE name = ? AND kind = ?'), purgeT = db.prepare('DELETE FROM tokens WHERE expires < ?');
   const makeToken = (kind, name, email) => {
@@ -125,6 +125,19 @@ function createServer(opts = {}) {
     if (dbFile !== ':memory:') try { fs.appendFileSync(path.join(path.dirname(dbFile), 'outbox.log'), entry, { mode: 0o600 }); } catch (e) {}
   });
   const origin = () => process.env.PUBLIC_URL || opts.publicUrl || 'http://localhost:' + (server.address() ? server.address().port : 8080);
+  // alerte de connexion suspecte : navigateur/système/lieu jamais vus sur ce compte, ou rafale d'échecs ; envoyée à l'adresse VÉRIFIÉE avec un lien « ce n'était pas moi »
+  const seenL = db.prepare("SELECT 1 FROM security_log WHERE name = ? AND kind IN ('login', 'signup') AND label = ? AND COALESCE(place, '') = ? LIMIT 1"), anyL = db.prepare("SELECT 1 FROM security_log WHERE name = ? AND kind IN ('login', 'signup') LIMIT 1"),
+    failL = db.prepare("SELECT COUNT(*) n FROM security_log WHERE name = ? AND kind IN ('login_fail', 'mfa_fail') AND at > ?"), alertedL = db.prepare("SELECT 1 FROM security_log WHERE name = ? AND kind = 'suspicious_alert' AND at > ? LIMIT 1");
+  const alertMail = (name, why, req) => {
+    const u = net.findRecoverable(name); if (!u) return;
+    const now = Date.now(); if (alertedL.get(name, now - 30 * 60000)) return; // au plus une alerte par demi-heure
+    secLog(name, 'suspicious_alert', req);
+    mail(u.email, 'Cornichon : connexion suspecte sur votre compte', `Bonjour @${u.name},\n\n${why}\nAppareil : ${deviceLabel(req.headers['user-agent'])}${placeOf(req) ? ' · ' + placeOf(req) : ''}\n\nSi c'était vous, ignorez ce message.\nSinon, sécurisez votre compte (déconnecte tous les appareils et envoie un lien pour changer de mot de passe ; valable 7 jours) :\n${origin()}/?secure=${makeToken('alert', u.name, u.email)}`);
+  };
+  const checkNewDevice = (name, req) => { // à appeler AVANT d'ouvrir la session
+    try { if (anyL.get(name) && !seenL.get(name, deviceLabel(req.headers['user-agent']), placeOf(req))) alertMail(name, 'Une connexion depuis un appareil ou un lieu inhabituel vient d\'avoir lieu.', req); } catch (e) { console.error('Alerte de connexion :', e); }
+  };
+  const checkBurst = (name, req) => { try { if (failL.get(name, Date.now() - 600000).n >= 5) alertMail(name, 'Plusieurs tentatives de connexion échouées ont visé votre compte ces dernières minutes.', req); } catch (e) { console.error('Alerte de connexion :', e); } };
   // e-mails de notification (immédiats hors heures calmes) et résumés quotidiens, selon les préférences de chaque compte
   const mailTick = () => { try { for (const j of net.mailJobs(origin())) mail(j.to, j.subject, j.text); } catch (e) { console.error('E-mails de notification :', e); } };
   const mailer = setInterval(mailTick, opts.mailCheckMs || 5000); mailer.unref();
@@ -153,18 +166,19 @@ function createServer(opts = {}) {
   async function api(req, res, url) {
     const route = req.method + ' ' + url.pathname;
     if (route === 'GET /api/health') return send(res, 200, { ok: true });
-    if (/^POST \/api\/(signup|login|stream-session|forgot|reset|verify-email)$/.test(route) && limited(req)) throw new Http(429, 'Trop de requêtes : réessayez dans une minute');
+    if (/^POST \/api\/(signup|login|stream-session|forgot|reset|verify-email|secure-account)$/.test(route) && limited(req)) throw new Http(429, 'Trop de requêtes : réessayez dans une minute');
     if (route === 'POST /api/signup') { const b = await body(req); const name = await net.signup(b.name, b.password, b.bio); return send(res, 200, openSession(name, req, 'signup')); }
     if (route === 'POST /api/login') {
       const b = await body(req); let name;
       try { name = await net.login(String(b.name || ''), String(b.password || '')); } catch (e) {
-        try { secLog(net.profile(String(b.name || '')).name, 'login_fail', req); } catch (x) { /* compte inconnu : rien à journaliser */ }
+        try { const n = net.profile(String(b.name || '')).name; secLog(n, 'login_fail', req); checkBurst(n, req); } catch (x) { /* compte inconnu : rien à journaliser */ }
         throw e;
       }
       // double authentification : appareil de confiance, sinon code TOTP ou code de secours
-      if (!tfa.enabled(name) || tfa.isTrusted(name, b.trusted)) return send(res, 200, openSession(name, req, 'login'));
+      if (!tfa.enabled(name) || tfa.isTrusted(name, b.trusted)) { checkNewDevice(name, req); return send(res, 200, openSession(name, req, 'login')); }
       if (!b.code) return send(res, 200, { mfa: true });
-      if (!tfa.verify(name, b.code)) { secLog(name, 'mfa_fail', req); throw new Http(400, 'Code incorrect'); }
+      if (!tfa.verify(name, b.code)) { secLog(name, 'mfa_fail', req); checkBurst(name, req); throw new Http(400, 'Code incorrect'); }
+      checkNewDevice(name, req);
       return send(res, 200, Object.assign(openSession(name, req, 'login'), b.trust ? { trusted: tfa.trust(name, req.headers['user-agent']) } : {}));
     }
     // vue du stream : ouvre le vrai compte « Streamer » SANS mot de passe, uniquement depuis la machine du serveur
@@ -189,6 +203,14 @@ function createServer(opts = {}) {
     if (route === 'POST /api/verify-email') {
       const b = await body(req), t = takeToken('verify', b.token);
       return send(res, 200, { ok: true, name: net.confirmEmail(t.name, t.email), email: t.email });
+    }
+    // « ce n'était pas moi » (lien d'une alerte) : déconnecte tous les appareils et envoie un lien de réinitialisation
+    if (route === 'POST /api/secure-account') {
+      const b = await body(req), t = takeToken('alert', b.token), u = net.findRecoverable(t.name);
+      if (!u || u.email !== t.email) throw new Http(400, 'Lien invalide : l\'adresse du compte a changé');
+      secLog(t.name, 'logout_all', req); net.logoutAll(t.name); tfa.revokeDevices(t.name); delUser.run(t.name); dev.revokeAll(t.name);
+      mail(u.email, 'Cornichon : choisissez un nouveau mot de passe', `Bonjour @${u.name},\n\nTous vos appareils ont été déconnectés. Pour choisir un nouveau mot de passe (lien à usage unique, valable 30 minutes) :\n${origin()}/?reset=${makeToken('reset', u.name, u.email)}`);
+      return send(res, 200, { ok: true, name: t.name });
     }
     const me = auth(req); if (!me) throw new Http(401, 'Session expirée : reconnectez-vous');
     // ---- API publique (jeton personnel ou session) : lire et publier ----

@@ -27,8 +27,8 @@ const applyTheme = () => Theme.apply(th, document);
 applyTheme();
 let notice = '';
 // liens reçus par e-mail (?verify=… / ?reset=…) : lus puis retirés de l'URL pour ne pas rester dans l'historique
-let LINK = (() => { const q = new URLSearchParams(location.search), k = q.get('reset') ? 'reset' : q.get('verify') ? 'verify' : null;
-  if (!k) return null; const token = q.get(k); q.delete('reset'); q.delete('verify'); history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q : '')); return { kind: k, token }; })();
+let LINK = (() => { const q = new URLSearchParams(location.search), k = q.get('reset') ? 'reset' : q.get('verify') ? 'verify' : q.get('secure') ? 'secure' : null;
+  if (!k) return null; const token = q.get(k); q.delete('reset'); q.delete('verify'); q.delete('secure'); history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q : '')); return { kind: k, token }; })();
 let authMode = 'login'; // 'login' | 'forgot'
 let mfa = null; // connexion en attente du code de double authentification : { name, password } (gardé en mémoire seulement, jamais stocké)
 let linkMsg = ''; // résultat du lien ouvert (confirmation / réinitialisation)
@@ -246,7 +246,7 @@ async function tfaLoad() {
 }
 // sessions actives et journal de sécurité (données du serveur, propres au compte)
 const ses = { data: null, loaded: false, msg: '' };
-const SEC_EVENTS = { login: '🔓 Connexion', login_fail: '⚠️ Échec de connexion', mfa_fail: '⚠️ Mauvais code de double authentification', signup: '🎉 Création du compte', logout: '🚪 Déconnexion', logout_all: '🚪 Déconnexion de tous les appareils', password_change: '🔑 Mot de passe changé', password_reset: '🔑 Mot de passe réinitialisé par e-mail', session_revoked: '🛑 Appareil révoqué', sessions_revoked: '🛑 Autres appareils révoqués' };
+const SEC_EVENTS = { login: '🔓 Connexion', login_fail: '⚠️ Échec de connexion', mfa_fail: '⚠️ Mauvais code de double authentification', signup: '🎉 Création du compte', logout: '🚪 Déconnexion', logout_all: '🚪 Déconnexion de tous les appareils', password_change: '🔑 Mot de passe changé', password_reset: '🔑 Mot de passe réinitialisé par e-mail', suspicious_alert: '🚨 Alerte de connexion suspecte envoyée par e-mail', session_revoked: '🛑 Appareil révoqué', sessions_revoked: '🛑 Autres appareils révoqués' };
 async function sesLoad() {
   try { ses.data = await sync.get('/api/sessions'); } catch (e) { err = e.message; }
   ses.loaded = true; if (view.page === 'security' || view.page === 'privacy') refresh();
@@ -1372,6 +1372,7 @@ render();
 (async () => {
   try { await sync.pull(true); } catch (e) { err = e.message; }
   if (LINK && LINK.kind === 'verify') { try { const r = await net.verifyEmail(LINK.token); linkMsg = `Adresse ${r.email} vérifiée pour @${r.name} ✔`; } catch (e) { linkMsg = e.message; } }
+  if (LINK && LINK.kind === 'secure') { try { await net.secureAccount(LINK.token); linkMsg = 'Compte sécurisé ✔ Tous les appareils sont déconnectés ; un lien pour changer de mot de passe vient de vous être envoyé par e-mail.'; } catch (e) { linkMsg = e.message; } }
   booting = false; checkSession();
   if (me && Notif.supported() && Notif.seenGet(store, me) === null) Notif.seenSet(store, me, net.notifications(me).reduce((m, n) => Math.max(m, n.id), 0));
   if (new URLSearchParams(location.search).get('notif') && me) view = { page: 'notifs' };
