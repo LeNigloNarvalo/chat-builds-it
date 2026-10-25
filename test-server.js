@@ -184,6 +184,43 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   const s3 = createServer({ db: ':memory:' }); await new Promise(ok => s3.listen(0, '127.0.0.1', ok));
   const b3 = 'http://127.0.0.1:' + s3.address().port, tk = (await (await fetch(b3 + '/api/signup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'carol', password: 'secret1' }) })).json()).token;
   const r3 = await fetch(b3 + '/api/dev/hook', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tk }, body: JSON.stringify({ url: 'http://127.0.0.1:9/x', events: ['follow'] }) }); assert.strictEqual(r3.status, 400);
+  // double authentification (TOTP) : activation, connexion avec code, secours, appareils de confiance
+  {
+    const T = require('./totp.js'), tc = (p, tok, d, h) => fetch(base + p, { method: d === undefined ? 'GET' : 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, tok ? { Authorization: 'Bearer ' + tok } : {}, h || {}), body: d === undefined ? undefined : JSON.stringify(d) }).then(async r => Object.assign(await r.json(), { status: r.status }));
+    assert.strictEqual(T.code('GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', 59000), '287082', 'vecteur RFC 6238'); // secret "12345678901234567890", t=59 s
+    const u = await tc('/api/signup', null, { name: 'totpy', password: 'secret1' }), tk = u.token;
+    const su = await tc('/api/2fa/setup', tk, {}); assert.ok(/^[A-Z2-7]{32}$/.test(su.secret) && su.uri.startsWith('otpauth://totp/Cornichon:totpy?secret=' + su.secret));
+    assert.strictEqual((await tc('/api/2fa/enable', tk, { code: '000000' })).status, 400);
+    assert.strictEqual((await tc('/api/login', null, { name: 'totpy', password: 'secret1' })).token.length, 64, 'sans 2FA : connexion directe');
+    const en = await tc('/api/2fa/enable', tk, { code: T.code(su.secret), trust: true }); assert.strictEqual(en.codes.length, 10); assert.ok(en.trusted);
+    assert.strictEqual((await tc('/api/2fa/setup', tk, {})).status, 400, 'déjà active');
+    // mot de passe seul : refusé ; mauvais code : refusé ; bon code : session
+    assert.deepStrictEqual((await tc('/api/login', null, { name: 'totpy', password: 'secret1' })).mfa, true);
+    assert.strictEqual((await tc('/api/login', null, { name: 'totpy', password: 'secret1', code: '123456' })).status, 400);
+    // anti-rejeu : le code déjà utilisé à l'activation ne sert plus ; on avance d'un pas avec le code suivant
+    const prev = T.code(su.secret, Date.now() - 30000), nxt = T.code(su.secret, Date.now() + 30000);
+    assert.strictEqual((await tc('/api/login', null, { name: 'totpy', password: 'secret1', code: T.code(su.secret) })).status, 400, 'rejeu refusé');
+    const ok = await tc('/api/login', null, { name: 'totpy', password: 'secret1', code: nxt, trust: false }); assert.strictEqual(ok.token.length, 64); assert.ok(!ok.trusted);
+    void prev;
+    // appareil de confiance : plus de code demandé ; retiré : le code redevient nécessaire
+    assert.strictEqual((await tc('/api/login', null, { name: 'totpy', password: 'secret1', trusted: en.trusted })).token.length, 64);
+    let st = await tc('/api/2fa', tk); assert.strictEqual(st.enabled, true); assert.strictEqual(st.backupLeft, 10); assert.strictEqual(st.devices.length, 1);
+    assert.ok(!JSON.stringify(st).includes(su.secret), 'secret non renvoyé après activation');
+    // codes de secours : à usage unique
+    const bc = en.codes[0];
+    const viaBackup = await tc('/api/login', null, { name: 'totpy', password: 'secret1', code: bc.toUpperCase(), trust: true }); assert.strictEqual(viaBackup.token.length, 64); assert.ok(viaBackup.trusted);
+    assert.strictEqual((await tc('/api/login', null, { name: 'totpy', password: 'secret1', code: bc })).status, 400, 'code de secours déjà utilisé');
+    st = await tc('/api/2fa', tk); assert.strictEqual(st.backupLeft, 9); assert.strictEqual(st.devices.length, 2);
+    await tc('/api/2fa/device-revoke', tk, { id: st.devices[0].id }); await tc('/api/2fa/device-revoke', tk, { id: st.devices[1].id });
+    assert.deepStrictEqual((await tc('/api/login', null, { name: 'totpy', password: 'secret1', trusted: en.trusted })).mfa, true);
+    // désactivation : mot de passe + code
+    assert.strictEqual((await tc('/api/2fa/disable', tk, { password: 'faux', code: en.codes[1] })).status, 400);
+    const rg = await tc('/api/2fa/backup', tk, { password: 'secret1', code: en.codes[1] }); assert.strictEqual(rg.codes.length, 10);
+    assert.strictEqual((await tc('/api/2fa/disable', tk, { password: 'secret1', code: en.codes[2] })).status, 400, 'anciens codes invalidés');
+    assert.strictEqual((await tc('/api/2fa/disable', tk, { password: 'secret1', code: rg.codes[0] })).ok, true);
+    assert.strictEqual((await tc('/api/login', null, { name: 'totpy', password: 'secret1' })).token.length, 64);
+    assert.strictEqual((await tc('/api/2fa')).status, 401);
+  }
   for (const x of [s3, srv, rcv]) x.close(); rcv.closeAllConnections && rcv.closeAllConnections();
-  console.log('ok jetons & webhooks'); process.exit(0);
+  console.log('ok jetons, webhooks & double authentification'); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });

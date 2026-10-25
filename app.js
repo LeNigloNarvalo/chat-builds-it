@@ -19,6 +19,7 @@ let notice = '';
 let LINK = (() => { const q = new URLSearchParams(location.search), k = q.get('reset') ? 'reset' : q.get('verify') ? 'verify' : null;
   if (!k) return null; const token = q.get(k); q.delete('reset'); q.delete('verify'); history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q : '')); return { kind: k, token }; })();
 let authMode = 'login'; // 'login' | 'forgot'
+let mfa = null; // connexion en attente du code de double authentification : { name, password } (gardé en mémoire seulement, jamais stocké)
 let linkMsg = ''; // résultat du lien ouvert (confirmation / réinitialisation)
 // l'utilisateur connecté est celui que le serveur reconnaît pour la session de cet appareil
 let me = null;
@@ -35,7 +36,7 @@ const GRADS = ['linear-gradient(135deg,#9146ff,#ff4d8d)', 'linear-gradient(135de
 const bannerCss = b => !b ? GRADS[0] : b.startsWith('grad:') ? GRADS[+b.slice(5)] : `center/cover url("${encodeURI(b).replace(/"/g, '%22')}"), ${GRADS[4]}`;
 const peopleList = names => names.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)} · ${esc(prof(n).bio || '')}</span></div>`).join('') || '<p class="mut">Personne pour l’instant.</p>';
 const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'à l’instant' : m < 60 ? m + ' min' : m < 1440 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' j'; };
-const go = (page, arg) => { if (page === 'dev') { dev.loaded = false; dev.fresh = null; dev.detail = null; } view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
+const go = (page, arg) => { if (page === 'settings') { tfa.loaded = false; tfa.setup = null; tfa.codes = null; } if (page === 'dev') { dev.loaded = false; dev.fresh = null; dev.detail = null; } view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
 // ---- fil paginé côté serveur (/api/feed) : pages de 10 posts, défilement infini, bandeau « N nouveaux posts » ----
 const PAGE = 10, fs = { scope: null, who: null, ids: [], more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: 0 };
 // clé du fil affiché : « feed », « explore » ou « list:<propriétaire>:<id> » (fil dédié d'une liste de comptes)
@@ -148,6 +149,58 @@ window.addEventListener('storage', ev => { if (ev.key === SESSION) sync.pull(tru
   if (ev.key === A11Y_KEY) { prefs = A11y.load(store); applyPrefs(); } if (ev.key === null) refresh(); });
 const openSession = name => { me = name; };
 
+// ---- double authentification (TOTP) : tout est stocké côté serveur, la page ne garde que la dernière lecture ----
+const tfa = { data: null, loaded: false, setup: null, codes: null, msg: '', trusted: false };
+async function tfaLoad() {
+  try { tfa.data = await sync.get('/api/2fa'); } catch (e) { err = e.message; }
+  tfa.loaded = true; if (view.page === 'settings') { const k = document.activeElement && document.activeElement.id; if (!/^tfa-/.test(k || '')) refresh(); }
+}
+const qrSvg = text => { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createSvgTag(5, 3, 'QR code à scanner avec votre appli d’authentification', 'QR code TOTP'); };
+const groupCode = c => String(c).replace(/(.{4})(?=.)/g, '$1 ');
+function tfaCard() {
+  if (!tfa.loaded) { tfaLoad(); return '<div class="card"><h2>🔐 Double authentification (TOTP)</h2><p class="mut" role="status">Chargement…</p></div>'; }
+  const d = tfa.data || { enabled: false, devices: [], backupLeft: 0 }, e = err ? `<p class="err" role="alert">${esc(err)}</p>` : '';
+  const codes = tfa.codes ? `<div class="card" role="status"><b class="ok">Codes de secours — notez-les maintenant, ils ne seront plus jamais affichés :</b>
+    <div class="backup" id="tfa-codes">${tfa.codes.map(c => `<code>${esc(c)}</code>`).join('')}</div>
+    <p class="mut">Chaque code ne sert qu’une fois, si vous perdez votre téléphone.</p><button data-tfa="copy">Copier</button> <button data-tfa="download">⬇️ Télécharger</button> <button data-tfa="ack">J’ai noté mes codes</button></div>` : '';
+  let body;
+  if (d.enabled) {
+    body = `<p>✅ <b class="ok">Activée</b> — un code de votre appli est demandé à chaque connexion sur un nouvel appareil.</p>
+      <p class="mut">Codes de secours restants : <b>${d.backupLeft}</b> sur 10${d.backupLeft <= 2 ? ' — pensez à en régénérer.' : '.'}</p>
+      <label>Code actuel (appli ou secours) pour confirmer<input id="tfa-conf" inputmode="text" autocomplete="one-time-code" placeholder="123 456"></label>
+      <label>Mot de passe<input id="tfa-pw" type="password" autocomplete="current-password" placeholder="Mot de passe"></label>
+      <div class="row"><button data-tfa="regen">🔄 Régénérer les codes de secours</button> <button data-tfa="disable">🚫 Désactiver</button></div>
+      <b>📱 Appareils de confiance (${d.devices.length})</b><p class="mut">Ces appareils passent l’étape du code pendant 30 jours.</p>
+      ${d.devices.map(x => `<div class="card"><b>${esc(x.label)}</b> <span class="mut">ajouté ${dt(x.created)} · dernière connexion ${dt(x.last_used)} · expire ${dt(x.expires)}</span> <button data-tfa="rm:${x.id}" aria-label="Retirer l’appareil ${esc(x.label)}">Retirer</button></div>`).join('') || '<p class="mut">Aucun appareil de confiance.</p>'}
+      ${d.devices.length > 1 ? '<button data-tfa="rmall">Retirer tous les appareils</button>' : ''}`;
+  } else if (tfa.setup) {
+    body = `<ol class="mut"><li>Installez une appli d’authentification (Aegis, 2FAS, Google Authenticator, Authy…).</li><li>Scannez ce QR code, ou saisissez le secret à la main.</li><li>Entrez le code à 6 chiffres affiché pour terminer.</li></ol>
+      <div class="qr" id="tfa-qr">${qrSvg(tfa.setup.uri)}</div>
+      <p>Secret : <code id="tfa-secret">${esc(groupCode(tfa.setup.secret))}</code> <span class="mut">(SHA-1 · 6 chiffres · 30 s)</span></p>
+      <label>Code à 6 chiffres<input id="tfa-code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="123 456"></label>
+      <label class="mut"><input type="checkbox" id="tfa-trust" style="width:auto" checked> Faire confiance à cet appareil</label><br>
+      <button data-tfa="enable">✅ Activer</button> <button data-tfa="cancel">Annuler</button>`;
+  } else body = `<p>❌ Désactivée. Ajoutez une couche de protection : en plus du mot de passe, un code temporaire de votre téléphone.</p><button data-tfa="start">🔐 Activer la double authentification</button>`;
+  return `<div class="card" role="group" aria-labelledby="h-tfa"><h2 id="h-tfa">🔐 Double authentification (TOTP)</h2>${body}${tfa.msg ? `<p class="ok" role="status">${esc(tfa.msg)}</p>` : ''}${e}</div>${codes}`;
+}
+document.addEventListener('click', ev => {
+  const b = ev.target.closest('[data-tfa]'); if (!b) return;
+  const a = b.dataset.tfa, v = id => ($(id) || {}).value, clean = () => { tfa.msg = ''; };
+  if (a === 'start') attempt(async () => { clean(); tfa.setup = await sync.send('/api/2fa/setup', {}); });
+  else if (a === 'cancel') { tfa.setup = null; render(); }
+  else if (a === 'enable') attempt(async () => {
+    const trust = !!($('#tfa-trust') || {}).checked, r = await sync.send('/api/2fa/enable', { code: v('#tfa-code'), trust });
+    if (r.trusted) sync.net.trustDevice(me, r.trusted);
+    tfa.codes = r.codes; tfa.setup = null; tfa.msg = 'Double authentification activée ✔'; await tfaLoad();
+  });
+  else if (a === 'disable') { if (confirm('Désactiver la double authentification ? Les appareils de confiance seront oubliés.')) attempt(async () => { await sync.send('/api/2fa/disable', { code: v('#tfa-conf'), password: v('#tfa-pw') }); tfa.codes = null; await tfaLoad(); tfa.msg = 'Double authentification désactivée'; }); }
+  else if (a === 'regen') attempt(async () => { tfa.codes = (await sync.send('/api/2fa/backup', { code: v('#tfa-conf'), password: v('#tfa-pw') })).codes; tfa.msg = 'Nouveaux codes générés ✔ (les anciens ne marchent plus)'; await tfaLoad(); });
+  else if (a.startsWith('rm:')) attempt(async () => { await sync.send('/api/2fa/device-revoke', { id: +a.slice(3) }); tfa.msg = 'Appareil retiré ✔'; await tfaLoad(); });
+  else if (a === 'rmall') attempt(async () => { await sync.send('/api/2fa/devices-revoke', {}); tfa.msg = 'Appareils retirés ✔'; await tfaLoad(); });
+  else if (a === 'ack') { tfa.codes = null; render(); }
+  else if (a === 'copy') { try { navigator.clipboard.writeText(tfa.codes.join('\n')); tfa.msg = 'Codes copiés ✔'; } catch (x) { tfa.msg = 'Sélectionnez les codes pour les copier'; } render(); }
+  else if (a === 'download') download(`cornichon-${me}-codes-de-secours.txt`, `Codes de secours Cornichon (@${me}) — chacun ne sert qu'une fois\n\n${tfa.codes.join('\n')}\n`);
+});
 function notifCard() {
   const np = Notif.load(store), ok = Notif.supported(), on = np.enabled && perm === 'granted';
   return `<div class="card" role="group" aria-labelledby="h-app"><h2 id="h-app">📲 Application et notifications</h2>
@@ -278,6 +331,15 @@ function render() {
       <p class="err" role="alert">${esc(err)}</p><p class="ok" role="status">${esc(notice)}</p></div>`;
     return;
   }
+  if (!me && mfa) {
+    nav.innerHTML = '';
+    app.innerHTML = `<div class="card"><h2>🔐 Double authentification</h2><p class="mut">Compte @${esc(mfa.name)} : saisissez le code à 6 chiffres de votre appli d’authentification, ou un code de secours.</p>
+      <input id="mfa-code" inputmode="text" autocomplete="one-time-code" placeholder="123 456 ou code de secours" aria-label="Code de double authentification" autofocus>
+      <label class="mut"><input type="checkbox" id="mfa-trust" style="width:auto"> Faire confiance à cet appareil pendant 30 jours</label><br>
+      <button data-mfago>Valider</button> <button data-mfaback>Annuler</button><p class="err" role="alert">${esc(err)}</p></div>`;
+    const c = $('#mfa-code'); if (c) c.focus();
+    return;
+  }
   if (!me) {
     nav.innerHTML = '';
     app.innerHTML = `<div class="card"><h2>Bienvenue dans le bocal Cornichon</h2><input id="u" placeholder="Pseudo"><input id="pw" type="password" placeholder="Mot de passe"><input id="bio" placeholder="Bio (inscription)">
@@ -358,6 +420,7 @@ function render() {
       <b id="l-size">Taille du texte : ${prefs.size} %</b><div class="row" role="group" aria-labelledby="l-size"><button data-size="-1" aria-label="Réduire le texte" ${prefs.size === A11y.SIZES[0] ? 'disabled' : ''}>A−</button><button data-size="0" aria-label="Taille normale">A</button><button data-size="1" aria-label="Agrandir le texte" ${prefs.size === A11y.SIZES[A11y.SIZES.length - 1] ? 'disabled' : ''}>A+</button></div>
       <p class="mut">Navigation au clavier : Tab / Maj+Tab, Entrée ou Espace pour activer. Ces préférences restent sur cet appareil.</p></div>
       ${notifCard()}
+      ${tfaCard()}
       <div class="card" role="group" aria-labelledby="h-data"><h2 id="h-data">📦 Mes données</h2><p class="mut">Exporte ton profil, tes posts et tes messages en JSON (sans mot de passe), ou importe un export pour les fusionner dans ton compte.</p>
       <div class="row"><button data-export>⬇️ Exporter en JSON</button><label class="mut">Importer un fichier <input id="imp-file" type="file" accept="application/json,.json"></label></div>
       <label for="imp-txt">Ou colle le JSON ici</label><textarea id="imp-txt" class="json" placeholder='{"format":"cornichon-export",…}'></textarea><button data-import>⬆️ Importer</button>
@@ -611,7 +674,7 @@ document.addEventListener('click', async ev => {
   } else if ('notiftest' in b.dataset) Notif.show({ id: 'test' + Date.now(), type: 'mention' }, 'Le bocal');
 });
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
+  const d = ev.target.closest('*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-mfago],*[data-mfaback],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
   if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
@@ -626,7 +689,9 @@ document.addEventListener('click', ev => {
   else if ('dvdetail' in D) attempt(async () => { dev.detail = await sync.get('/api/dev/delivery?id=' + D.dvdetail); });
   else if ('dvclose' in D) { dev.detail = null; render(); }
   else if ('diag' in D) runDiag();
-  else if ('login' in D) attempt(async () => openSession(await net.login(v('#u'), v('#pw'))));
+  else if ('login' in D) attempt(async () => { const name = v('#u'), pw = v('#pw'), r = await net.login(name, pw); if (r && r.mfa) mfa = { name, password: pw }; else openSession(r); });
+  else if ('mfago' in D) attempt(async () => { const r = await net.login(mfa.name, mfa.password, v('#mfa-code'), !!($('#mfa-trust') || {}).checked); mfa = null; openSession(r); });
+  else if ('mfaback' in D) { mfa = null; err = ''; render(); }
   else if ('signup' in D) attempt(async () => openSession(await net.signup(v('#u'), v('#pw'), v('#bio'))));
   else if ('logout' in D) { me = null; sync.logout(); clearOffline(); if (STREAM) attempt(async () => openSession(await net.ensureStreamer())); go('feed'); }
   else if ('chpw' in D) attempt(async () => {

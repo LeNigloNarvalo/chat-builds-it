@@ -3,12 +3,12 @@
 // et envoient leurs actions à /api/call, authentifiées par une session aléatoire (seul son hachage SHA-256 est stocké).
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
-const Social = require('./social.js'), { Dev } = require('./devapi.js');
+const Social = require('./social.js'), { Dev } = require('./devapi.js'), { Totp } = require('./totp.js');
 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
 const ACTIONS = new Set(['post', 'deletePost', 'editPost', 'toggleBookmark', 'toggleRepost', 'toggleLike', 'toggleFollow', 'updateProfile', 'importUser', 'send', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'exportUser', 'markDmRead', 'saveDraft', 'deleteDraft', 'publishDraft', 'createList', 'updateList', 'deleteList', 'toggleListMember', 'dismissSuggestion', 'vote', 'createGroup', 'updateGroup', 'deleteGroup', 'joinGroup', 'leaveGroup', 'handleRequest', 'inviteToGroup', 'respondInvite', 'cancelInvite', 'removeFromGroup', 'unbanFromGroup', 'setGroupMod']);
-const STATIC = new Set(['index.html', 'style.css', 'a11y.js', 'theme.js', 'social.js', 'sync.js', 'diag.js', 'app.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'notif.js']);
+const STATIC = new Set(['index.html', 'style.css', 'a11y.js', 'theme.js', 'social.js', 'sync.js', 'diag.js', 'app.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'notif.js', 'qrcode.js']);
 const TYPES = { html: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', webmanifest: 'application/manifest+json; charset=utf-8', svg: 'image/svg+xml' };
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 
@@ -26,6 +26,7 @@ function createServer(opts = {}) {
   const storage = { getItem: k => { const r = getRow.get(k); return r ? r.v : null; }, setItem: (k, v) => { putRow.run(k, String(v)); if (k === Social.KEY) { announce(); setImmediate(() => { try { dev.scan(); } catch (e) { console.error('Webhooks :', e); } }); } } };
   const version = () => (getRow.get(Social.KEY) || { version: 0 }).version;
   const net = Social.Net(storage);
+  const tfa = Totp(db);
   const dev = Dev(db, net, { allowPrivate: opts.webhookPrivate || process.env.WEBHOOK_ALLOW_PRIVATE === '1' });
 
   // ---- temps réel (SSE) : chaque changement des données est annoncé aux clients connectés, qui rapatrient alors leur vue ----
@@ -111,7 +112,14 @@ function createServer(opts = {}) {
     if (route === 'GET /api/health') return send(res, 200, { ok: true });
     if (/^POST \/api\/(signup|login|stream-session|forgot|reset|verify-email)$/.test(route) && limited(req)) throw new Http(429, 'Trop de requêtes : réessayez dans une minute');
     if (route === 'POST /api/signup') { const b = await body(req); const name = await net.signup(b.name, b.password, b.bio); return send(res, 200, openSession(name)); }
-    if (route === 'POST /api/login') { const b = await body(req); const name = await net.login(String(b.name || ''), String(b.password || '')); return send(res, 200, openSession(name)); }
+    if (route === 'POST /api/login') {
+      const b = await body(req), name = await net.login(String(b.name || ''), String(b.password || ''));
+      // double authentification : appareil de confiance, sinon code TOTP ou code de secours
+      if (!tfa.enabled(name) || tfa.isTrusted(name, b.trusted)) return send(res, 200, openSession(name));
+      if (!b.code) return send(res, 200, { mfa: true });
+      if (!tfa.verify(name, b.code)) throw new Http(400, 'Code incorrect');
+      return send(res, 200, Object.assign(openSession(name), b.trust ? { trusted: tfa.trust(name, req.headers['user-agent']) } : {}));
+    }
     // vue du stream : ouvre le vrai compte « Streamer » SANS mot de passe, uniquement depuis la machine du serveur
     if (route === 'POST /api/stream-session') {
       if (!loopback(req)) throw new Http(403, 'Réservé à la machine du stream');
@@ -128,7 +136,7 @@ function createServer(opts = {}) {
       if (pw.length < 4) throw new Http(400, 'Nouveau mot de passe trop court (4 min)');
       const t = takeToken('reset', b.token), u = net.findRecoverable(t.name);
       if (!u || u.email !== t.email) throw new Http(400, 'Lien invalide : l\'adresse du compte a changé');
-      await net.resetPassword(t.name, pw); delUser.run(t.name); delTUser.run(t.name, 'reset'); // toutes les sessions actives sont révoquées
+      await net.resetPassword(t.name, pw); tfa.revokeDevices(t.name); delUser.run(t.name); delTUser.run(t.name, 'reset'); // toutes les sessions actives sont révoquées
       return send(res, 200, { ok: true, name: t.name });
     }
     if (route === 'POST /api/verify-email') {
@@ -200,13 +208,29 @@ function createServer(opts = {}) {
       return send(res, 200, r);
     }
     if (route === 'POST /api/email-remove') { net.removeEmail(me.name); delTUser.run(me.name, 'verify'); delTUser.run(me.name, 'reset'); return send(res, 200, { ok: true }); }
+    // ---- double authentification (réservée à la session du propriétaire) ----
+    if (url.pathname.startsWith('/api/2fa')) {
+      const sub = url.pathname.slice(8), state = () => ({ enabled: tfa.enabled(me.name), pending: tfa.pending(me.name), backupLeft: tfa.backupLeft(me.name), devices: tfa.devices(me.name) });
+      if (route === 'GET /api/2fa') return send(res, 200, state());
+      if (req.method === 'POST') {
+        if (limited(req)) throw new Http(429, 'Trop de requêtes : réessayez dans une minute');
+        const b = await body(req), pw = async () => { await net.login(me.name, String(b.password || '')); };
+        if (sub === '/setup') return send(res, 200, tfa.setup(me.name));
+        if (sub === '/enable') { const codes = tfa.enable(me.name, b.code); return send(res, 200, Object.assign({ codes }, b.trust ? { trusted: tfa.trust(me.name, req.headers['user-agent']) } : {})); }
+        if (sub === '/disable') { await pw(); if (!tfa.enabled(me.name) || !tfa.verify(me.name, b.code)) throw new Http(400, 'Code incorrect'); tfa.disable(me.name); return send(res, 200, { ok: true }); }
+        if (sub === '/backup') { await pw(); if (!tfa.enabled(me.name) || !tfa.verify(me.name, b.code)) throw new Http(400, 'Code incorrect'); return send(res, 200, { codes: tfa.regenerate(me.name) }); }
+        if (sub === '/device-revoke') { tfa.revokeDevice(me.name, b.id); return send(res, 200, { ok: true }); }
+        if (sub === '/devices-revoke') { tfa.revokeDevices(me.name); return send(res, 200, { ok: true }); }
+      }
+      throw new Http(404, 'Route inconnue');
+    }
     if (route === 'POST /api/logout') { delS.run(me.hash); return send(res, 200, { ok: true }); }
-    if (route === 'POST /api/logout-all') { net.logoutAll(me.name); delUser.run(me.name); dev.revokeAll(me.name); return send(res, 200, { ok: true }); }
+    if (route === 'POST /api/logout-all') { net.logoutAll(me.name); tfa.revokeDevices(me.name); delUser.run(me.name); dev.revokeAll(me.name); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/password') {
       const b = await body(req); await net.changePassword(me.name, String(b.oldPw || ''), String(b.newPw || ''));
-      delUser.run(me.name); return send(res, 200, openSession(me.name)); // les autres appareils sont déconnectés
+      delUser.run(me.name); tfa.revokeDevices(me.name); return send(res, 200, openSession(me.name)); // les autres appareils sont déconnectés
     }
-    if (route === 'POST /api/delete-account') { const b = await body(req); await net.deleteAccount(me.name, String(b.password || '')); delUser.run(me.name); dev.forget(me.name); return send(res, 200, { ok: true }); }
+    if (route === 'POST /api/delete-account') { const b = await body(req); await net.deleteAccount(me.name, String(b.password || '')); delUser.run(me.name); tfa.forget(me.name); dev.forget(me.name); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/read-notifications') { net.notifications(me.name, true); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/call') {
       const b = await body(req);

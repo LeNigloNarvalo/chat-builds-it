@@ -86,3 +86,5 @@ h2,h3{line-height:1.2}h2{font-size:var(--t2)}h3{font-size:var(--t1)}
 .rules{white-space:pre-wrap}.gtag{margin-left:6px;font-size:.85em}
 .scroll{overflow-x:auto}.dvlog{width:100%;border-collapse:collapse;font-size:.85em}.dvlog th,.dvlog td{text-align:left;padding:.3em .5em;border-bottom:1px solid #8884;vertical-align:top}.dvlog td{word-break:break-word}
 #app pre{white-space:pre-wrap;word-break:break-all;background:#8882;padding:.5em;border-radius:6px;overflow-x:auto}#dv-new{word-break:break-all;user-select:all}
+.qr{background:#fff;display:inline-block;padding:4px;border-radius:8px;margin:6px 0}.qr svg{display:block;max-width:100%;height:auto}
+.backup{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px;margin:8px 0}.backup code{padding:4px 6px;border:1px solid var(--bd);border-radius:6px;text-align:center;user-select:all}

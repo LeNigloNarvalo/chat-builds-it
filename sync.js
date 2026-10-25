@@ -41,7 +41,17 @@
       return l;
     };
     net.signup = async (name, password, bio) => open(await req('/api/signup', 'POST', { name, password, bio }));
-    net.login = async (name, password) => open(await req('/api/login', 'POST', { name, password }));
+    // appareils de confiance (par navigateur, clé « app.trusted ») : un jeton par pseudo, envoyé à la connexion pour passer l'étape du code
+    const trustedKey = 'app.trusted', trustedAll = () => { try { return JSON.parse(store.getItem(trustedKey) || '{}'); } catch (e) { return {}; } };
+    const trustedSet = (name, t) => { const m = trustedAll(); if (t) m[name.toLowerCase()] = t; else delete m[name.toLowerCase()]; store.setItem(trustedKey, JSON.stringify(m)); };
+    // renvoie { mfa: true } quand le serveur attend un code (double authentification)
+    net.login = async (name, password, code, trust) => {
+      const j = await req('/api/login', 'POST', { name, password, code, trust, trusted: trustedAll()[String(name).toLowerCase()] });
+      if (j.mfa) return { mfa: true };
+      if (j.trusted) trustedSet(j.name, j.trusted);
+      return open(j);
+    };
+    net.trustDevice = (name, t) => trustedSet(name, t);
     net.ensureStreamer = async () => open(await req('/api/stream-session', 'POST', {}));
     net.changePassword = async (by, oldPw, newPw) => { await open(await req('/api/password', 'POST', { oldPw, newPw })); };
     net.setEmail = async (by, email) => { const j = await req('/api/email', 'POST', { email }); await pull(true); return j; };
