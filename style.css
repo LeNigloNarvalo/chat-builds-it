@@ -94,3 +94,7 @@ h2,h3{line-height:1.2}h2{font-size:var(--t2)}h3{font-size:var(--t1)}
 .axis{display:flex;justify-content:space-between;font-size:.75rem;opacity:.7}
 .toppost{cursor:pointer}.rank{color:#9146ff}
 .heat{display:grid;grid-template-columns:repeat(12,1fr);gap:3px;margin:8px 0}.hh{background:#9146ff;border-radius:4px;aspect-ratio:1;display:flex;align-items:center;justify-content:center;font-size:.7rem}.hh i{font-style:normal;color:var(--fg,inherit);mix-blend-mode:normal;opacity:1}
+
+.qcard{border:1px solid var(--acc);border-radius:10px;padding:6px 10px;margin:6px 0;cursor:pointer}.qcard p{margin:4px 0}
+.reacts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;align-items:center}.chip{padding:2px 8px;border-radius:99px}.chip.on,.picker .on{color:var(--acc);border-color:var(--acc)}
+.picker{display:flex;gap:4px;margin-top:6px}.picker button{font-size:1.2em}.rwho{margin-top:6px;font-size:.9em}.quoteform textarea{width:100%}

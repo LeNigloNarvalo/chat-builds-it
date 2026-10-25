@@ -324,4 +324,17 @@ console.log('ok');
   assert.ok(q.db().messages.every(m => m.from === 'oli'));
   assert.throws(() => q.deleteConversation('mia', 'noe'));
   console.log('ok messages privés : conversations et suppression');
+// réactions variées + citations
+{ const m2 = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } }, r = Net(m2);
+  await r.signup('ann', 'pass1'); await r.signup('ben', 'pass2');
+  const q0 = r.post('ann', 'post original');
+  r.react('ben', q0.id, '🔥'); r.react('ann', q0.id, '🔥'); r.react('ben', q0.id, '❤️');
+  assert.deepStrictEqual(r.reactions(q0.id).map(x => [x.emoji, x.count]).sort(), [['❤️', 1], ['🔥', 2]]);
+  assert.deepStrictEqual(r.reactions(q0.id).find(x => x.emoji === '🔥').users.sort(), ['ann', 'ben']);
+  r.react('ben', q0.id, '🔥'); assert.strictEqual(r.reactions(q0.id).find(x => x.emoji === '🔥').count, 1);
+  assert.throws(() => r.react('ben', q0.id, '💩'), /inconnue/);
+  const qt = r.quote('ben', q0.id, 'bien vu !'); assert.strictEqual(qt.quoteOf, q0.id);
+  assert.strictEqual(r.quoteCount(q0.id), 1); assert.throws(() => r.quote('ben', q0.id, '  '));
+  assert.ok(r.notifications('ann').some(x => x.type === 'quote') && r.notifications('ann').some(x => x.type === 'react' && x.emoji === '🔥'));
+}
 })();

@@ -64,7 +64,7 @@
         for (const g of db.groups) for (const k of ['mods', 'members', 'requests', 'invites', 'banned']) g[k] = g[k].filter(x => lc(x) !== lc(n));
         const gone = new Set(db.posts.filter(p => p.author === n).map(p => p.id));
         db.posts = db.posts.filter(p => !gone.has(p.id) && !gone.has(p.replyTo));
-        for (const p of db.posts) p.likes = p.likes.filter(x => x !== n);
+        for (const p of db.posts) { p.likes = p.likes.filter(x => x !== n); for (const e of Object.keys(p.reactions || {})) p.reactions[e] = p.reactions[e].filter(x => x !== n); }
         for (const x of Object.values(db.users)) { x.following = x.following.filter(f => f !== n); for (const l of x.lists || []) l.members = l.members.filter(f => f !== n); }
         db.messages = db.messages.filter(m => m.from !== n && m.to !== n); db.drafts = db.drafts.filter(d => d.author !== n);
         db.reposts = db.reposts.filter(r => r.by !== n && !gone.has(r.postId));
@@ -362,6 +362,35 @@
         if (i >= 0) p.likes.splice(i, 1); else { p.likes.push(by); notify(p.author, by, 'like', postId); }
         save(); return p.likes.length;
       },
+      // réactions variées : ❤️ = le like historique, les autres émojis vivent dans p.reactions {émoji: [noms]}
+      reactEmojis: () => ['❤️', '😂', '😮', '😢', '🔥', '🎉', '👏'],
+      react(by, postId, emoji) {
+        need(api.reactEmojis().includes(emoji), 'Réaction inconnue');
+        if (emoji === '❤️') return api.toggleLike(by, postId);
+        const p = db.posts.find(x => x.id === postId); need(p && seen(p, by), 'Post introuvable'); const me = user(by); guard(by);
+        p.reactions = p.reactions || {}; const l = p.reactions[emoji] = p.reactions[emoji] || [];
+        const i = l.indexOf(me.name);
+        if (i >= 0) l.splice(i, 1); else { l.push(me.name); notify(p.author, me.name, 'react', postId, { emoji }); }
+        if (!l.length) delete p.reactions[emoji];
+        save(); return l.length;
+      },
+      // détail : [{emoji, users, count}] trié par popularité (❤️ inclus), sans les comptes cachés pour `by`
+      reactions(postId, by) {
+        const p = db.posts.find(x => x.id === postId); if (!p) return [];
+        const all = Object.assign({ '❤️': p.likes }, p.reactions || {});
+        return Object.entries(all).map(([emoji, users]) => ({ emoji, users: users.filter(u => !by || !hiddenFor(by, u)), count: users.length })).filter(r => r.count).sort((a, b) => b.count - a.count);
+      },
+      myReactions: (by, postId) => api.reactions(postId).filter(r => r.users.some(u => lc(u) === lc(by || ''))).map(r => r.emoji),
+      // citation : nouveau post avec son propre commentaire, qui intègre le post cité (carte)
+      quote(by, postId, text) {
+        const q = db.posts.find(x => x.id === postId); need(q && seen(q, by), 'Post introuvable'); need(!q.group, 'Les posts d’une communauté ne se citent pas');
+        need((text || '').trim(), 'Ajoutez votre commentaire pour citer'); need(!blockedBy(by, q.author), 'Cet utilisateur vous a bloqué : citation impossible');
+        const p = makePost(by, text, null, [], null, null); p.quoteOf = q.id;
+        if (lc(q.author) !== lc(p.author)) notify(q.author, p.author, 'quote', p.id);
+        save(); return p;
+      },
+      quotes: postId => db.posts.filter(p => p.quoteOf === postId).sort((a, b) => b.id - a.id),
+      quoteCount: postId => db.posts.filter(p => p.quoteOf === postId).length,
       toggleFollow(by, target) {
         const me = user(by), t = user(target);
         need(me !== t, 'Impossible de se suivre soi-même'); guard(by);
