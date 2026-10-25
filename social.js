@@ -654,7 +654,9 @@ function Net(storage, now) {
         need(!avatar || /^#[0-9a-fA-F]{6}$/.test(avatar), 'Couleur d’avatar invalide (#rrggbb)');
         need(!banner || /^https?:\/\/\S+$/i.test(banner) || /^grad:[0-5]$/.test(banner), 'Bannière : URL http(s) ou dégradé');
         need(!link || /^https?:\/\/\S+$/i.test(link), 'Lien : URL http(s) requise');
-        Object.assign(u, { display, bio, avatar, banner, link });
+        const photo = f.photo === undefined ? u.photo || '' : String(f.photo);
+        need(photo.length <= 80000 && (!photo || /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/.test(photo)), 'Photo invalide (JPEG, PNG ou WebP, 60 Ko max)');
+        Object.assign(u, { display, bio, avatar, banner, link, photo });
         save(); return u;
       },
       followers: n => Object.values(db.users).filter(u => u.following.includes(user(n).name)).map(u => u.name),
@@ -797,6 +799,20 @@ function Net(storage, now) {
         const hasSignal = out.some(x => x.score > 0);
         return out.filter(x => x.score > 0 || (!hasSignal && x.pop > 0) || (hasSignal && x.pop > 1))
           .sort((a, b) => b.score - a.score || b.pop - a.pop || a.name.localeCompare(b.name)).slice(0, limit || 5);
+      },
+      // assistant de démarrage : étape en cours et achèvement (propres au compte, lus par l'accueil pour la checklist)
+      setOnboarding(by, o) {
+        const u = user(by); o = o || {}; const cur = u.onboarding || { step: 0, done: false };
+        const step = o.step === undefined ? cur.step : Math.max(0, Math.min(5, Math.floor(+o.step) || 0));
+        u.onboarding = { step, done: o.done === undefined ? !!cur.done : !!o.done };
+        save(); return u.onboarding;
+      },
+      // checklist de profil : chaque étape est déduite des vraies données du compte, elle disparaît de l'accueil quand tout est fait
+      checklist(by) {
+        const u = user(by), n = u.name, inGroup = db.groups.some(g => roleIn(g, n) === 'owner' || roleIn(g, n) === 'mod' || roleIn(g, n) === 'member');
+        const items = [['photo', 'Ajouter une photo de profil', !!u.photo], ['bio', 'Écrire une bio', !!(u.bio || '').trim()], ['topics', 'Suivre au moins 3 sujets', (u.topics || []).length >= 3],
+          ['groups', 'Rejoindre une communauté', inGroup], ['follow', 'Suivre au moins 3 comptes', (u.following || []).length >= 3]].map(([key, label, done]) => ({ key, label, done }));
+        return { items, done: items.filter(i => i.done).length, total: items.length, complete: items.every(i => i.done) };
       },
       dismissSuggestion(by, target) {
         const me = user(by), t = user(target); need(me !== t, 'Impossible de s’ignorer soi-même');
@@ -1032,11 +1048,11 @@ function Net(storage, now) {
     if (!me) throw new Error('Utilisateur introuvable');
     const lcm = me.name.toLowerCase(), users = Object.create(null);
     for (const [k, u] of Object.entries(db.users)) {
-      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, notifPrefs, privacy, deleteAt, ...pub } = u;
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, notifPrefs, privacy, deleteAt, onboarding, ...pub } = u;
       if (lists) pub.lists = k === lcm ? lists : lists.filter(l => l.public || (l.share && (me.sharedLists || []).some(r => r.owner.toLowerCase() === k && r.id === l.id && r.token === l.share))).map(l => ({ ...l, share: null }));
-      if (k !== lcm && !privOk(db, me.name, u.name, 'profile')) Object.assign(pub, { bio: '', link: '', banner: '', display: '', locked: true });
+      if (k !== lcm && !privOk(db, me.name, u.name, 'profile')) Object.assign(pub, { bio: '', link: '', banner: '', display: '', photo: '', locked: true });
       if (k !== lcm && !privOk(db, me.name, u.name, 'posts')) pub.lockedPosts = true;
-      if (k === lcm) Object.assign(pub, { privacy: normPrivacy(privacy), deleteAt, dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
+      if (k === lcm) Object.assign(pub, { privacy: normPrivacy(privacy), deleteAt, onboarding, dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
       else if (me.admin) Object.assign(pub, { sanction });
       users[k] = JSON.parse(JSON.stringify(pub));
     }

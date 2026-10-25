@@ -478,3 +478,20 @@ console.log('ok');
   const x = r.exportUser('pvb'); assert.ok(x.privacy && Array.isArray(x.likes) && !JSON.stringify(x).includes('$'), 'export complet sans mot de passe');
   console.log('ok confidentialité');
 })().catch(e => { console.error(e); process.exit(1); });
+(async () => {
+  // assistant de démarrage : checklist déduite des vraies données, photo validée, état propre au compte
+  const m = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } }, r = Net(m);
+  await r.signup('obn', 'pass1'); await r.signup('obf1', 'pass1'); await r.signup('obf2', 'pass1'); await r.signup('obf3', 'pass1');
+  let c = r.checklist('obn'); assert.strictEqual(c.done, 0); assert.strictEqual(c.total, 5); assert.ok(!c.complete);
+  const ph = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==';
+  assert.throws(() => r.updateProfile('obn', { photo: 'http://x/y.png' }), /Photo invalide/);
+  r.updateProfile('obn', { bio: 'Bonjour', photo: ph }); assert.strictEqual(r.profile('obn').photo, ph);
+  r.updateProfile('obn', { bio: 'Bonjour' }); assert.strictEqual(r.profile('obn').photo, ph, 'la photo est conservée si on ne la touche pas');
+  for (const t of ['#a', '#b', '#c']) r.toggleTopic('obn', t);
+  const g = r.createGroup('obf1', 'Onboarding', 'x', '', true); r.joinGroup('obn', g.id);
+  for (const f of ['obf1', 'obf2']) r.toggleFollow('obn', f);
+  assert.deepStrictEqual(r.checklist('obn').items.filter(i => !i.done).map(i => i.key), ['follow']);
+  r.toggleFollow('obn', 'obf3'); assert.ok(r.checklist('obn').complete);
+  assert.deepStrictEqual(r.setOnboarding('obn', { step: 9 }), { step: 5, done: false }); assert.strictEqual(r.setOnboarding('obn', { done: true }).done, true);
+  console.log('ok assistant de démarrage');
+})().catch(e => { console.error(e); process.exit(1); });

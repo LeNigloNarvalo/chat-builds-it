@@ -45,7 +45,7 @@ const rich = s => esc(s).replace(/#\w+/g, t => `<span class="tag" data-tag="${t}
 const color = n => `hsl(${[...n].reduce((a, c) => a + c.charCodeAt(0) * 7, 0) % 360},60%,45%)`;
 const prof = n => { try { return net.profile(n); } catch (e) { return {}; } };
 const shown = n => prof(n).display || n;
-const av = (n, big) => `<span class="av${big ? ' big' : ''}" style="background:${prof(n).avatar || color(n)}">${esc(shown(n)[0].toUpperCase())}</span>`;
+const av = (n, big) => { const p = prof(n); return p.photo ? `<span class="av${big ? ' big' : ''}" style="background:center/cover url('${p.photo}')" role="img" aria-label="${esc(shown(n))}"></span>` : `<span class="av${big ? ' big' : ''}" style="background:${p.avatar || color(n)}">${esc(shown(n)[0].toUpperCase())}</span>`; };
 const GRADS = ['linear-gradient(135deg,#9146ff,#ff4d8d)', 'linear-gradient(135deg,#00c6ff,#0072ff)', 'linear-gradient(135deg,#f7971e,#ffd200)', 'linear-gradient(135deg,#11998e,#38ef7d)', 'linear-gradient(135deg,#232526,#9146ff)', 'linear-gradient(135deg,#ff512f,#dd2476)'];
 const bannerCss = b => !b ? GRADS[0] : b.startsWith('grad:') ? GRADS[+b.slice(5)] : `center/cover url("${encodeURI(b).replace(/"/g, '%22')}"), ${GRADS[4]}`;
 const peopleList = names => names.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)} · ${esc(prof(n).bio || '')}</span></div>`).join('') || '<p class="mut">Personne pour l’instant.</p>';
@@ -529,6 +529,51 @@ document.addEventListener('input', ev => {
 });
 
 // encart « Qui suivre » (fil et explorer) : amis d'amis, sujets communs, suivi rapide ou « ignorer » ; relu depuis les données partagées à chaque rendu
+// ---- assistant de démarrage : photo, bio, sujets, communautés, comptes à suivre ; la checklist reste dans l'accueil jusqu'à ce que tout soit fait ----
+const OB_STEPS = ['Photo', 'Bio', 'Sujets', 'Communautés', 'Comptes'];
+const ob = { photo: null, busy: false };
+const obState = () => (net.profile(me).onboarding || { step: 0, done: false });
+const obSet = o => net.setOnboarding(me, o);
+function checklistCard() {
+  const c = net.checklist(me); if (c.complete) return '';
+  const pct = Math.round(c.done / c.total * 100), where = { photo: 'welcome:0', bio: 'welcome:1', topics: 'welcome:2', groups: 'welcome:3', follow: 'welcome:4' };
+  return `<section class="card checklist" aria-label="Checklist de profil"><b>✅ Termine ton profil · ${c.done}/${c.total}</b>
+    <div class="obbar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>
+    <ul>${c.items.map(i => `<li>${i.done ? '<span class="ok">✔</span> <s class="mut">' + esc(i.label) + '</s>' : `<span class="mut">○</span> ${esc(i.label)} <button data-ob="goto" data-oba="${where[i.key].split(':')[1]}">Faire</button>`}</li>`).join('')}</ul>
+    <button data-ob="open">🧭 Reprendre l’assistant</button></section>`;
+}
+function welcomePage(e) {
+  const st = Math.max(0, Math.min(4, +view.arg || 0)), u = net.profile(me), nav = `<div class="row obnav">${st > 0 ? '<button data-ob="prev">← Précédent</button>' : ''}<button data-ob="skip">Passer</button>${st < 4 ? '<button data-ob="next" class="on">Suivant →</button>' : '<button data-ob="finish" class="on">Terminer 🎉</button>'}</div>`;
+  const dots = `<ol class="obsteps" aria-label="Étapes">${OB_STEPS.map((l, i) => `<li class="${i === st ? 'on' : i < st ? 'past' : ''}" ${i === st ? 'aria-current="step"' : ''}>${i + 1}. ${l}</li>`).join('')}</ol>`;
+  let body = '';
+  if (st === 0) {
+    const photo = ob.photo || u.photo || '';
+    body = `<h2>📸 Ta photo de profil</h2><p class="mut">Un visage (ou un cornichon) aide les autres à te reconnaître. Elle est recadrée en carré et redimensionnée automatiquement.</p>
+      <div class="row"><span class="av big" style="margin-top:0;background:${photo ? `center/cover url('${photo}')` : u.avatar || color(me)}">${photo ? '' : esc(shown(me)[0].toUpperCase())}</span>
+      <label class="filebtn">📷 Choisir une photo<input type="file" id="ob-photo" data-obpick accept="image/jpeg,image/png,image/webp,image/gif" hidden></label>
+      ${ob.photo ? '<button data-ob="savephoto" class="on">Enregistrer la photo</button>' : ''}${u.photo && !ob.photo ? '<button data-ob="rmphoto">Retirer</button>' : ''}</div>`;
+  } else if (st === 1) {
+    body = `<h2>✍️ Ta bio</h2><p class="mut">Une ligne pour dire qui tu es (160 caractères max).</p>
+      <label>Pseudo affiché <input id="ob-display" maxlength="30" value="${esc(u.display || '')}" placeholder="${esc(u.name)}"></label>
+      <label>Bio <textarea id="ob-bio" maxlength="160" placeholder="Streamer du dimanche, amateur de cornichons…">${esc(u.bio || '')}</textarea></label>
+      <button data-ob="savebio" class="on">Enregistrer</button>`;
+  } else if (st === 2) {
+    const my = net.topics(me), pool = [...new Set([...net.trendingTopics('7d', me, 12).map(x => x.tag), ...net.trending().map(x => x[0]), ...my])].slice(0, 16);
+    body = `<h2>#️⃣ Tes sujets</h2><p class="mut">Choisis au moins 3 sujets : leurs posts arrivent dans « Tendances → Dans mes sujets ».</p>
+      <div class="row obchips">${pool.map(tg => `<button data-topic="${esc(tg)}" aria-pressed="${my.includes(tg)}" class="${my.includes(tg) ? 'on' : ''}">${my.includes(tg) ? '✔ ' : '＋ '}${esc(tg)}</button>`).join('') || '<span class="mut">Aucun sujet en vogue pour l’instant : ajoute le tien ci-dessous.</span>'}</div>
+      <div class="row"><input id="ob-topic" placeholder="#monsujet" maxlength="40" aria-label="Ajouter un sujet"><button data-ob="addtopic">Ajouter</button></div><p class="mut">${my.length} sujet${my.length > 1 ? 's' : ''} suivi${my.length > 1 ? 's' : ''}</p>`;
+  } else if (st === 3) {
+    const gs = net.groups().filter(g => g.public || net.groupRole(me, g.id) === 'invited' || ['owner', 'mod', 'member'].includes(net.groupRole(me, g.id)));
+    body = `<h2>👥 Tes communautés</h2><p class="mut">Rejoins des groupes qui te ressemblent.</p>` + (gs.map(g => { const r = net.groupRole(me, g.id), inn = ['owner', 'mod', 'member'].includes(r);
+      return `<div class="card"><b>${esc(g.name)}</b> <span class="mut">${gcount(g)} membre${gcount(g) > 1 ? 's' : ''}</span><br><span class="mut">${esc(g.desc) || 'Pas de description'}</span><div class="row">${inn ? '<span class="ok">✔ Membre</span>' : `<button data-cmjoin="${g.id}">Rejoindre</button>`}</div></div>`; }).join('') || '<p class="mut">Aucune communauté publique pour l’instant : <button data-page="groups">crée la première</button>.</p>');
+  } else {
+    const l = net.suggestions(me, 6), n = net.profile(me).following.length;
+    body = `<h2>🙌 Comptes à suivre</h2><p class="mut">Suis au moins 3 comptes pour remplir ton fil. Tu en suis ${n}.</p>` + (l.length ? l.map(x => `<div class="sug">${av(x.name)}<span class="who"><b>${esc(shown(x.name))}</b> <span class="mut">@${esc(x.name)}</span></span> <span class="mut sugwhy">${x.reason === 'friends' ? 'Suivi par ' + x.via.map(v => '@' + esc(v)).join(', ') : x.reason === 'topics' ? 'Parle aussi de ' + x.tags.map(esc).join(', ') : 'Compte actif de la communauté'}</span>
+      <span class="sugact"><button data-sfollow="${esc(x.name)}">＋ Suivre</button></span></div>`).join('') : '<p class="mut">Pas de suggestion pour le moment.</p>')
+      + net.profile(me).following.map(f => `<div class="sug">${av(f)}<b>${esc(shown(f))}</b> <span class="ok">✔ Suivi</span> <button data-sfollow="${esc(f)}">Ne plus suivre</button></div>`).join('');
+  }
+  return `<div class="card welcome"><h1 class="obtitle">🥒 Bienvenue, ${esc(shown(me))} !</h1>${dots}<div class="obbody">${body}</div>${e}${nav}</div>`;
+}
 function whoToFollow() {
   const l = net.suggestions(me, 4), why = x => x.reason === 'friends' ? `Suivi par ${x.via.map(n => '@' + esc(n)).join(', ')}${x.mutual > x.via.length ? ' et ' + (x.mutual - x.via.length) + ' autre(s)' : ''}`
     : x.reason === 'topics' ? 'Parle aussi de ' + x.tags.map(esc).join(', ') : 'Compte actif de la communauté';
@@ -593,7 +638,8 @@ function render() {
     return (fs.fresh ? `<button class="card newbar" data-newposts>${I18n.tn('new', fs.fresh)}</button>` : '') + list(ps)
       + (fs.more ? `<button class="card morebar" id="more" data-more>${t('loading.more')}</button>` : ps.length ? `<p class="mut" role="status">${t('seen.all')}</p>` : '');
   };
-  if (view.page === 'feed') h = composer(t('composer.ph')) + whoToFollow() + tabs() + e + paged();
+  if (view.page === 'welcome') h = welcomePage(e);
+  else if (view.page === 'feed') h = composer(t('composer.ph')) + checklistCard() + whoToFollow() + tabs() + e + paged();
   else if (view.page === 'dev') h = devPage(e);
   else if (view.page === 'stats') h = statsPage(e);
   else if (view.page === 'groups') h = groupsPage(e);
@@ -996,10 +1042,11 @@ document.addEventListener('click', async ev => {
   } else if ('notiftest' in b.dataset) Notif.show({ id: 'test' + Date.now(), type: 'mention' }, 'Le bocal');
 });
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-atab],*[data-bkcreate],*[data-bkkeep],*[data-bkask],*[data-bkno],*[data-bkrestore],*[data-bkdl],*[data-bkdel],*[data-asanc],*[data-adelask],*[data-adelno],*[data-adel],*[data-tr],*[data-trclose],*[data-lang],*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-react],*[data-picker],*[data-rwho],*[data-quote],*[data-sendquote],*[data-cancelquote],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-tag],*[data-trange],*[data-topic],*[data-login],*[data-mfago],*[data-mfaback],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sfapply],*[data-sssave],*[data-ssdel],*[data-ssopen],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-appeal],*[data-cancelappeal],*[data-sendappeal],*[data-decide],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lshare],*[data-lcopy],*[data-lforget],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
+  const d = ev.target.closest('*[data-ob],*[data-atab],*[data-bkcreate],*[data-bkkeep],*[data-bkask],*[data-bkno],*[data-bkrestore],*[data-bkdl],*[data-bkdel],*[data-asanc],*[data-adelask],*[data-adelno],*[data-adel],*[data-tr],*[data-trclose],*[data-lang],*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-react],*[data-picker],*[data-rwho],*[data-quote],*[data-sendquote],*[data-cancelquote],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-tag],*[data-trange],*[data-topic],*[data-login],*[data-mfago],*[data-mfaback],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sfapply],*[data-sssave],*[data-ssdel],*[data-ssopen],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-appeal],*[data-cancelappeal],*[data-sendappeal],*[data-decide],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lshare],*[data-lcopy],*[data-lforget],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
-  if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
+  if ('ob' in D) obClick(D, v);
+  else if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
   else if ('dvnew' in D) attempt(async () => { const sc = ['read', 'write'].filter(s => $('#dv-' + s).checked); const r = await sync.send('/api/dev/token', { label: v('#dv-label'), scopes: sc }); dev.fresh = r.token; await devLoad(); });
   else if ('dvcopy' in D) { try { navigator.clipboard.writeText(dev.fresh); notice = 'Jeton copié ✔'; } catch (x) { notice = 'Sélectionne le jeton pour le copier'; } render(); }
   else if ('dvrevoke' in D) { if (confirm('Révoquer ce jeton ? Les scripts qui l’utilisent cesseront de fonctionner.')) attempt(async () => { await sync.send('/api/dev/token-revoke', { id: +D.dvrevoke }); dev.fresh = null; await devLoad(); }); }
@@ -1014,7 +1061,7 @@ document.addEventListener('click', ev => {
   else if ('login' in D) attempt(async () => { const name = v('#u'), pw = v('#pw'), r = await net.login(name, pw); if (r && r.mfa) mfa = { name, password: pw }; else openSession(r); });
   else if ('mfago' in D) attempt(async () => { const r = await net.login(mfa.name, mfa.password, v('#mfa-code'), !!($('#mfa-trust') || {}).checked); mfa = null; openSession(r); });
   else if ('mfaback' in D) { mfa = null; err = ''; render(); }
-  else if ('signup' in D) attempt(async () => openSession(await net.signup(v('#u'), v('#pw'), v('#bio'))));
+  else if ('signup' in D) attempt(async () => { openSession(await net.signup(v('#u'), v('#pw'), v('#bio'))); view = { page: 'welcome', arg: 0 }; });
   else if ('logout' in D) { me = null; sync.logout(); clearOffline(); if (STREAM) attempt(async () => openSession(await net.ensureStreamer())); go('feed'); }
   else if ('chpw' in D) attempt(async () => {
     if (v('#sec-new') !== v('#sec-new2')) throw new Error('La confirmation ne correspond pas');
@@ -1175,6 +1222,35 @@ document.addEventListener('click', ev => {
   else if ('sssave' in D) attempt(async () => { const o = net.parseSearch(view.arg); await net.saveSearch(me, view.arg, o.sort, v('#ss-name')); });
   else if ('ssdel' in D) attempt(() => net.deleteSearch(me, +D.ssdel));
   else if ('ssopen' in D) { const s = net.searches(me).find(x => x.id === +D.ssopen); if (s) { go('search', s.q + (s.sort === 'popular' && !/tri:/i.test(s.q) ? ' tri:populaire' : '')); net.markSearchSeen(me, s.id).catch(() => {}); } }
+});
+// actions de l'assistant de démarrage (chaque écriture relit les données du serveur, jamais une copie ancienne)
+function obClick(D, v) {
+  const st = Math.max(0, Math.min(4, +view.arg || 0)), step = n => { ob.photo = null; view = { page: 'welcome', arg: n }; obSet({ step: n }).catch(() => {}); };
+  const a = D.ob;
+  if (a === 'open') attempt(() => { step(Math.min(4, obState().step || 0)); });
+  else if (a === 'goto') attempt(() => step(+D.oba));
+  else if (a === 'next') attempt(() => step(Math.min(4, st + 1)));
+  else if (a === 'skip') attempt(() => { if (st < 4) step(st + 1); else { view = { page: 'feed' }; obSet({ done: true }).catch(() => {}); } });
+  else if (a === 'prev') attempt(() => step(Math.max(0, st - 1)));
+  else if (a === 'finish') attempt(async () => { await obSet({ done: true, step: 0 }); view = { page: 'feed' }; });
+  else if (a === 'savephoto') attempt(async () => { await net.updateProfile(me, { ...obProfile(), photo: ob.photo }); ob.photo = null; });
+  else if (a === 'rmphoto') attempt(async () => { await net.updateProfile(me, { ...obProfile(), photo: '' }); });
+  else if (a === 'savebio') attempt(async () => { await net.updateProfile(me, { ...obProfile(), display: v('#ob-display') || '', bio: v('#ob-bio') || '' }); notice = 'Bio enregistrée ✔'; });
+  else if (a === 'addtopic') attempt(async () => { const tg = (v('#ob-topic') || '').trim(); if (!tg) return; if (!net.isTopic(me, tg)) await net.toggleTopic(me, tg); });
+}
+const obProfile = () => { const u = net.profile(me); return { display: u.display || '', bio: u.bio || '', avatar: u.avatar || '', banner: u.banner || '', link: u.link || '' }; };
+// photo de profil : recadrée au carré (192 px) puis compressée sous la limite du serveur
+document.addEventListener('change', async ev => {
+  const t = ev.target; if (!t.dataset || !('obpick' in t.dataset) || !t.files[0]) return; err = '';
+  try {
+    const f = t.files[0]; if (!/^image\/(jpeg|png|webp|gif)$/.test(f.type)) throw new Error('Format non pris en charge');
+    const url = URL.createObjectURL(f), img = await new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ko(new Error('Image illisible')); i.src = url; });
+    const side = Math.min(img.naturalWidth, img.naturalHeight), c = document.createElement('canvas'); c.width = c.height = 192;
+    c.getContext('2d').drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, 192, 192); URL.revokeObjectURL(url);
+    let q = 0.85, out = c.toDataURL('image/jpeg', q); while (out.length > 60000 && q > 0.4) { q -= 0.1; out = c.toDataURL('image/jpeg', q); }
+    if (out.length > 60000) throw new Error('Photo trop lourde'); ob.photo = out;
+  } catch (e) { err = e.message; }
+  render();
 });
 // choix des fichiers : import, redimensionnement, ajout à l'aperçu (4 max)
 document.addEventListener('change', async ev => {
