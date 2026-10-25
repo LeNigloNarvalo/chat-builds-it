@@ -2,7 +2,7 @@
 // Chaque appel relit le storage (lecture-modification-écriture) : aucune copie ancienne n'est conservée en mémoire.
 (function (root) {
   const KEY = 'twitchgram.v1';
-  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], appeals: [], drafts: [], groups: [], audit: [], seq: 1, attempts: Object.create(null) });
+  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], appeals: [], drafts: [], groups: [], rooms: [], msgReports: [], audit: [], seq: 1, attempts: Object.create(null) });
   const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000, POLL_MAX_MIN = 7 * 1440, MAX_OWN_GROUPS = 10, MAX_RULES = 600;
 
   const RESERVED = 'streamer';
@@ -101,7 +101,10 @@ function Net(storage, now) {
         db.posts = db.posts.filter(p => !gone.has(p.id) && !gone.has(p.replyTo));
         for (const p of db.posts) { p.likes = p.likes.filter(x => x !== n); for (const e of Object.keys(p.reactions || {})) p.reactions[e] = p.reactions[e].filter(x => x !== n); }
         for (const x of Object.values(db.users)) { x.following = x.following.filter(f => f !== n); for (const l of x.lists || []) l.members = l.members.filter(f => f !== n); }
-        db.messages = db.messages.filter(m => m.from !== n && m.to !== n); db.drafts = db.drafts.filter(d => d.author !== n);
+        db.messages = db.messages.filter(m => m.from !== n && m.to !== n);
+        for (const r of db.rooms) { r.members = r.members.filter(x => x !== n); r.msgs = r.msgs.filter(m => m.from !== n); delete r.read[lc(n)]; if (r.owner === n) r.owner = r.members[0]; }
+        db.rooms = db.rooms.filter(r => r.members.length >= 2); db.msgReports = db.msgReports.filter(r => r.by !== n && r.target !== n);
+        db.drafts = db.drafts.filter(d => d.author !== n);
         db.reposts = db.reposts.filter(r => r.by !== n && !gone.has(r.postId));
         db.reports = db.reports.filter(r => r.by !== n && r.target !== n); db.appeals = (db.appeals || []).filter(a => a.user !== n);
         for (const x of Object.values(db.users)) { if (x.blocked) x.blocked = x.blocked.filter(f => f !== n); if (x.muted) x.muted = x.muted.filter(f => f !== n); }
@@ -109,6 +112,13 @@ function Net(storage, now) {
         delete db.users[n.toLowerCase()]; delete db.attempts[n.toLowerCase()];
     };
     const blockedBy = (author, target) => has((db.users[lc(target)] || {}).blocked, author);
+    const ROOM_MAX = 8;
+    // ajouter `t` à un groupe : ni l'un ni l'autre ne doit avoir bloqué l'autre ; le compte Streamer reste hors des groupes
+    const roomOk = (me, t) => {
+      need(!t.admin, 'Le compte Streamer ne peut pas être ajouté à un groupe');
+      need(!blockedBy(me.name, t.name), `@${t.name} vous a bloqué : impossible de l’ajouter`);
+      need(!has(me.blocked, t.name), `Débloquez @${t.name} pour l’ajouter`);
+    };
     const vis = (by, list, get) => by ? list.filter(x => !hiddenFor(by, get(x))) : list;
     // idem pour les posts, avec en plus la confidentialité choisie par leur auteur (qui voit ses publications)
     const visP = (by, list, get) => vis(by, list, get).filter(x => privOk(db, by, get(x), 'posts'));
@@ -725,7 +735,9 @@ function Net(storage, now) {
       unreadDm(by) {
         const me = user(by), r = me.dmRead || {}, peers = {}; let total = 0;
         for (const m of db.messages) if (m.to === me.name && m.id > (r[lc(m.from)] || 0) && m.id > (((me.dmCleared || {})[lc(m.from)]) || 0) && !hiddenFor(by, m.from)) { peers[m.from] = (peers[m.from] || 0) + 1; total++; }
-        return { total, peers };
+        const rooms = {};
+        for (const r of db.rooms) if (has(r.members, me.name)) { const seen = r.read[lc(me.name)] || 0, n = r.msgs.filter(m => m.from !== me.name && m.id > seen && !hiddenFor(by, m.from)).length; if (n) { rooms[r.id] = n; total += n; } }
+        return { total, peers, rooms };
       },
       // pagination par curseur (id décroissant) : scope « feed » (abonnements) ou « explore » ; `after` compte les posts plus récents
       page(by, scope, o) {
@@ -781,6 +793,99 @@ function Net(storage, now) {
         const cut = ((t.dmCleared || {})[lc(me.name)]) || 0;
         db.messages = db.messages.filter(m => !(ids.includes(m.id) && m.id <= last && m.id <= cut));
         save();
+      },
+      // ---- groupes privés (2 à 8 membres) : messages, indicateur de lecture « Vu », blocage et signalement respectés ----
+      createRoom(by, name, members) {
+        const me = user(by); guard(by, true);
+        name = String(name || '').trim(); need(name && name.length <= 40, 'Nom du groupe : 1 à 40 caractères');
+        const list = [...new Set((Array.isArray(members) ? members : []).map(n => user(n).name).filter(n => n !== me.name))];
+        need(list.length >= 1 && list.length <= ROOM_MAX - 1, `Un groupe privé compte de 2 à ${ROOM_MAX} membres (vous inclus)`);
+        for (const n of list) roomOk(me, user(n));
+        const r = { id: id(), name, owner: me.name, members: [me.name, ...list], at: now(), msgs: [], read: {} };
+        db.rooms.push(r); save(); return r.id;
+      },
+      room(by, rid) { const r = db.rooms.find(x => x.id === +rid); need(r && has(r.members, user(by).name), 'Groupe introuvable'); return r; },
+      // messages visibles par `by` : ceux des comptes qu'il a bloqués ou masqués disparaissent
+      roomMessages(by, rid) { const r = api.room(by, rid); return r.msgs.filter(m => !hiddenFor(by, m.from)); },
+      sendRoom(by, rid, text, images) {
+        text = (text || '').trim(); images = cleanImages(images);
+        need((text || images.length) && text.length <= 500, 'Message invalide');
+        const me = user(by), r = api.room(by, rid); guard(by, true);
+        const m = { id: id(), from: me.name, text, at: now() }; if (images.length) m.images = images;
+        r.msgs.push(m); if (r.msgs.length > 500) r.msgs = r.msgs.slice(-500);
+        r.read[lc(me.name)] = m.id;
+        for (const n of r.members) {
+          const t = db.users[lc(n)]; if (!t || t.name === me.name || blockedBy(me.name, t.name) || hiddenFor(t.name, me.name)) continue;
+          const open = db.notifs.find(x => x.type === 'dm' && x.to === t.name && x.room === r.id && !x.read);
+          if (open) { open.count = (open.count || 1) + 1; open.at = m.at; open.from = me.name; } else db.notifs.push({ id: id(), to: t.name, from: me.name, type: 'dm', room: r.id, postId: null, at: m.at, read: false, count: 1 });
+        }
+        save();
+      },
+      markRoomRead(by, rid) {
+        const me = user(by), r = api.room(by, rid), last = r.msgs.reduce((a, m) => Math.max(a, m.id), 0);
+        if ((r.read[lc(me.name)] || 0) >= last) return false;
+        r.read[lc(me.name)] = last; for (const n of db.notifs) if (n.type === 'dm' && n.to === me.name && n.room === r.id) n.read = true; save(); return true;
+      },
+      // discussions de groupe de `by`, la plus récente d'abord : { room, last, unread }
+      rooms(by) {
+        const me = user(by);
+        return db.rooms.filter(r => has(r.members, me.name)).map(r => {
+          const vis = r.msgs.filter(m => !hiddenFor(by, m.from)), seen = r.read[lc(me.name)] || 0;
+          return { room: r, last: vis[vis.length - 1] || null, unread: vis.filter(m => m.from !== me.name && m.id > seen).length };
+        }).sort((x, y) => ((y.last || { id: y.room.id }).id) - ((x.last || { id: x.room.id }).id));
+      },
+      // membres ayant lu le message `msgId` (hors auteur et comptes bloqués/masqués)
+      roomSeenBy(by, rid, msgId) {
+        const r = api.room(by, rid), m = r.msgs.find(x => x.id === msgId); if (!m) return [];
+        return r.members.filter(n => n !== m.from && !hiddenFor(by, n) && (r.read[lc(n)] || 0) >= msgId);
+      },
+      addToRoom(by, rid, who) {
+        const me = user(by), r = api.room(by, rid), t = user(who); guard(by, true);
+        need(r.owner === me.name, 'Réservé au créateur du groupe'); need(!has(r.members, t.name), 'Déjà membre');
+        need(r.members.length < ROOM_MAX, `Un groupe est limité à ${ROOM_MAX} membres`); roomOk(me, t);
+        r.members.push(t.name); save();
+      },
+      leaveRoom(by, rid) {
+        const me = user(by), r = api.room(by, rid);
+        r.members = r.members.filter(n => n !== me.name); delete r.read[lc(me.name)];
+        if (r.owner === me.name) r.owner = r.members[0];
+        if (r.members.length < 2) db.rooms = db.rooms.filter(x => x !== r);
+        db.notifs = db.notifs.filter(n => !(n.room === r.id && n.to === me.name)); save();
+      },
+      // signaler un message privé : rid = id du groupe, ou null pour un message 1-à-1 (transmis à l'administrateur)
+      reportMessage(by, rid, msgId, reason, note) {
+        const me = user(by); need(REASONS[reason], 'Choisissez un motif de signalement');
+        let m, members;
+        if (rid) { const r = api.room(by, rid); m = r.msgs.find(x => x.id === +msgId); members = r.members.length; }
+        else m = db.messages.find(x => x.id === +msgId && (x.to === me.name || x.from === me.name));
+        need(m, 'Message introuvable'); need(m.from !== me.name, 'Vous ne pouvez pas signaler votre propre message');
+        need(!user(m.from).admin, 'Le compte Streamer ne peut pas être signalé');
+        note = (note || '').trim(); need(note.length <= 300, 'Précisions : 300 caractères max');
+        need(!api.hasReportedMessage(by, rid, m.id), 'Vous avez déjà signalé ce message');
+        db.msgReports.push({ id: id(), room: rid ? +rid : null, msgId: m.id, by: me.name, target: m.from, reason, note, at: now(), status: 'open', snap: { text: m.text, images: (m.images || []).length, members: members || 2 } });
+        save();
+      },
+      hasReportedMessage: (by, rid, msgId) => db.msgReports.some(r => r.msgId === +msgId && (r.room || null) === (rid ? +rid : null) && lc(r.by) === lc(by) && r.status === 'open'),
+      messageReports(by) { need(api.isAdmin(by), 'Réservé à l’administrateur'); return db.msgReports.filter(r => r.status === 'open').sort((a, b) => a.at - b.at); },
+      resolveMessageReport(by, reportId, action, hours) {
+        need(api.isAdmin(by), 'Réservé à l’administrateur'); need(['dismiss', 'warn', 'mute'].includes(action), 'Action inconnue');
+        const r = db.msgReports.find(x => x.id === +reportId && x.status === 'open'); need(r, 'Signalement introuvable');
+        const target = db.users[lc(r.target)]; hours = Math.min(24 * 90, Math.max(1, +hours || 24));
+        if (target && action !== 'dismiss') {
+          need(!target.admin, 'Impossible de sanctionner un administrateur');
+          const prev = target.sanction || {};
+          target.sanction = { type: action, at: now(), by: user(by).name, reason: REASONS[r.reason], warnings: (prev.warnings || 0) + (action === 'warn' ? 1 : 0) };
+          if (action === 'mute') target.sanction.until = now() + hours * 36e5;
+          (target.sanctions = target.sanctions || []).push({ id: id(), type: action, at: now(), by: user(by).name, reason: REASONS[r.reason], hours: action === 'mute' ? hours : 0, postId: null });
+          notify(target.name, user(by).name, 'sanction', null, { what: action });
+        }
+        audit(by, 'msgreport-' + action, r.target, `message privé · ${REASONS[r.reason]}`);
+        Object.assign(r, { status: action === 'dismiss' ? 'dismissed' : 'actioned', action, closedAt: now(), closedBy: user(by).name }); save();
+      },
+      // dernier de mes messages lu par `peer` (0 si rien) : base de l'indicateur « Vu » des échanges 1-à-1
+      peerRead(by, peer) {
+        if (db.peerRead) return db.peerRead[lc(peer)] || 0;
+        const p = db.users[lc(peer)]; return p && !hiddenFor(by, p.name) && !blockedBy(by, p.name) ? ((p.dmRead || {})[lc(by)] || 0) : 0;
       },
       // ---- blocage / masquage (listes personnelles stockées sur le compte) ----
       // bloquer : masque tout + coupe les abonnements dans les deux sens + interdit réponses, DM et abonnement
@@ -1093,6 +1198,9 @@ function Net(storage, now) {
       users, posts: db.posts.filter(p => p.group ? readable.has(p.group) : privOk(db, me.name, p.author, 'posts')).map(p => p.hidden && !me.admin && p.author !== me.name ? Object.assign({}, p, { text: '', images: [], poll: undefined, history: [], quoteOf: undefined }) : p), groups, reposts: db.reposts.filter(r => { const p = db.posts.find(x => x.id === r.postId); return !p || p.group || privOk(db, me.name, p.author, 'posts'); }), seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), attempts: {},
       messages: db.messages.filter(m => m.from === me.name || m.to === me.name),
       notifs: db.notifs.filter(n => n.to === me.name),
+      rooms: db.rooms.filter(r => r.members.includes(me.name)).map(r => ({ ...r, msgs: r.msgs.slice(-200) })),
+      msgReports: me.admin ? db.msgReports.filter(r => r.status === 'open') : db.msgReports.filter(r => r.by === me.name && r.status === 'open').map(r => ({ id: r.id, room: r.room, msgId: r.msgId, by: r.by, status: r.status })),
+      peerRead: Object.fromEntries(Object.values(db.users).filter(u => u.name !== me.name && !(u.blocked || []).includes(me.name) && !(me.blocked || []).includes(u.name) && (u.dmRead || {})[lcm]).map(u => [u.name.toLowerCase(), u.dmRead[lcm]])),
       audit: me.admin ? (db.audit || []).slice(-300) : [], totals: me.admin ? { hiddenPosts: db.posts.filter(p => !p.replyTo && p.group && !readable.has(p.group)).length, hiddenMessages: db.messages.filter(m => m.from !== me.name && m.to !== me.name).length } : undefined,
       appeals: me.admin ? (db.appeals || []).slice(-200) : (db.appeals || []).filter(a => a.user === me.name),
       reports: me.admin ? db.reports : db.reports.filter(r => r.by === me.name).map(r => ({ id: r.id, postId: r.postId, by: r.by, status: r.status })),

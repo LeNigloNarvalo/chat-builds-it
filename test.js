@@ -501,4 +501,31 @@ console.log('ok');
   r.toggleFollow('obn', 'obf3'); assert.ok(r.checklist('obn').complete);
   assert.deepStrictEqual(r.setOnboarding('obn', { step: 9 }), { step: 5, done: false }); assert.strictEqual(r.setOnboarding('obn', { done: true }).done, true);
   console.log('ok assistant de démarrage');
+  // messagerie privée : groupes, indicateur de lecture, blocage et signalement
+  {
+    const q = Net({ d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } });
+    for (const u of ['max', 'mbx', 'mcx', 'mdx']) await q.signup(u, 'pass1');
+    await q.ensureStreamer();
+    assert.throws(() => q.createRoom('max', 'seul', []), /2 à 8/);
+    assert.throws(() => q.createRoom('max', 'adm', ['Streamer']), /Streamer/);
+    q.toggleBlock('mcx', 'max'); assert.throws(() => q.createRoom('max', 'x', ['mbx', 'mcx']), /bloqué/);
+    const rid = q.createRoom('max', 'Les potes', ['mbx', 'mdx']);
+    q.sendRoom('max', rid, 'salut le groupe');
+    assert.strictEqual(q.unreadDm('mbx').rooms[rid], 1); assert.strictEqual(q.unreadDm('mbx').total, 1);
+    assert.throws(() => q.sendRoom('mcx', rid, 'intrus'), /introuvable/);
+    const mid = q.roomMessages('max', rid)[0].id;
+    assert.deepStrictEqual(q.roomSeenBy('max', rid, mid), []);
+    q.markRoomRead('mbx', rid); assert.deepStrictEqual(q.roomSeenBy('max', rid, mid), ['mbx']); assert.strictEqual(q.unreadDm('mbx').total, 0);
+    q.sendRoom('mbx', rid, 'yo'); q.toggleBlock('mdx', 'mbx');
+    assert.strictEqual(q.roomMessages('mdx', rid).length, 1); assert.strictEqual(q.unreadDm('mdx').rooms[rid], 1);
+    q.reportMessage('max', rid, q.roomMessages('max', rid)[1].id, 'spam', ''); assert.throws(() => q.reportMessage('max', rid, q.roomMessages('max', rid)[1].id, 'spam'), /déjà/);
+    assert.throws(() => q.reportMessage('max', rid, mid, 'spam'), /propre/);
+    assert.strictEqual(q.messageReports('Streamer').length, 1); q.resolveMessageReport('Streamer', q.messageReports('Streamer')[0].id, 'warn');
+    assert.strictEqual(q.profile('mbx').sanction.type, 'warn');
+    // 1-à-1 : « Vu »
+    q.send('max', 'mbx', 'coucou'); assert.strictEqual(q.peerRead('max', 'mbx'), 0);
+    q.markDmRead('mbx', 'max'); assert.ok(q.peerRead('max', 'mbx') > 0);
+    q.leaveRoom('mdx', rid); q.leaveRoom('mbx', rid); assert.strictEqual(q.rooms('max').length, 0);
+    console.log('ok messagerie privée');
+  }
 })().catch(e => { console.error(e); process.exit(1); });
