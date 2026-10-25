@@ -96,6 +96,41 @@ assert.strictEqual(n2.importUser('fred', evil).messages, 1);
   const back = Net({ d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } }); await back.signup('jade', 'autre3');
   assert.strictEqual(back.importUser('jade', z.exportUser('jade')).posts, 1); assert.strictEqual(back.byUser('jade')[0].images.length, 2);
 }
+// blocage, masquage, signalements et modération
+{
+  const mk = () => ({ d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } });
+  const st = mk(), n = Net(st);
+  await n.signup('ana', 'pass1'); await n.signup('bob', 'pass2'); await n.signup('cyd', 'pass3'); await n.ensureStreamer();
+  n.toggleFollow('ana', 'bob'); const pb = n.post('bob', 'salut #x'); n.post('cyd', 'hello'); const rp = n.post('ana', 'reponse', pb.id); n.send('bob', 'ana', 'psst');
+  assert.strictEqual(n.feed('ana').length, 1); assert.strictEqual(n.conversation('ana', 'bob').length, 1);
+  n.toggleMute('ana', 'bob'); // masquer : tout disparaît, mais bob peut encore écrire
+  assert.ok(n.feed('ana').every(p => p.author !== 'bob') && n.explore('ana').every(p => p.author !== 'bob') && n.conversation('ana', 'bob').length === 0);
+  assert.strictEqual(n.search('salut', 'ana').posts.length, 0); assert.strictEqual(n.explore().length, 2);
+  assert.doesNotThrow(() => n.send('bob', 'ana', 'encore'));
+  n.toggleMute('ana', 'bob'); assert.strictEqual(n.explore('ana').length, 2);
+  n.toggleBlock('ana', 'bob'); // bloquer : coupe les abonnements et interdit réponses / DM / suivi
+  assert.ok(n.isBlocked('ana', 'bob') && !n.profile('ana').following.includes('bob'));
+  assert.throws(() => n.post('bob', 'yo', rp.id), /bloqué/); assert.throws(() => n.send('bob', 'ana', 'x'), /bloqué/); assert.throws(() => n.toggleFollow('bob', 'ana'), /bloqu/);
+  assert.strictEqual(n.replies(pb.id, 'cyd').length, 1); assert.strictEqual(n.replies(pb.id, 'bob').length, 1);
+  assert.strictEqual(n.explore('ana').some(p => p.author === 'bob'), false); assert.throws(() => n.toggleBlock('ana', 'streamer'), /Streamer/);
+  n.toggleBlock('ana', 'bob'); assert.ok(!n.isBlocked('ana', 'bob'));
+  // signalements
+  assert.throws(() => n.report('ana', pb.id, 'xx'), /motif/); assert.throws(() => n.report('bob', pb.id, 'spam'), /propre/);
+  n.report('ana', pb.id, 'spam', 'pub'); assert.throws(() => n.report('ana', pb.id, 'spam'), /déjà/); n.report('cyd', pb.id, 'harcelement');
+  assert.throws(() => n.queue('ana'), /administrateur/); assert.throws(() => n.moderate('ana', pb.id, 'ban'), /administrateur/);
+  const q = n.queue('Streamer'); assert.strictEqual(q.length, 1); assert.strictEqual(q[0].reports.length, 2);
+  n.moderate('Streamer', pb.id, 'suspend', { hours: 2 });
+  assert.strictEqual(n.queue('Streamer').length, 0); assert.strictEqual(n.history('Streamer').length, 2); assert.ok(n.sanctionOf('bob').type === 'suspend');
+  assert.throws(() => n.post('bob', 'non'), /suspendu/); assert.throws(() => n.toggleLike('bob', pb.id), /suspendu/);
+  n.liftSanction('Streamer', 'bob'); assert.doesNotThrow(() => n.post('bob', 'ok'));
+  const p2 = n.post('bob', 'spam!'); n.report('cyd', p2.id, 'spam');
+  n.moderate('Streamer', p2.id, 'ban'); assert.throws(() => n.post('bob', 'x'), /banni/); assert.ok(n.notifications('bob').some(x => x.type === 'sanction'));
+  const p3 = n.post('cyd', 'mauvais'); n.report('ana', p3.id, 'nsfw'); n.moderate('Streamer', p3.id, 'delete');
+  assert.ok(!n.explore().some(p => p.id === p3.id) && n.history('Streamer', 1)[0].action === 'delete');
+  const p4 = n.post('cyd', 'ok'); n.report('ana', p4.id, 'autre'); n.moderate('Streamer', p4.id, 'dismiss'); assert.ok(n.explore().some(p => p.id === p4.id));
+  // les listes sont partagées via le storage : une 2e instance voit tout
+  assert.ok(Net(st).sanctionOf('bob').type === 'ban');
+}
 // préférences d'accessibilité
 const A = require('./a11y.js'), pm = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
 assert.deepStrictEqual(A.load(pm), { theme: 'auto', size: 100 });

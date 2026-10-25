@@ -2,10 +2,13 @@
 // Chaque appel relit le storage (lecture-modification-écriture) : aucune copie ancienne n'est conservée en mémoire.
 (function (root) {
   const KEY = 'twitchgram.v1';
-  const empty = () => ({ users: {}, posts: [], messages: [], notifs: [], reposts: [], seq: 1, attempts: {} });
+  const empty = () => ({ users: {}, posts: [], messages: [], notifs: [], reposts: [], reports: [], seq: 1, attempts: {} });
   const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000;
 
   const RESERVED = 'streamer';
+  // signalements : motifs, sanctions de modération (durée de suspension en heures)
+  const REASONS = { spam: 'Spam ou publicité', harcelement: 'Harcèlement', haine: 'Haine ou discrimination', violence: 'Violence ou menace', nsfw: 'Contenu inapproprié', autre: 'Autre' };
+  const ACTIONS = ['dismiss', 'delete', 'warn', 'suspend', 'ban'];
   // images jointes : jusqu'à 4 par post/message, en data URL (redimensionnées côté navigateur), avec texte alternatif
   const MAX_IMAGES = 4, MAX_IMG_CHARS = 400000, IMG_RE = /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+\/=]+$/;
   function cleanImages(list) {
@@ -42,6 +45,17 @@
       db.notifs.push({ id: id(), to, from, type, postId: postId || null, at: now(), read: false });
     };
 
+    const lc = n => String(n || '').toLowerCase();
+    const has = (list, n) => (list || []).some(x => lc(x) === lc(n));
+    // masqué pour `by` : compte bloqué ou masqué par lui (ses posts, réponses et DM disparaissent)
+    const hiddenFor = (by, author) => { const u = db.users[lc(by)]; return !!(u && author && lc(author) !== lc(by) && (has(u.blocked, author) || has(u.muted, author))); };
+    const guard = n => {
+      const s = user(n).sanction; if (!s) return;
+      need(s.type !== 'ban', 'Votre compte est banni : action impossible');
+      need(!(s.type === 'suspend' && s.until > now()), `Compte suspendu pendant encore ${Math.ceil((s.until - now()) / 60000)} min`);
+    };
+    const blockedBy = (author, target) => has((db.users[lc(target)] || {}).blocked, author);
+    const vis = (by, list, get) => by ? list.filter(x => !hiddenFor(by, get(x))) : list;
     const scoreOf = p => { const h = Math.max(0, now() - p.at) / 36e5; return (1 + p.likes.length * 2 + db.posts.filter(r => r.replyTo === p.id).length * 3) * Math.pow(0.5, h / 3); };
 
     const api = {
@@ -102,6 +116,8 @@
         for (const x of Object.values(db.users)) x.following = x.following.filter(f => f !== n);
         db.messages = db.messages.filter(m => m.from !== n && m.to !== n);
         db.reposts = db.reposts.filter(r => r.by !== n && !gone.has(r.postId));
+        db.reports = db.reports.filter(r => r.by !== n && r.target !== n);
+        for (const x of Object.values(db.users)) { if (x.blocked) x.blocked = x.blocked.filter(f => f !== n); if (x.muted) x.muted = x.muted.filter(f => f !== n); }
         db.notifs = db.notifs.filter(x => x.from !== n && x.to !== n && !gone.has(x.postId));
         delete db.users[n.toLowerCase()]; delete db.attempts[n.toLowerCase()];
         save();
@@ -117,8 +133,8 @@
       post(author, text, replyTo, images) {
         text = (text || '').trim(); images = cleanImages(images);
         need((text || images.length) && text.length <= 280, 'Message vide ou > 280 caractères');
-        user(author);
-        if (replyTo) need(db.posts.find(p => p.id === replyTo), 'Post introuvable');
+        user(author); guard(author);
+        if (replyTo) { const tp = db.posts.find(p => p.id === replyTo); need(tp, 'Post introuvable'); need(!blockedBy(author, tp.author), 'Cet utilisateur vous a bloqué : réponse impossible'); }
         const p = { id: id(), author: user(author).name, text, at: now(), likes: [], replyTo: replyTo || null };
         if (images.length) p.images = images;
         db.posts.push(p);
@@ -138,7 +154,7 @@
       // modification : auteur seulement, dans les 15 min ; l'ancien texte part dans l'historique
       editPost(by, postId, text) {
         const p = db.posts.find(x => x.id === postId); need(p, 'Post introuvable');
-        need(p.author === user(by).name, 'Vous ne pouvez modifier que vos posts');
+        need(p.author === user(by).name, 'Vous ne pouvez modifier que vos posts'); guard(by);
         need(now() - p.at <= EDIT_MS, 'Modification impossible après 15 minutes');
         text = (text || '').trim();
         need(text && text.length <= 280, 'Message vide ou > 280 caractères');
@@ -157,12 +173,12 @@
         save(); return i < 0;
       },
       isBookmarked: (by, postId) => !!(((db.users[(by || '').toLowerCase()] || {}).bookmarks || []).includes(postId)),
-      bookmarks: by => (user(by).bookmarks || []).slice().reverse().map(i => db.posts.find(p => p.id === i)).filter(Boolean),
+      bookmarks: by => (user(by).bookmarks || []).slice().reverse().map(i => db.posts.find(p => p.id === i)).filter(p => p && !hiddenFor(by, p.author)),
       // repartage sur son profil (posts racines des autres uniquement)
       toggleRepost(by, postId) {
         const me = user(by), p = db.posts.find(x => x.id === postId); need(p, 'Post introuvable');
         need(!p.replyTo, 'Seuls les posts peuvent être repartagés');
-        need(p.author !== me.name, 'Impossible de repartager son propre post');
+        need(p.author !== me.name, 'Impossible de repartager son propre post'); guard(by);
         const i = db.reposts.findIndex(r => r.by === me.name && r.postId === postId);
         if (i >= 0) db.reposts.splice(i, 1); else { db.reposts.push({ id: id(), by: me.name, postId, at: now() }); notify(p.author, me.name, 'repost', postId); }
         save(); return i < 0;
@@ -170,20 +186,21 @@
       repostCount: postId => db.reposts.filter(r => r.postId === postId).length,
       hasReposted: (by, postId) => db.reposts.some(r => r.by.toLowerCase() === (by || '').toLowerCase() && r.postId === postId),
       // profil : posts + repartages, récents d'abord
-      timeline(n) {
+      timeline(n, by) {
         const own = db.posts.filter(p => !p.replyTo && p.author.toLowerCase() === n.toLowerCase()).map(p => ({ post: p, at: p.at, by: null }));
         const rt = db.reposts.filter(r => r.by.toLowerCase() === n.toLowerCase()).map(r => ({ post: db.posts.find(p => p.id === r.postId), at: r.at, by: r.by })).filter(x => x.post);
-        return own.concat(rt).sort((a, b) => b.at - a.at);
+        return vis(by, own.concat(rt), x => x.post.author).filter(x => !x.by || !hiddenFor(by, x.by)).sort((a, b) => b.at - a.at);
       },
       toggleLike(by, postId) {
-        const p = db.posts.find(x => x.id === postId); need(p, 'Post introuvable'); user(by);
+        const p = db.posts.find(x => x.id === postId); need(p, 'Post introuvable'); user(by); guard(by);
         const i = p.likes.indexOf(by);
         if (i >= 0) p.likes.splice(i, 1); else { p.likes.push(by); notify(p.author, by, 'like', postId); }
         save(); return p.likes.length;
       },
       toggleFollow(by, target) {
         const me = user(by), t = user(target);
-        need(me !== t, 'Impossible de se suivre soi-même');
+        need(me !== t, 'Impossible de se suivre soi-même'); guard(by);
+        if (!has(me.following, t.name)) need(!blockedBy(me.name, t.name) && !has(me.blocked, t.name), 'Abonnement impossible (compte bloqué)');
         const i = me.following.indexOf(t.name);
         if (i >= 0) me.following.splice(i, 1); else { me.following.push(t.name); notify(t.name, me.name, 'follow'); }
         save(); return i < 0;
@@ -191,16 +208,16 @@
       // fil : posts racines des gens suivis + les siens, récents d'abord
       feed(by) {
         const me = user(by);
-        return db.posts.filter(p => !p.replyTo && (p.author === me.name || me.following.includes(p.author))).sort((a, b) => b.id - a.id);
+        return db.posts.filter(p => !p.replyTo && !hiddenFor(by, p.author) && (p.author === me.name || me.following.includes(p.author))).sort((a, b) => b.id - a.id);
       },
-      explore: () => db.posts.filter(p => !p.replyTo).sort((a, b) => b.id - a.id),
-      replies: postId => db.posts.filter(p => p.replyTo === postId).sort((a, b) => a.id - b.id),
-      byUser: n => db.posts.filter(p => !p.replyTo && p.author.toLowerCase() === n.toLowerCase()).sort((a, b) => b.id - a.id),
-      search(q) {
+      explore: by => vis(by, db.posts.filter(p => !p.replyTo), p => p.author).sort((a, b) => b.id - a.id),
+      replies: (postId, by) => vis(by, db.posts.filter(p => p.replyTo === postId), p => p.author).sort((a, b) => a.id - b.id),
+      byUser: (n, by) => vis(by, db.posts.filter(p => !p.replyTo && p.author.toLowerCase() === n.toLowerCase()), p => p.author).sort((a, b) => b.id - a.id),
+      search(q, by) {
         q = (q || '').trim().toLowerCase(); if (!q) return { users: [], posts: [] };
         return {
-          users: Object.values(db.users).filter(u => u.name.toLowerCase().includes(q)),
-          posts: db.posts.filter(p => p.text.toLowerCase().includes(q)).sort((a, b) => b.id - a.id),
+          users: vis(by, Object.values(db.users).filter(u => u.name.toLowerCase().includes(q)), u => u.name),
+          posts: vis(by, db.posts.filter(p => p.text.toLowerCase().includes(q)), p => p.author).sort((a, b) => b.id - a.id),
         };
       },
       trending() {
@@ -211,8 +228,8 @@
       // score d'un post : likes + réponses, pondérés par la fraîcheur (demi-vie ~3 h)
       score: p => scoreOf(p),
       // classement des posts « en tendance », meilleur score d'abord
-      ranking(limit) {
-        return db.posts.filter(p => !p.replyTo).map(p => ({ post: p, score: scoreOf(p) })).sort((a, b) => b.score - a.score).slice(0, limit || 5);
+      ranking(limit, by) {
+        return vis(by, db.posts.filter(p => !p.replyTo), p => p.author).map(p => ({ post: p, score: scoreOf(p) })).sort((a, b) => b.score - a.score).slice(0, limit || 5);
       },
       // hashtags du moment : score = somme des scores des posts qui les contiennent
       trendingLive(limit) {
@@ -272,18 +289,94 @@
       send(from, to, text, images) {
         text = (text || '').trim(); images = cleanImages(images);
         need((text || images.length) && text.length <= 500, 'Message invalide');
-        user(from); const t = user(to);
+        user(from); guard(from); const t = user(to);
+        need(!blockedBy(from, to), 'Cet utilisateur vous a bloqué : message impossible');
+        need(!has(user(from).blocked, to), 'Débloquez cet utilisateur pour lui écrire');
         const m = { id: id(), from: user(from).name, to: t.name, text, at: now() };
         if (images.length) m.images = images;
         db.messages.push(m);
         save();
       },
       conversation(a, b) {
+        if (hiddenFor(a, b)) return [];
         a = a.toLowerCase(); b = b.toLowerCase();
         return db.messages.filter(m => [m.from.toLowerCase(), m.to.toLowerCase()].sort().join() === [a, b].sort().join());
       },
+      // ---- blocage / masquage (listes personnelles stockées sur le compte) ----
+      // bloquer : masque tout + coupe les abonnements dans les deux sens + interdit réponses, DM et abonnement
+      toggleBlock(by, target) {
+        const me = user(by), t = user(target);
+        need(me !== t, 'Impossible de se bloquer soi-même'); need(!t.admin, 'Le compte Streamer ne peut pas être bloqué');
+        const b = me.blocked = me.blocked || [], i = b.findIndex(x => lc(x) === lc(t.name));
+        if (i >= 0) b.splice(i, 1);
+        else { b.push(t.name); me.following = me.following.filter(f => f !== t.name); t.following = t.following.filter(f => f !== me.name); }
+        save(); return i < 0;
+      },
+      // masquer : tout disparaît du fil sans prévenir la personne, qui peut toujours écrire
+      toggleMute(by, target) {
+        const me = user(by), t = user(target);
+        need(me !== t, 'Impossible de se masquer soi-même'); need(!t.admin, 'Le compte Streamer ne peut pas être masqué');
+        const m = me.muted = me.muted || [], i = m.findIndex(x => lc(x) === lc(t.name));
+        if (i >= 0) m.splice(i, 1); else m.push(t.name);
+        save(); return i < 0;
+      },
+      isBlocked: (by, n) => has((db.users[lc(by)] || {}).blocked, n),
+      isMuted: (by, n) => has((db.users[lc(by)] || {}).muted, n),
+      isHidden: (by, n) => hiddenFor(by, n),
+      blockedList: by => (user(by).blocked || []).filter(n => db.users[lc(n)]).slice(),
+      mutedList: by => (user(by).muted || []).filter(n => db.users[lc(n)]).slice(),
+      // ---- signalements ----
+      reasons: () => Object.assign({}, REASONS),
+      report(by, postId, reason, note) {
+        const me = user(by), p = db.posts.find(x => x.id === postId);
+        need(p, 'Post introuvable'); need(REASONS[reason], 'Choisissez un motif de signalement');
+        need(p.author !== me.name, 'Vous ne pouvez pas signaler votre propre post');
+        need(!user(p.author).admin, 'Le compte Streamer ne peut pas être signalé');
+        note = (note || '').trim(); need(note.length <= 300, 'Précisions : 300 caractères max');
+        need(!db.reports.some(r => r.postId === postId && r.by === me.name && r.status === 'open'), 'Vous avez déjà signalé ce post');
+        const r = { id: id(), postId, by: me.name, target: p.author, reason, note, at: now(), status: 'open', snap: { text: p.text, images: (p.images || []).length, replyTo: p.replyTo } };
+        db.reports.push(r); save(); return r;
+      },
+      hasReported: (by, postId) => db.reports.some(r => r.postId === postId && lc(r.by) === lc(by) && r.status === 'open'),
+      // file de modération (admin) : signalements ouverts regroupés par post, les plus signalés d'abord
+      queue(by) {
+        need(api.isAdmin(by), 'Réservé à l’administrateur');
+        const g = {};
+        for (const r of db.reports.filter(x => x.status === 'open')) { const e = g[r.postId] || (g[r.postId] = { postId: r.postId, target: r.target, snap: r.snap, reports: [], last: 0 }); e.reports.push(r); e.last = Math.max(e.last, r.at); }
+        return Object.values(g).sort((a, b) => b.reports.length - a.reports.length || b.last - a.last);
+      },
+      history(by, limit) {
+        need(api.isAdmin(by), 'Réservé à l’administrateur');
+        return db.reports.filter(r => r.status !== 'open').sort((a, b) => b.closedAt - a.closedAt || b.id - a.id).slice(0, limit || 30);
+      },
+      // décision sur TOUS les signalements ouverts d'un post : dismiss | delete | warn | suspend | ban
+      moderate(by, postId, action, opts) {
+        need(api.isAdmin(by), 'Réservé à l’administrateur'); need(ACTIONS.includes(action), 'Action inconnue');
+        opts = opts || {};
+        const open = db.reports.filter(r => r.postId === postId && r.status === 'open'); need(open.length, 'Aucun signalement ouvert pour ce post');
+        const target = db.users[lc(open[0].target)], hours = Math.min(24 * 90, Math.max(1, +opts.hours || 24));
+        if (action !== 'dismiss' && target) need(!target.admin, 'Impossible de sanctionner un administrateur');
+        if (target && ['warn', 'suspend', 'ban'].includes(action)) {
+          const prev = target.sanction || {};
+          target.sanction = { type: action, at: now(), by: user(by).name, reason: REASONS[open[0].reason], warnings: (prev.warnings || 0) + (action === 'warn' ? 1 : 0) };
+          if (action === 'suspend') target.sanction.until = now() + hours * 36e5;
+          (target.sanctions = target.sanctions || []).push({ type: action, at: now(), reason: REASONS[open[0].reason], hours: action === 'suspend' ? hours : 0, postId });
+          notify(target.name, user(by).name, 'sanction', null);
+        }
+        for (const r of open) Object.assign(r, { status: action === 'dismiss' ? 'dismissed' : 'actioned', action, closedAt: now(), closedBy: user(by).name });
+        save();
+        if (action === 'delete') api.deletePost(by, postId); // relit le storage : à faire après l'enregistrement
+        return open.length;
+      },
+      // sanction active d'un compte (null si aucune ou expirée) ; l'admin peut la lever
+      sanctionOf(n) { const s = (db.users[lc(n)] || {}).sanction; if (!s) return null; if (s.type === 'suspend' && s.until <= now()) return null; return s; },
+      liftSanction(by, n) {
+        need(api.isAdmin(by), 'Réservé à l’administrateur'); const u = user(n); need(u.sanction, 'Aucune sanction active');
+        delete u.sanction; save();
+      },
+      sanctioned: by => { need(api.isAdmin(by), 'Réservé à l’administrateur'); return Object.values(db.users).filter(u => u.sanction && (u.sanction.type !== 'suspend' || u.sanction.until > now())).map(u => ({ name: u.name, sanction: u.sanction })); },
       notifications(by, markRead) {
-        const l = db.notifs.filter(n => n.to === user(by).name).sort((a, b) => b.id - a.id);
+        const l = db.notifs.filter(n => n.to === user(by).name && !hiddenFor(by, n.from)).sort((a, b) => b.id - a.id);
         if (markRead) { l.forEach(n => (n.read = true)); save(); }
         return l;
       },
@@ -294,6 +387,6 @@
     return api;
   }
 
-  const exported = { Net, KEY, MAX_IMAGES, cleanImages };
+  const exported = { Net, KEY, MAX_IMAGES, cleanImages, REASONS };
   if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);

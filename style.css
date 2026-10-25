@@ -45,3 +45,5 @@ html[data-anim] body{background-size:300% 300%;animation:flow 14s ease-in-out in
 .stop{display:grid;grid-template-columns:48px 1fr 46px auto;gap:8px;align-items:center;margin:4px 0}.stop input[type=color]{width:48px;height:34px;padding:2px;margin:0}.stop input[type=range]{padding:0}
 .row input[type=range]{padding:0;flex:1;min-width:120px}.pre{display:flex;flex-wrap:wrap;gap:8px}.pre button{min-width:110px;height:56px;color:#fff;text-shadow:0 1px 3px #000;font-weight:700}
 .tp select{background:var(--card);color:inherit;border:1px solid var(--bd);border-radius:8px;padding:7px}.tp label.inl{display:inline-flex;gap:6px;align-items:center;margin:4px 12px 4px 0}
+.report,.mod{display:grid;gap:6px;margin:6px 0}.mod blockquote{margin:4px 0;padding:6px 10px;border-left:3px solid var(--err);background:var(--bd);border-radius:6px;overflow-wrap:anywhere}
+.mod ul{margin:0;padding-left:18px}.mod .row,.card .row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.acts [data-report].on{opacity:.5}

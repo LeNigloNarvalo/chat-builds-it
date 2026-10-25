@@ -81,15 +81,32 @@ window.addEventListener('storage', ev => { if (ev.key === Theme.KEY) { th = Them
 const openSession = name => { me = name; store.setItem(SESSION, me + '|' + net.epoch(me)); };
 
 function postHTML(p, thread) {
-  const liked = me && p.likes.includes(me), n = net.replies(p.id).length, editing = view.editing === p.id && net.canEdit(me, p.id);
+  const liked = me && p.likes.includes(me), n = net.replies(p.id, me).length, editing = view.editing === p.id && net.canEdit(me, p.id);
   const saved = net.isBookmarked(me, p.id), rp = net.hasReposted(me, p.id), rc = net.repostCount(p.id), hist = p.history || [];
   const edited = p.editedAt ? `<button class="lnk" data-hist="${p.id}" aria-expanded="${view.hist === p.id}">modifié</button>` : '';
   const histHTML = p.editedAt && view.hist === p.id ? `<div class="hist"><b>Historique des modifications</b>${hist.map(h => `<div class="mut">${ago(h.at)} · ${esc(h.text)}</div>`).join('')}<div>Actuel · ${esc(p.text)}</div></div>` : '';
   const body = editing ? `<textarea id="edit-txt" maxlength="280">${esc(p.text)}</textarea><button data-saveedit="${p.id}">💾 Enregistrer</button> <button data-canceledit>Annuler</button> <span class="mut">${Math.ceil(net.editLeft(p.id) / 60000)} min restantes</span>` : `${p.text ? `<p>${rich(p.text)}</p>` : ''}${gallery(p.images, 'p', p.id)}`;
   return `<div class="card post">${av(p.author)}<span class="who" data-user="${p.author}">${esc(shown(p.author))}</span> <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span> ${edited}
-  ${body}${histHTML}<div class="acts"><button data-like="${p.id}" class="${liked ? 'on' : ''}">♥ ${p.likes.length}</button>
+  ${body}${histHTML}${view.reporting === p.id ? reportForm(p.id) : ''}<div class="acts"><button data-like="${p.id}" class="${liked ? 'on' : ''}">♥ ${p.likes.length}</button>
   <button data-open="${p.id}">💬 ${n}</button>${!p.replyTo && p.author !== me ? `<button data-repost="${p.id}" class="${rp ? 'on' : ''}" aria-pressed="${rp}" aria-label="${rp ? 'Annuler le repartage' : 'Repartager sur mon profil'}">🔁 ${rc}</button>` : rc ? `<span class="mut">🔁 ${rc}</span>` : ''}
-  <button data-bm="${p.id}" class="${saved ? 'on' : ''}" aria-pressed="${saved}" aria-label="${saved ? 'Retirer des favoris' : 'Mettre en favori'}">${saved ? '🔖' : '📑'}</button>${net.canEdit(me, p.id) && !editing ? `<button data-edit="${p.id}" aria-label="Modifier le post">✏️</button>` : ''}${p.author === me || net.isAdmin(me) ? `<button data-del="${p.id}">🗑</button>` : ''}</div></div>`;
+  ${p.author !== me && !net.isAdmin(p.author) ? `<button data-report="${p.id}" class="${net.hasReported(me, p.id) ? 'on' : ''}" aria-label="${net.hasReported(me, p.id) ? 'Post déjà signalé' : 'Signaler le post'}" ${net.hasReported(me, p.id) ? 'disabled' : ''}>🚩</button>` : ''}<button data-bm="${p.id}" class="${saved ? 'on' : ''}" aria-pressed="${saved}" aria-label="${saved ? 'Retirer des favoris' : 'Mettre en favori'}">${saved ? '🔖' : '📑'}</button>${net.canEdit(me, p.id) && !editing ? `<button data-edit="${p.id}" aria-label="Modifier le post">✏️</button>` : ''}${p.author === me || net.isAdmin(me) ? `<button data-del="${p.id}">🗑</button>` : ''}</div></div>`;
+}
+const reportForm = id => `<div class="card report" role="group" aria-label="Signaler ce post"><b>🚩 Signaler ce post</b>
+  <label>Motif <select id="rp-reason">${Object.entries(net.reasons()).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</select></label>
+  <label>Précisions (facultatif)<textarea id="rp-note" maxlength="300"></textarea></label>
+  <button data-sendreport="${id}">Envoyer le signalement</button> <button data-cancelreport>Annuler</button></div>`;
+const SANC = { warn: '⚠️ Avertissement', suspend: '⏸ Suspension', ban: '⛔ Bannissement' };
+const sancLabel = s => `${SANC[s.type]}${s.type === 'suspend' ? ` jusqu’à ${new Date(s.until).toLocaleString('fr-FR')}` : ''} · ${esc(s.reason || '')}`;
+function modPage(e) {
+  const q = net.queue(me), hist = net.history(me, 15), sl = net.sanctioned(me), R = net.reasons();
+  return `<div class="card"><h2>🛡 File de modération</h2><p class="mut">${q.length} post${q.length > 1 ? 's' : ''} à examiner, les plus signalés d’abord.</p></div>${e}` +
+  (q.map(g => `<div class="card mod"><b>@${esc(g.target)}</b> <span class="mut">· ${g.reports.length} signalement${g.reports.length > 1 ? 's' : ''}</span>
+    <blockquote>${esc(g.snap.text) || '<span class="mut">(sans texte)</span>'}${g.snap.images ? ` <span class="mut">📷 ${g.snap.images}</span>` : ''}</blockquote>
+    <ul>${g.reports.map(r => `<li><b>${esc(R[r.reason] || r.reason)}</b> · @${esc(r.by)} <span class="mut">${ago(r.at)}${r.note ? ' · ' + esc(r.note) : ''}</span></li>`).join('')}</ul>
+    <label class="inl">Durée de suspension (h) <input id="mh-${g.postId}" type="number" min="1" max="2160" value="24"></label>
+    <div class="row"><button data-open="${g.postId}">👁 Voir</button><button data-mod="${g.postId}:dismiss">✅ Classer sans suite</button><button data-mod="${g.postId}:delete">🗑 Supprimer le post</button><button data-mod="${g.postId}:warn">⚠️ Avertir</button><button data-mod="${g.postId}:suspend">⏸ Suspendre</button><button data-mod="${g.postId}:ban">⛔ Bannir</button></div></div>`).join('') || '<p class="mut">Aucun signalement en attente 🎉</p>') +
+  `<div class="card"><b>Comptes sanctionnés</b>${sl.map(x => `<div class="row"><span>@${esc(x.name)} · ${sancLabel(x.sanction)}</span><button data-lift="${esc(x.name)}">Lever</button></div>`).join('') || '<p class="mut">Aucun.</p>'}</div>
+  <div class="card"><b>Historique</b>${hist.map(r => `<div class="mut">#${r.postId} @${esc(r.target)} · ${esc(R[r.reason] || r.reason)} → ${({ dismiss: 'sans suite', delete: 'post supprimé', warn: 'avertissement', suspend: 'suspension', ban: 'bannissement' })[r.action]} (${ago(r.closedAt)})</div>`).join('') || '<p class="mut">Vide.</p>'}</div>`;
 }
 const composer = (ph, reply) => `<div class="card"><textarea id="txt" maxlength="280" placeholder="${ph}"></textarea>${attachBox('post')}<button data-send="${reply || ''}">Publier</button></div>`;
 
@@ -103,37 +120,45 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length;
-  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['dm', '✉️ Messages'], ['profile', '👤 Profil'], ['theme', '🎨 Thème'], ['settings', '⚙️ Réglages'], ['security', '🔒 Sécurité']]
+  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['dm', '✉️ Messages'], ['profile', '👤 Profil'], ['theme', '🎨 Thème'], ['settings', '⚙️ Réglages'], ['blocks', '🚫 Bloqués'], ['security', '🔒 Sécurité']].concat(net.isAdmin(me) ? [['mod', `🛡 Modération ${net.queue(me).length || ''}`]] : [])
     .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
+  const mySanc = net.sanctionOf(me);
   const list = ps => ps.map(p => postHTML(p)).join('') || '<p class="mut">Rien ici pour l’instant.</p>';
   let h = '';
   if (view.page === 'feed') h = composer('Quoi de neuf ?') + e + list(net.feed(me));
   else if (view.page === 'explore') {
-    h = composer('Quoi de neuf ?') + e + `<div class="card"><b>Tendances</b> ${net.trending().map(([t, c]) => `<span class="tag" data-search="${t}">${t} (${c})</span>`).join(' ') || '<span class="mut">aucune</span>'}</div>` + list(net.explore());
+    h = composer('Quoi de neuf ?') + e + `<div class="card"><b>Tendances</b> ${net.trending().map(([t, c]) => `<span class="tag" data-search="${t}">${t} (${c})</span>`).join(' ') || '<span class="mut">aucune</span>'}</div>` + list(net.explore(me));
   } else if (view.page === 'trends') {
     const medal = i => ['🥇', '🥈', '🥉'][i] || `#${i + 1}`;
     h = `<div class="card"><b>🔴 En direct · hashtags du moment</b><ol class="trend">${net.trendingLive().map(t => `<li><span class="tag" data-search="${t.tag}">${t.tag}</span> <span class="mut">${t.count} post${t.count > 1 ? 's' : ''}</span><i class="bar" style="width:${Math.max(6, Math.round(t.score / (net.trendingLive(1)[0].score || 1) * 100))}%"></i></li>`).join('') || '<li class="mut">aucun hashtag</li>'}</ol></div>
-    <div class="card"><b>🏆 Classement des posts</b></div>` + net.ranking(6).map((r, i) => `<div class="rank"><span class="medal">${medal(i)}</span>${postHTML(r.post)}<span class="mut">score ${r.score.toFixed(1)}</span></div>`).join('') + (e || '');
+    <div class="card"><b>🏆 Classement des posts</b></div>` + net.ranking(6, me).map((r, i) => `<div class="rank"><span class="medal">${medal(i)}</span>${postHTML(r.post)}<span class="mut">score ${r.score.toFixed(1)}</span></div>`).join('') + (e || '');
   } else if (view.page === 'bookmarks') {
     h = `<div class="card"><h2>🔖 Mes favoris</h2><p class="mut">Les posts que tu as mis de côté (visibles par toi seul).</p></div>${e}` + list(net.bookmarks(me));
   } else if (view.page === 'search') {
-    const r = net.search(view.arg);
+    const r = net.search(view.arg, me);
     h = `<div class="card"><input id="q" placeholder="Pseudo, mot, #tag" value="${esc(view.arg || '')}"><button data-dosearch>Chercher</button></div>` +
       r.users.map(u => `<div class="card">${av(u.name)}<span class="who" data-user="${u.name}">${esc(shown(u.name))}</span> <span class="mut">${esc(u.bio)}</span></div>`).join('') + list(r.posts);
   } else if (view.page === 'notifs') {
-    const L = { like: 'a aimé votre post', reply: 'a répondu à votre post', mention: 'vous a mentionné', follow: 'vous suit', repost: 'a repartagé votre post' };
+    const L = { sanction: 'a pris une mesure de modération contre votre compte', like: 'a aimé votre post', reply: 'a répondu à votre post', mention: 'vous a mentionné', follow: 'vous suit', repost: 'a repartagé votre post' };
     h = net.notifications(me, true).map(n => `<div class="card" ${n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}><b>${esc(n.from)}</b> ${L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') || '<p class="mut">Aucune notification.</p>';
   } else if (view.page === 'thread') {
     const p = net.db().posts.find(x => x.id === view.arg);
-    h = p ? postHTML(p) + composer('Votre réponse…', p.id) + e + net.replies(p.id).map(r => postHTML(r)).join('') : '<p class="mut">Post supprimé.</p>';
+    h = p ? postHTML(p) + composer('Votre réponse…', p.id) + e + net.replies(p.id, me).map(r => postHTML(r)).join('') : '<p class="mut">Post supprimé.</p>';
   } else if (view.page === 'profile') {
     const name = view.arg || me, u = net.profile(name), fl = net.followers(name), self = u.name === me;
     h = `<div class="card prof"><div class="banner" style="background:${bannerCss(u.banner)}"></div><div class="pbody">${av(u.name, true)}<b class="pname">${esc(u.display || u.name)}</b> <span class="mut">@${esc(u.name)}</span>
       <p>${esc(u.bio) || '<span class="mut">Pas de bio</span>'}</p>${u.link ? `<p><a href="${esc(u.link)}" target="_blank" rel="noopener noreferrer nofollow">🔗 ${esc(u.link.replace(/^https?:\/\//, ''))}</a></p>` : ''}
       <p class="stats"><button data-sub="followers:${u.name}" class="${view.sub === 'followers' ? 'on' : ''}"><b>${fl.length}</b> abonnés</button> <button data-sub="following:${u.name}" class="${view.sub === 'following' ? 'on' : ''}"><b>${u.following.length}</b> abonnements</button></p>` +
-      (self ? `<button data-page="settings">⚙️ Modifier le profil</button>` : `<button data-follow="${u.name}">${fl.includes(me) ? 'Se désabonner' : 'Suivre'}</button> <button data-chat="${u.name}">Message</button>`) + `</div></div>${e}` +
-      (view.sub ? `<div class="card"><b>${view.sub === 'followers' ? 'Abonnés' : 'Abonnements'}</b> <button data-sub="">✕</button></div>` + peopleList(view.sub === 'followers' ? fl : u.following) : (net.timeline(name).map(t => (t.by ? `<p class="mut rt">🔁 ${esc(shown(t.by))} a repartagé</p>` : '') + postHTML(t.post)).join('') || '<p class="mut">Rien ici pour l’instant.</p>'));
+      (self ? `<button data-page="settings">⚙️ Modifier le profil</button>` : `<button data-follow="${u.name}">${fl.includes(me) ? 'Se désabonner' : 'Suivre'}</button> <button data-chat="${u.name}">Message</button>` + (u.admin ? '' : ` <button data-mute="${u.name}" aria-pressed="${net.isMuted(me, u.name)}">${net.isMuted(me, u.name) ? '🔊 Ne plus masquer' : '🔇 Masquer'}</button> <button data-block="${u.name}" aria-pressed="${net.isBlocked(me, u.name)}">${net.isBlocked(me, u.name) ? '✅ Débloquer' : '🚫 Bloquer'}</button>`)) + (net.sanctionOf(u.name) && net.isAdmin(me) ? ` <span class="err">${sancLabel(net.sanctionOf(u.name))}</span>` : '') + `</div></div>${e}` +
+      (view.sub ? `<div class="card"><b>${view.sub === 'followers' ? 'Abonnés' : 'Abonnements'}</b> <button data-sub="">✕</button></div>` + peopleList(view.sub === 'followers' ? fl : u.following) : (net.timeline(name, me).map(t => (t.by ? `<p class="mut rt">🔁 ${esc(shown(t.by))} a repartagé</p>` : '') + postHTML(t.post)).join('') || '<p class="mut">Rien ici pour l’instant.</p>'));
+  } else if (view.page === 'mod' && net.isAdmin(me)) {
+    h = modPage(e);
+  } else if (view.page === 'blocks') {
+    const row = (n, kind) => `<div class="card person">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)}</span> <button data-${kind}="${esc(n)}">${kind === 'unblock' ? 'Débloquer' : 'Ne plus masquer'}</button></div>`;
+    h = `<div class="card"><h2>🚫 Comptes bloqués et masqués</h2><p class="mut">Leurs posts, réponses et messages disparaissent de ton fil. Bloquer coupe aussi les abonnements et les empêche de te répondre, te suivre ou t’écrire ; masquer reste discret.</p></div>${e}
+      <div class="card"><b>Bloqués</b></div>${net.blockedList(me).map(n => row(n, 'unblock')).join('') || '<p class="mut">Aucun compte bloqué.</p>'}
+      <div class="card"><b>Masqués</b></div>${net.mutedList(me).map(n => row(n, 'unmute')).join('') || '<p class="mut">Aucun compte masqué.</p>'}`;
   } else if (view.page === 'theme') {
     h = themePage();
   } else if (view.page === 'settings') {
@@ -163,12 +188,12 @@ function render() {
       <div class="card"><b>Supprimer mon compte</b><p class="mut">Supprime définitivement le compte, ses posts, réponses, likes et messages.</p>
       ${net.isAdmin(me) ? '<p class="mut">Le compte Streamer ne peut pas être supprimé.</p>' : '<input id="sec-del" type="password" placeholder="Mot de passe pour confirmer"><button data-delacc>🗑 Supprimer mon compte et mes posts</button>'}</div>${e}${view.ok ? `<p class="ok">${esc(view.ok)}</p>` : ''}`;
   } else if (view.page === 'dm') {
-    const peers = Object.values(net.db().users).filter(u => u.name !== me);
+    const peers = Object.values(net.db().users).filter(u => u.name !== me && !net.isHidden(me, u.name));
     h = `<div class="card">${peers.map(u => `<button data-chat="${u.name}" class="${view.arg === u.name ? 'on' : ''}">${esc(u.name)}</button>`).join(' ') || '<span class="mut">Personne d’autre pour l’instant.</span>'}</div>`;
     if (view.arg) h += `<div class="card" style="display:grid;gap:6px">${net.conversation(me, view.arg).map(m => `<div class="msg ${m.from === me ? 'me' : ''}">${m.text ? esc(m.text) : ''}${gallery(m.images, 'm', m.id)}</div>`).join('') || '<span class="mut">Dites bonjour 👋</span>'}
       <input id="dm" placeholder="Message à ${esc(view.arg)}">${attachBox('dm')}<button data-dm>Envoyer</button></div>${e}`;
   }
-  app.innerHTML = h;
+  app.innerHTML = (mySanc ? `<div class="card err" role="alert">Mesure de modération : ${sancLabel(mySanc)}</div>` : '') + h;
   a11yPass();
 }
 // accessibilité : éléments cliquables non-boutons focalisables, états ARIA, libellés
@@ -262,7 +287,7 @@ function themeClick(D, v) {
 }
 
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport]');
+  const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
   if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
@@ -301,6 +326,15 @@ document.addEventListener('click', ev => {
   else if ('canceledit' in D) { view.editing = null; render(); }
   else if ('saveedit' in D) attempt(() => { net.editPost(me, +D.saveedit, v('#edit-txt')); view.editing = null; });
   else if ('hist' in D) { view.hist = view.hist === +D.hist ? null : +D.hist; render(); }
+  else if ('report' in D) { view.reporting = +D.report; err = ''; render(); const x = $('#rp-reason'); if (x) x.focus(); }
+  else if ('cancelreport' in D) { view.reporting = null; render(); }
+  else if ('sendreport' in D) attempt(() => { net.report(me, +D.sendreport, v('#rp-reason'), v('#rp-note')); view.reporting = null; notice = ''; });
+  else if ('block' in D) attempt(() => net.toggleBlock(me, D.block));
+  else if ('unblock' in D) attempt(() => net.toggleBlock(me, D.unblock));
+  else if ('mute' in D) attempt(() => net.toggleMute(me, D.mute));
+  else if ('unmute' in D) attempt(() => net.toggleMute(me, D.unmute));
+  else if ('lift' in D) attempt(() => net.liftSanction(me, D.lift));
+  else if ('mod' in D) attempt(() => { const [pid, act] = D.mod.split(':'); net.moderate(me, +pid, act, { hours: v('#mh-' + pid) }); });
   else if ('del' in D) attempt(() => net.deletePost(me, +D.del));
   else if ('open' in D) go('thread', +D.open);
   else if ('sub' in D) { const [k, n] = D.sub.split(':'); view = { page: 'profile', arg: n, sub: k || null }; render(); }
