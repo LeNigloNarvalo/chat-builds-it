@@ -1,53 +1,5 @@
 <!doctype html>
-<html lang="fr"><head><meta charset="utf-8"><title>Neon Snake</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-body{margin:0;background:#07070f;color:#0ff;font-family:monospace;text-align:center}
-h1{text-shadow:0 0 12px #0ff;margin:12px}
-canvas{background:#0b0b1a;border:2px solid #0ff;box-shadow:0 0 24px #0ff8;max-width:95vw}
-#info{margin:8px}
-#top{margin:8px;color:#f0f}
-</style></head><body>
-<h1>🐍 NEON SNAKE</h1>
-<div id="info">Score : <b id="score">0</b> — Record : <b id="best">0</b> — flèches/ZQSD · A = autoplay</div>
-<div id="top"></div>
-<canvas id="c" width="400" height="400"></canvas>
-<script src="snake.js"></script>
-<script src="scores.js"></script>
-<script>
-var cv = document.getElementById('c'), ctx = cv.getContext('2d'), C = 20;
-var s, auto = false, saved = Scores.load(localStorage), best = saved.best, counted = false;
-function showTop() {
-  document.getElementById('top').textContent = saved.top.length ? '🏆 ' + saved.top.map(function (r, i) {
-    return (i + 1) + '. ' + r.who + ' ' + r.score; }).join(' · ') : '🏆 Aucun record sauvegardé';
-}
-function onDeath() {
-  if (counted) return; counted = true;
-  saved = Scores.record(localStorage, s.score, auto ? 'IA' : 'Joueur'); best = saved.best; showTop();
-}
-showTop();
-function reset() { counted = false; s = Snake.newState(); Snake.placeFood(s); }
-reset();
-function draw() {
-  ctx.fillStyle = '#0b0b1a'; ctx.fillRect(0, 0, 400, 400);
-  ctx.fillStyle = '#f0f'; ctx.shadowColor = '#f0f'; ctx.shadowBlur = 12;
-  if (s.food) ctx.fillRect(s.food.x * C + 3, s.food.y * C + 3, C - 6, C - 6);
-  ctx.fillStyle = '#0ff'; ctx.shadowColor = '#0ff';
-  s.snake.forEach(function (p, i) { ctx.globalAlpha = i ? 0.75 : 1; ctx.fillRect(p.x * C + 1, p.y * C + 1, C - 2, C - 2); });
-  ctx.globalAlpha = 1; ctx.shadowBlur = 0;
-  document.getElementById('score').textContent = s.score;
-  document.getElementById('best').textContent = best;
-}
-setInterval(function () {
-  if (s.dead) { onDeath(); if (auto) reset(); draw(); return; }
-  if (auto) Snake.turn(s, Snake.autoDir(s));
-  Snake.step(s); best = Math.max(best, s.score); draw();
-}, 90);
-var K = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0], z: [0, -1], s: [0, 1], q: [-1, 0], d: [1, 0] };
-addEventListener('keydown', function (e) {
-  if (e.key === 'a' || e.key === 'A') { window.setAutoplay(!auto); return; }
-  var d = K[e.key]; if (d && !auto) { Snake.turn(s, { x: d[0], y: d[1] }); e.preventDefault(); }
-  if (s.dead && !auto) reset();
-});
-window.setAutoplay = function (on) { auto = !!on; if (auto && s.dead) reset(); };
-</script></body></html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TwitchGram — réseau social</title><link rel="stylesheet" href="style.css"></head>
+<body><header><h1>📣 TwitchGram</h1><nav id="nav"></nav><span id="me" class="mut"></span></header>
+<main id="app"></main><script src="social.js"></script><script src="app.js"></script></body></html>

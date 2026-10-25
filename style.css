@@ -1,0 +1,12 @@
+:root{--bg:#0f1115;--card:#181b22;--fg:#e8eaf0;--mut:#8a90a2;--acc:#9146ff;--bd:#272b36}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px system-ui,sans-serif}
+header{display:flex;gap:12px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--bd);position:sticky;top:0;background:var(--bg);flex-wrap:wrap}
+header h1{margin:0;font-size:20px;color:var(--acc)}nav{display:flex;gap:6px;flex:1;flex-wrap:wrap}
+button,input,textarea{font:inherit;color:inherit;background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:7px 12px}
+button{cursor:pointer}button:hover,button.on{background:var(--acc)}
+main{max-width:620px;margin:16px auto;padding:0 12px;display:grid;gap:12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px}
+.card textarea,.card input{width:100%;margin-bottom:8px}.mut{color:var(--mut);font-size:13px}
+.post .who{font-weight:700;cursor:pointer}.post .acts{display:flex;gap:8px;margin-top:8px}.post .acts button{padding:3px 10px}
+.err{color:#ff6b6b}.tag,.mention{color:#b794ff;cursor:pointer}.msg{padding:6px 10px;border-radius:10px;max-width:80%;background:var(--bd)}.msg.me{background:var(--acc);margin-left:auto}
+.av{display:inline-block;width:32px;height:32px;border-radius:50%;text-align:center;line-height:32px;font-weight:700;margin-right:8px;vertical-align:middle}

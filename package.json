@@ -1,1 +1,1 @@
-{"name":"neon-snake","scripts":{"test":"node test.js"}}
+{"name":"twitchgram","scripts":{"test":"node test.js","start":"npx http-server . -p 8080"}}

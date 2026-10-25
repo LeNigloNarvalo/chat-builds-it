@@ -1,23 +1,24 @@
 const assert = require('assert');
-const S = require('./snake.js');
-let s = S.newState(() => 0.5); S.placeFood(s);
-s.food = { x: 11, y: 10 }; S.step(s);
-assert.strictEqual(s.score, 1); assert.strictEqual(s.snake.length, 4);
-S.turn(s, { x: -1, y: 0 }); assert.strictEqual(s.dir.x, 1, 'demi-tour interdit');
-s = S.newState(); s.snake = [{ x: 19, y: 5 }, { x: 18, y: 5 }]; S.step(s);
-assert(s.dead, 'mur');
-// l'IA doit manger au moins 20 pommes sans mourir
-s = S.newState(() => Math.random()); S.placeFood(s);
-for (let i = 0; i < 5000 && !s.dead && s.score < 20; i++) { S.turn(s, S.autoDir(s)); S.step(s); }
-assert(s.score >= 20, 'IA score ' + s.score);
-console.log('ok');
-// sauvegarde des records
-const Sc = require('./scores.js');
+const { Net } = require('./social.js');
 const mem = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
-Sc.record(mem, 5, 'a'); Sc.record(mem, 12, 'b'); Sc.record(mem, 7, 'c');
-const re = Sc.load(mem); // « redémarrage » : relecture du stockage
-assert.strictEqual(re.best, 12); assert.deepStrictEqual(re.top.map(r => r.score), [12, 7, 5]);
-for (let i = 0; i < 10; i++) Sc.record(mem, i + 1);
-assert.strictEqual(Sc.load(mem).top.length, Sc.MAX);
-assert.strictEqual(Sc.load({ getItem: () => 'junk' }).best, 0);
-console.log('ok scores');
+let n = Net(mem);
+n.signup('alice', 'pass1'); n.signup('Bob', 'pass2');
+assert.throws(() => n.signup('ALICE', 'xxxx'), /pris/);
+assert.throws(() => n.login('alice', 'nope'));
+assert.strictEqual(n.login('ALICE', 'pass1'), 'alice');
+const p = n.post('Bob', 'Salut @alice #twitch');
+assert.strictEqual(n.feed('alice').length, 0);
+assert.strictEqual(n.toggleFollow('alice', 'bob'), true);
+assert.strictEqual(n.feed('alice').length, 1);
+n.toggleLike('alice', p.id); n.post('alice', 'réponse', p.id);
+assert.strictEqual(n.replies(p.id).length, 1);
+assert.deepStrictEqual(n.notifications('Bob').map(x => x.type).sort(), ['follow', 'like', 'reply']);
+assert.strictEqual(n.notifications('alice')[0].type, 'mention');
+n.send('alice', 'bob', 'yo'); assert.strictEqual(n.conversation('bob', 'alice').length, 1);
+assert.deepStrictEqual(n.trending()[0], ['#twitch', 1]);
+assert.throws(() => n.post('alice', 'x'.repeat(281)));
+assert.throws(() => n.deletePost('alice', p.id));
+// persistance : « redémarrage »
+n = Net(mem); assert.strictEqual(n.explore().length, 1); assert.strictEqual(n.followers('bob')[0], 'alice');
+n.deletePost('Bob', p.id); assert.strictEqual(n.db().posts.length, 0);
+console.log('ok');
