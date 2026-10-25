@@ -7,7 +7,7 @@ const Social = require('./social.js');
 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
-const ACTIONS = new Set(['post', 'deletePost', 'editPost', 'toggleBookmark', 'toggleRepost', 'toggleLike', 'toggleFollow', 'updateProfile', 'importUser', 'send', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'exportUser']);
+const ACTIONS = new Set(['post', 'deletePost', 'editPost', 'toggleBookmark', 'toggleRepost', 'toggleLike', 'toggleFollow', 'updateProfile', 'importUser', 'send', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'exportUser', 'markDmRead']);
 const STATIC = new Set(['index.html', 'style.css', 'a11y.js', 'theme.js', 'social.js', 'sync.js', 'app.js']);
 const TYPES = { html: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8' };
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
@@ -22,9 +22,19 @@ function createServer(opts = {}) {
     CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, name TEXT NOT NULL, epoch INTEGER NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL);`);
   const getRow = db.prepare('SELECT v, version FROM kv WHERE k = ?'), putRow = db.prepare(`INSERT INTO kv (k, v, version) VALUES (?, ?, 1)
     ON CONFLICT(k) DO UPDATE SET v = excluded.v, version = version + 1`);
-  const storage = { getItem: k => { const r = getRow.get(k); return r ? r.v : null; }, setItem: (k, v) => { putRow.run(k, String(v)); } };
+  const storage = { getItem: k => { const r = getRow.get(k); return r ? r.v : null; }, setItem: (k, v) => { putRow.run(k, String(v)); if (k === Social.KEY) announce(); } };
   const version = () => (getRow.get(Social.KEY) || { version: 0 }).version;
   const net = Social.Net(storage);
+
+  // ---- temps réel (SSE) : chaque changement des données est annoncé aux clients connectés, qui rapatrient alors leur vue ----
+  const live = new Set(); // { res, name }
+  let announced = false;
+  const emit = (c, event, data) => { try { c.res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch (e) { live.delete(c); } };
+  function announce() { // regroupe les écritures d'un même tour de boucle en une seule annonce
+    if (announced) return; announced = true;
+    setImmediate(() => { announced = false; if (live.size) { const v = version(); for (const c of live) emit(c, 'update', { version: v }); } });
+  }
+  const beat = setInterval(() => { for (const c of live) { try { c.res.write(': ♥\n\n'); } catch (e) { live.delete(c); } } }, 25000); beat.unref();
 
   // ---- sessions ----
   const insS = db.prepare('INSERT INTO sessions (hash, name, epoch, created, expires) VALUES (?, ?, ?, ?, ?)'), getS = db.prepare('SELECT * FROM sessions WHERE hash = ?'),
@@ -80,6 +90,23 @@ function createServer(opts = {}) {
       if (+url.searchParams.get('v') === v) return send(res, 200, { unchanged: true, version: v, me: me.name });
       return send(res, 200, { version: v, me: me.name, state: Social.snapshot(net.db(), me.name) });
     }
+    // flux temps réel : la session reste authentifiée par l'en-tête Authorization (le client lit le flux avec fetch)
+    if (route === 'GET /api/stream') {
+      res.writeHead(200, Object.assign({ 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' }, HEAD));
+      const c = { res, name: me.name }; live.add(c); res.on('close', () => live.delete(c));
+      emit(c, 'hello', { version: version(), me: me.name }); return;
+    }
+    // pagination côté serveur du fil (scope=feed|explore) : ?limit=&before=<id> pour la suite, ?after=<id> pour compter les nouveaux posts
+    if (route === 'GET /api/feed') {
+      const sc = url.searchParams.get('scope'); if (sc !== 'feed' && sc !== 'explore') throw new Http(400, 'Fil inconnu');
+      return send(res, 200, net.page(me.name, sc, { limit: url.searchParams.get('limit'), before: url.searchParams.get('before'), after: url.searchParams.get('after') }));
+    }
+    // « X est en train d'écrire » : éphémère, jamais stocké, transmis seulement au destinataire connecté
+    if (route === 'POST /api/typing') {
+      const b = await body(req), to = net.profile(String(b.to || '')).name;
+      if (to !== me.name && !net.isHidden(to, me.name) && !net.isBlocked(me.name, to) && !net.isBlocked(to, me.name)) for (const c of live) if (c.name === to) emit(c, 'typing', { from: me.name });
+      return send(res, 200, { ok: true });
+    }
     if (route === 'POST /api/logout') { delS.run(me.hash); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/logout-all') { net.logoutAll(me.name); delUser.run(me.name); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/password') {
@@ -112,7 +139,7 @@ function createServer(opts = {}) {
       send(res, e.code >= 400 ? e.code : e.constructor === Error ? 400 : 500, { error: e.code >= 400 || e.constructor === Error ? e.message : 'Erreur interne du serveur : réessayez dans un instant' });
     }
   });
-  server.on('close', () => db.close());
+  server.on('close', () => { clearInterval(beat); for (const c of live) c.res.end(); live.clear(); db.close(); });
   return server;
 }
 

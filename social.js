@@ -299,6 +299,28 @@
         db.messages.push(m);
         save();
       },
+      // ---- messages non lus : curseur « dernier message lu » par interlocuteur, stocké sur le compte ----
+      markDmRead(by, peer) {
+        const me = user(by), t = user(peer), k = lc(t.name);
+        const last = db.messages.filter(m => m.from === t.name && m.to === me.name).reduce((a, m) => Math.max(a, m.id), 0);
+        const r = me.dmRead = me.dmRead || {};
+        if ((r[k] || 0) >= last) return false;
+        r[k] = last; save(); return true;
+      },
+      // { total, peers: { pseudo: n } } : messages reçus après le curseur de lecture, hors comptes bloqués/masqués
+      unreadDm(by) {
+        const me = user(by), r = me.dmRead || {}, peers = {}; let total = 0;
+        for (const m of db.messages) if (m.to === me.name && m.id > (r[lc(m.from)] || 0) && !hiddenFor(by, m.from)) { peers[m.from] = (peers[m.from] || 0) + 1; total++; }
+        return { total, peers };
+      },
+      // pagination par curseur (id décroissant) : scope « feed » (abonnements) ou « explore » ; `after` compte les posts plus récents
+      page(by, scope, o) {
+        o = o || {};
+        const all = scope === 'feed' ? api.feed(by) : api.explore(by), limit = Math.min(50, Math.max(1, +o.limit || 10));
+        if (o.after) return { count: all.filter(p => p.id > +o.after).length };
+        const rest = o.before ? all.filter(p => p.id < +o.before) : all;
+        return { posts: rest.slice(0, limit), more: rest.length > limit, total: all.length };
+      },
       conversation(a, b) {
         if (hiddenFor(a, b)) return [];
         a = a.toLowerCase(); b = b.toLowerCase();
@@ -396,8 +418,8 @@
     if (!me) throw new Error('Utilisateur introuvable');
     const lcm = me.name.toLowerCase(), users = Object.create(null);
     for (const [k, u] of Object.entries(db.users)) {
-      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, ...pub } = u;
-      if (k === lcm) Object.assign(pub, { blocked, muted, bookmarks, sanction, sanctions });
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, ...pub } = u;
+      if (k === lcm) Object.assign(pub, { blocked, muted, bookmarks, sanction, sanctions, dmRead });
       else if (me.admin) Object.assign(pub, { sanction });
       users[k] = JSON.parse(JSON.stringify(pub));
     }

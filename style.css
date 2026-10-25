@@ -70,3 +70,6 @@ main{max-width:618px;margin:var(--s4) auto;padding:0 var(--s3);gap:var(--s3)}
 .tprev{height:auto;aspect-ratio:1.618/1;max-height:200px}
 h2,h3{line-height:1.2}h2{font-size:var(--t2)}h3{font-size:var(--t1)}
 @media (max-width:640px){main{max-width:100%}.banner{aspect-ratio:2.618/1}}
+.newbar,.morebar{width:100%;text-align:center;cursor:pointer;font-weight:600;color:var(--onacc);background:var(--acc-img,var(--acc));position:sticky;top:var(--s2,8px);z-index:2}
+.morebar{position:static;background:var(--card);color:var(--mut);font-weight:400}
+.badge{display:inline-block;min-width:1.4em;padding:0 .4em;border-radius:999px;background:var(--err);color:#fff;font-size:.75rem;text-align:center}

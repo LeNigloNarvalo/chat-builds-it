@@ -1,7 +1,7 @@
 // Client de synchronisation : le navigateur ne garde qu'une copie en lecture de SA vue des données (envoyée par le serveur) ;
 // toute modification passe par l'API et la session (clé « app.session », propre à chaque visiteur) prouve qui agit.
 (function (root) {
-  const WRITES = ['post', 'deletePost', 'editPost', 'toggleBookmark', 'toggleRepost', 'toggleLike', 'toggleFollow', 'updateProfile', 'importUser', 'send', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'exportUser'];
+  const WRITES = ['post', 'deletePost', 'editPost', 'toggleBookmark', 'toggleRepost', 'toggleLike', 'toggleFollow', 'updateProfile', 'importUser', 'send', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'exportUser', 'markDmRead'];
   function Sync(store, SESSION) {
     const replica = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = String(v); }, removeItem(k) { delete this.d[k]; } };
     const base = Social.Net(replica);
@@ -46,8 +46,37 @@
     net.changePassword = async (by, oldPw, newPw) => { await open(await req('/api/password', 'POST', { oldPw, newPw })); };
     net.logoutAll = async () => { await req('/api/logout-all', 'POST', {}); forget(); };
     net.deleteAccount = async (by, password) => { await req('/api/delete-account', 'POST', { password }); forget(); };
+    // flux temps réel (SSE lu avec fetch pour garder l'en-tête Authorization) ; reconnexion automatique, interrogation en secours
+    let liveOn = false, stopLive = false;
+    function live(on) {
+      if (liveOn || typeof fetch === 'undefined') return; liveOn = true; stopLive = false;
+      (async function loop(wait) {
+        while (!stopLive && session()) {
+          try {
+            const s = session(), r = await fetch('/api/stream', { headers: { Authorization: 'Bearer ' + s.token } });
+            if (r.status === 401) { forget(); onChange(); break; }
+            if (!r.ok || !r.body) throw new Error('flux');
+            const rd = r.body.getReader(), dec = new TextDecoder(); let buf = ''; wait = 1000; connected = true;
+            for (;;) {
+              const { done, value } = await rd.read(); if (done) break;
+              buf += dec.decode(value, { stream: true });
+              let i; while ((i = buf.indexOf('\n\n')) >= 0) {
+                const blk = buf.slice(0, i); buf = buf.slice(i + 2);
+                const ev = /^event: (.+)$/m.exec(blk), dat = /^data: (.+)$/m.exec(blk);
+                if (ev && dat) { try { on(ev[1], JSON.parse(dat[1])); } catch (e) {} }
+              }
+            }
+          } catch (e) {}
+          connected = false;
+          await new Promise(ok => setTimeout(ok, wait)); wait = Math.min(wait * 2, 15000);
+        }
+        liveOn = false; connected = false;
+      })(1000);
+    }
+    let connected = false;
+    const typing = to => req('/api/typing', 'POST', { to }).catch(() => {});
     const logout = () => { req('/api/logout', 'POST', {}).catch(() => {}); forget(); };
-    return { net, pull, poll, logout, hasSession: () => !!session(), me: () => me, online: () => online, onChange: f => { onChange = f; } };
+    return { net, pull, poll, logout, live, typing, get: p => req(p, 'GET'), connected: () => connected, stopLive: () => { stopLive = true; }, hasSession: () => !!session(), me: () => me, online: () => online, onChange: f => { onChange = f; } };
   }
   const exported = { Sync, WRITES };
   if (typeof module !== 'undefined') module.exports = exported; else root.Sync = Sync;

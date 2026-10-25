@@ -30,7 +30,39 @@ const GRADS = ['linear-gradient(135deg,#9146ff,#ff4d8d)', 'linear-gradient(135de
 const bannerCss = b => !b ? GRADS[0] : b.startsWith('grad:') ? GRADS[+b.slice(5)] : `center/cover url("${encodeURI(b).replace(/"/g, '%22')}"), ${GRADS[4]}`;
 const peopleList = names => names.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)} · ${esc(prof(n).bio || '')}</span></div>`).join('') || '<p class="mut">Personne pour l’instant.</p>';
 const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'à l’instant' : m < 60 ? m + ' min' : m < 1440 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' j'; };
-const go = (page, arg) => { view = { page, arg }; pend.post = []; pend.dm = []; render(); };
+const go = (page, arg) => { view = { page, arg }; pend.post = []; pend.dm = []; fs.scope = null; render(); };
+// ---- fil paginé côté serveur (/api/feed) : pages de 10 posts, défilement infini, bandeau « N nouveaux posts » ----
+const PAGE = 10, fs = { scope: null, who: null, ids: [], more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: 0 };
+const feedScope = () => me && (view.page === 'feed' || view.page === 'explore') ? view.page : null;
+async function feedLoad(reset) {
+  const sc = feedScope(); if (!sc) return;
+  if (reset || fs.scope !== sc || fs.who !== me) Object.assign(fs, { scope: sc, who: me, ids: [], more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: fs.gen + 1 });
+  if (fs.busy) return;
+  const gen = fs.gen; fs.busy = true;
+  try {
+    const j = await sync.get(`/api/feed?scope=${sc}&limit=${PAGE}${fs.ids.length ? '&before=' + fs.ids[fs.ids.length - 1] : ''}`);
+    if (gen !== fs.gen) return;
+    fs.ids.push(...j.posts.map(p => p.id).filter(i => !fs.ids.includes(i))); fs.more = j.more; fs.top = fs.top || fs.ids[0] || 0; fs.loaded = true; fs.busy = false;
+  } catch (e) { if (gen === fs.gen) { err = e.message; fs.loaded = true; } }
+  if (gen === fs.gen) { fs.busy = false; refresh(); } else { fs.busy = false; feedLoad(); }
+}
+// un changement est arrivé : combien de posts plus récents que le haut du fil affiché ?
+async function feedFresh() {
+  const sc = feedScope(); if (!sc || sc !== fs.scope || !fs.loaded) return;
+  try { const j = await sync.get(`/api/feed?scope=${sc}&after=${fs.top || 0}`); if (sc === fs.scope && j.count !== fs.fresh) { fs.fresh = j.count; refresh(); } } catch (e) {}
+}
+const more = new IntersectionObserver(es => { if (es.some(x => x.isIntersecting)) feedLoad(); }, { rootMargin: '300px' });
+// ---- messages privés : « écrit… » (éphémère, via le flux temps réel) ----
+const typing = {}; // pseudo -> expiration
+const typingNow = () => Object.keys(typing).filter(n => typing[n] > Date.now());
+const typingHTML = () => typingNow().includes(view.arg) ? `<span id="typing" class="mut" role="status">✍️ ${esc(shown(view.arg))} est en train d’écrire…</span>` : '<span id="typing" role="status"></span>';
+let lastTyped = 0;
+const onLive = (ev, d) => {
+  if (ev === 'update') sync.poll().then(feedFresh);
+  else if (ev === 'typing') { typing[d.from] = Date.now() + 4000; if (view.page === 'dm') refresh(); setTimeout(() => { if (view.page === 'dm') refresh(); }, 4100); }
+};
+const ensureLive = () => { if (me) sync.live(onLive); };
+
 let err = '';
 // images en cours de rédaction (par zone de saisie) : { post: [{src, alt}], dm: [...] }, propres à ce visiteur
 const pend = { post: [], dm: [] };
@@ -121,16 +153,22 @@ function render() {
     <button data-login>Connexion</button> <button data-signup>Créer un compte</button><p class="err">${esc(err)}</p></div>`;
     return;
   }
-  const unread = net.notifications(me).filter(n => !n.read).length;
-  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['dm', '✉️ Messages'], ['profile', '👤 Profil'], ['theme', '🎨 Thème'], ['settings', '⚙️ Réglages'], ['blocks', '🚫 Bloqués'], ['security', '🔒 Sécurité']].concat(net.isAdmin(me) ? [['mod', `🛡 Modération ${net.queue(me).length || ''}`]] : [])
+  const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
+  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['dm', `✉️ Messages ${unreadDm.total || ''}`], ['profile', '👤 Profil'], ['theme', '🎨 Thème'], ['settings', '⚙️ Réglages'], ['blocks', '🚫 Bloqués'], ['security', '🔒 Sécurité']].concat(net.isAdmin(me) ? [['mod', `🛡 Modération ${net.queue(me).length || ''}`]] : [])
     .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
   const mySanc = net.sanctionOf(me);
   const list = ps => ps.map(p => postHTML(p)).join('') || '<p class="mut">Rien ici pour l’instant.</p>';
   let h = '';
-  if (view.page === 'feed') h = composer('Quoi de neuf ?') + e + list(net.feed(me));
+  const paged = () => {
+    if (fs.scope !== view.page || fs.who !== me || !fs.loaded) return '<p class="mut" role="status">Chargement du fil…</p>';
+    const ps = fs.ids.map(i => net.db().posts.find(p => p.id === i)).filter(Boolean);
+    return (fs.fresh ? `<button class="card newbar" data-newposts>⬆ ${fs.fresh} nouveau${fs.fresh > 1 ? 'x' : ''} post${fs.fresh > 1 ? 's' : ''}</button>` : '') + list(ps)
+      + (fs.more ? '<button class="card morebar" id="more" data-more>Chargement de la suite…</button>' : ps.length ? '<p class="mut" role="status">Vous avez tout vu 🥒</p>' : '');
+  };
+  if (view.page === 'feed') h = composer('Quoi de neuf ?') + e + paged();
   else if (view.page === 'explore') {
-    h = composer('Quoi de neuf ?') + e + `<div class="card"><b>Tendances</b> ${net.trending().map(([t, c]) => `<span class="tag" data-search="${t}">${t} (${c})</span>`).join(' ') || '<span class="mut">aucune</span>'}</div>` + list(net.explore(me));
+    h = composer('Quoi de neuf ?') + e + `<div class="card"><b>Tendances</b> ${net.trending().map(([t, c]) => `<span class="tag" data-search="${t}">${t} (${c})</span>`).join(' ') || '<span class="mut">aucune</span>'}</div>` + paged();
   } else if (view.page === 'trends') {
     const medal = i => ['🥇', '🥈', '🥉'][i] || `#${i + 1}`;
     h = `<div class="card"><b>🔴 En direct · hashtags du moment</b><ol class="trend">${net.trendingLive().map(t => `<li><span class="tag" data-search="${t.tag}">${t.tag}</span> <span class="mut">${t.count} post${t.count > 1 ? 's' : ''}</span><i class="bar" style="width:${Math.max(6, Math.round(t.score / (net.trendingLive(1)[0].score || 1) * 100))}%"></i></li>`).join('') || '<li class="mut">aucun hashtag</li>'}</ol></div>
@@ -191,12 +229,16 @@ function render() {
       ${net.isAdmin(me) ? '<p class="mut">Le compte Streamer ne peut pas être supprimé.</p>' : '<input id="sec-del" type="password" placeholder="Mot de passe pour confirmer"><button data-delacc>🗑 Supprimer mon compte et mes posts</button>'}</div>${e}${view.ok ? `<p class="ok">${esc(view.ok)}</p>` : ''}`;
   } else if (view.page === 'dm') {
     const peers = Object.values(net.db().users).filter(u => u.name !== me && !net.isHidden(me, u.name));
-    h = `<div class="card">${peers.map(u => `<button data-chat="${u.name}" class="${view.arg === u.name ? 'on' : ''}">${esc(u.name)}</button>`).join(' ') || '<span class="mut">Personne d’autre pour l’instant.</span>'}</div>`;
+    h = `<div class="card">${peers.map(u => `<button data-chat="${u.name}" class="${view.arg === u.name ? 'on' : ''}">${esc(u.name)}${unreadDm.peers[u.name] ? ` <b class="badge" aria-label="${unreadDm.peers[u.name]} non lu(s)">${unreadDm.peers[u.name]}</b>` : ''}${typingNow().includes(u.name) ? ' ✍️' : ''}</button>`).join(' ') || '<span class="mut">Personne d’autre pour l’instant.</span>'}</div>`;
     if (view.arg) h += `<div class="card" style="display:grid;gap:6px">${net.conversation(me, view.arg).map(m => `<div class="msg ${m.from === me ? 'me' : ''}">${m.text ? esc(m.text) : ''}${gallery(m.images, 'm', m.id)}</div>`).join('') || '<span class="mut">Dites bonjour 👋</span>'}
-      <input id="dm" placeholder="Message à ${esc(view.arg)}">${attachBox('dm')}<button data-dm>Envoyer</button></div>${e}`;
+      ${typingHTML()}<input id="dm" placeholder="Message à ${esc(view.arg)}">${attachBox('dm')}<button data-dm>Envoyer</button></div>${e}`;
   }
+  if (view.page === 'dm' && view.arg && unreadDm.peers[view.arg] && document.hasFocus()) net.markDmRead(me, view.arg).catch(() => {}); // conversation ouverte : lue
   app.innerHTML = (mySanc ? `<div class="card err" role="alert">Mesure de modération : ${sancLabel(mySanc)}</div>` : '') + h;
   a11yPass();
+  ensureLive();
+  const m = $('#more'); if (m) more.observe(m);
+  if (feedScope() && (fs.scope !== view.page || fs.who !== me)) feedLoad(true);
 }
 // accessibilité : éléments cliquables non-boutons focalisables, états ARIA, libellés
 function a11yPass() {
@@ -259,6 +301,7 @@ function livePreview() {
   const c = $('#tcontrast'); if (c) c.textContent = contrastMsg();
 }
 document.addEventListener('input', ev => {
+  if (ev.target.id === 'dm' && view.arg && Date.now() - lastTyped > 2000) { lastTyped = Date.now(); sync.typing(view.arg); }
   const t = ev.target, path = t.dataset && t.dataset.tf; if (!path || t.tagName === 'SELECT') return;
   const val = t.type === 'checkbox' ? t.checked : t.value;
   editTheme(x => { if (path === 'on') { x.on = val; x._keepOff = !val; } else setPath(x, path, val); });
@@ -289,7 +332,7 @@ function themeClick(D, v) {
 }
 
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift]');
+  const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
   if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
@@ -320,7 +363,9 @@ document.addEventListener('click', ev => {
   else if ('lbclose' in D) closeLb();
   else if ('lbnav' in D) { lb.i = (lb.i + +D.lbnav + lb.images.length) % lb.images.length; lightbox(); }
   else if ('page' in D) { err = ''; notice = ''; go(D.page); $('#app').focus(); }
-  else if ('send' in D) attempt(async () => { await net.post(me, v('#txt'), D.send ? +D.send : null, pend.post); pend.post = []; });
+  else if ('send' in D) attempt(async () => { await net.post(me, v('#txt'), D.send ? +D.send : null, pend.post); pend.post = []; if (feedScope()) feedLoad(true); });
+  else if ('newposts' in D) { feedLoad(true); window.scrollTo({ top: 0 }); }
+  else if ('more' in D) feedLoad();
   else if ('like' in D) attempt(() => net.toggleLike(me, +D.like));
   else if ('bm' in D) attempt(() => net.toggleBookmark(me, +D.bm));
   else if ('repost' in D) attempt(() => net.toggleRepost(me, +D.repost));
@@ -374,8 +419,10 @@ render();
   try { await sync.pull(true); } catch (e) { err = e.message; }
   booting = false; checkSession();
   if (STREAM) await attempt(async () => { if (me !== 'Streamer') openSession(await net.ensureStreamer()); view = { page: 'theme' }; }); else render();
-  setInterval(sync.poll, 2000);
-  window.addEventListener('focus', sync.poll);
+  // temps réel : le serveur annonce chaque changement (SSE) ; l'interrogation ne sert plus que de secours
+  setInterval(() => { if (!sync.connected()) sync.poll().then(feedFresh); }, 2000);
+  setInterval(() => { if (sync.connected()) sync.poll().then(feedFresh); }, 20000);
+  window.addEventListener('focus', () => { sync.poll().then(feedFresh); if (view.page === 'dm') refresh(); });
 })();
 // la page Tendances se rafraîchit seule (le score dépend de l'heure)
 setInterval(() => { if (me && view.page === 'trends') refresh(); }, 3000);

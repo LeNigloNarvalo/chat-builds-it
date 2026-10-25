@@ -56,13 +56,35 @@ const server = createServer({ db: dbFile, authPerMin: 1000 });
   // fichiers : seule la liste blanche est servie (jamais la base ni le serveur)
   for (const f of ['/server.js', '/data/cornichon.db', '/test.js', '/../package.json']) assert.strictEqual((await fetch(base + f)).status, 404);
   assert.strictEqual((await fetch(base + '/sync.js')).status, 200); assert.ok((await (await fetch(base + '/')).text()).includes('Cornichon'));
+  // temps réel (SSE) : annonce des changements + « écrit… », sans interrogation
+  const evs = [], ac = new AbortController();
+  const sr = await fetch(base + '/api/stream', { headers: { Authorization: 'Bearer ' + b.token }, signal: ac.signal }); assert.strictEqual(sr.status, 200);
+  (async () => { const rd = sr.body.getReader(), dec = new TextDecoder(); try { for (;;) { const { done, value } = await rd.read(); if (done) break; evs.push(dec.decode(value)); } } catch (e) {} })();
+  const until = async f => { for (let i = 0; i < 100 && !f(); i++) await new Promise(ok => setTimeout(ok, 20)); assert.ok(f(), 'événement attendu : ' + evs.join('|')); };
+  assert.strictEqual((await call('/api/stream')).status, 401);
+  await until(() => evs.join('').includes('event: hello'));
+  const np2 = await call('/api/login', null, { name: 'alice', password: 'nouveau1' });
+  await act(np2.token, 'post', 'second post'); await until(() => evs.join('').includes('event: update'));
+  await call('/api/typing', np2.token, { to: 'bob' }); await until(() => evs.join('').includes('"from":"alice"'));
+  // pagination côté serveur + compteur de nouveaux posts
+  for (let i = 0; i < 12; i++) await act(np2.token, 'post', 'pagination ' + i);
+  const p1 = await call('/api/feed?scope=explore&limit=10', b.token); assert.strictEqual(p1.posts.length, 10); assert.strictEqual(p1.more, true);
+  const p2 = await call('/api/feed?scope=explore&limit=10&before=' + p1.posts[9].id, b.token); assert.strictEqual(p2.posts.length, 4); assert.strictEqual(p2.more, false);
+  assert.strictEqual((await call('/api/feed?scope=explore&after=' + p1.posts[5].id, b.token)).count, 5);
+  assert.strictEqual((await call('/api/feed?scope=feed', b.token)).posts.length, 0); assert.strictEqual((await call('/api/feed?scope=x', b.token)).status, 400);
+  // messages non lus : curseur de lecture par interlocuteur
+  await act(np2.token, 'send', 'bob', 'ping');
+  const view = async () => { const st = (await call('/api/state?v=-1', b.token)).state; return Social.Net({ d: { [Social.KEY]: JSON.stringify(st) }, getItem(k) { return this.d[k]; }, setItem() {} }).unreadDm('bob'); };
+  assert.strictEqual((await view()).total, 1); assert.strictEqual((await view()).peers.alice, 1);
+  await act(b.token, 'markDmRead', 'alice'); assert.strictEqual((await view()).total, 0);
+  ac.abort();
   // persistance : redémarrage sur le même fichier
   const raw = fs.readFileSync(dbFile); assert.ok(!raw.includes('secret2') && !raw.includes('nouveau1'));
   await new Promise(ok => server.close(ok));
   const s2 = createServer({ db: dbFile, authPerMin: 1000 }); await new Promise(ok => s2.listen(0, '127.0.0.1', ok));
   const base2 = 'http://127.0.0.1:' + s2.address().port;
   const r = await (await fetch(base2 + '/api/state?v=-1', { headers: { Authorization: 'Bearer ' + b.token } })).json();
-  assert.strictEqual(r.me, 'bob'); assert.strictEqual(r.state.posts.length, 1);
+  assert.strictEqual(r.me, 'bob'); assert.strictEqual(r.state.posts.length, 14);
   await new Promise(ok => s2.close(ok)); fs.rmSync(dir, { recursive: true });
   console.log('ok serveur');
 })().catch(e => { console.error(e); process.exit(1); });
