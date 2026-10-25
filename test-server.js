@@ -281,6 +281,33 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
     fs.writeFileSync(path.join(bdir, 'cornichon-20200101-000000-000-auto.db'), 'pas une base'); assert.throws(() => B.restore('cornichon-20200101-000000-000-auto.db'), /invalide|corrompue/);
     tdb.close(); bsrv.close();
   }
+  // sessions actives et journal de sécurité : liste, révocation ciblée, tentatives ratées, mot de passe
+  {
+    const ssrv = createServer({ db: path.join(dir, 'ses.db'), authPerMin: 1000 }); await new Promise(ok => ssrv.listen(0, '127.0.0.1', ok));
+    const base = 'http://127.0.0.1:' + ssrv.address().port;
+    const call = async (p, tok, data, ua) => { const r = await fetch(base + p, { method: data === undefined ? 'GET' : 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, ua ? { 'User-Agent': ua } : {}, tok ? { Authorization: 'Bearer ' + tok } : {}), body: data === undefined ? undefined : JSON.stringify(data) }); return Object.assign(await r.json(), { status: r.status }); };
+    const FF = 'Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0', ED = 'Mozilla/5.0 (Windows NT 10.0) Chrome/120 Safari/537 Edg/120';
+    const a = await call('/api/signup', null, { name: 'sesuser', password: 'secret1' }, FF);
+    await call('/api/login', null, { name: 'sesuser', password: 'faux' }, ED);
+    const b = await call('/api/login', null, { name: 'sesuser', password: 'secret1' }, ED);
+    let r = await call('/api/sessions', a.token); assert.strictEqual(r.sessions.length, 2);
+    assert.ok(r.sessions.find(x => x.current).label === 'Firefox · Linux' && r.sessions.some(x => x.label === 'Edge · Windows'));
+    assert.deepStrictEqual(r.log.map(x => x.kind), ['login', 'login_fail', 'signup']);
+    assert.strictEqual((await call('/api/sessions')).status, 401);
+    const other = await call('/api/sessions', b.token), ob = r.sessions.find(x => !x.current);
+    assert.strictEqual((await call('/api/session-revoke', a.token, { id: r.sessions.find(x => x.current).id })).status, 400, 'pas sa propre session');
+    const stranger = await call('/api/signup', null, { name: 'sesother', password: 'secret1' });
+    assert.strictEqual((await call('/api/session-revoke', stranger.token, { id: ob.id })).status, 404, 'pas la session d\'un autre');
+    assert.strictEqual((await call('/api/session-revoke', a.token, { id: ob.id })).ok, true);
+    assert.strictEqual((await call('/api/sessions', b.token)).status, 401, 'l\'appareil révoqué est déconnecté'); assert.ok(other.sessions.length === 2);
+    const c = await call('/api/login', null, { name: 'sesuser', password: 'secret1' }, ED);
+    assert.strictEqual((await call('/api/sessions-revoke', a.token, {})).ok, true);
+    assert.strictEqual((await call('/api/sessions', c.token)).status, 401); r = await call('/api/sessions', a.token); assert.strictEqual(r.sessions.length, 1);
+    const pw = await call('/api/password', a.token, { oldPw: 'secret1', newPw: 'secret2' }, FF);
+    r = await call('/api/sessions', pw.token); assert.strictEqual(r.log[0].kind, 'password_change'); assert.strictEqual(r.sessions.length, 1);
+    assert.strictEqual((await call('/api/sessions', stranger.token)).log.length, 1, 'chacun ne voit que son journal');
+    ssrv.close();
+  }
   for (const x of [s3, srv, rcv]) x.close(); rcv.closeAllConnections && rcv.closeAllConnections();
   console.log('ok jetons, webhooks, double authentification, statistiques & sauvegardes'); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });

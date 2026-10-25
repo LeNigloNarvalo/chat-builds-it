@@ -47,7 +47,7 @@ const GRADS = ['linear-gradient(135deg,#9146ff,#ff4d8d)', 'linear-gradient(135de
 const bannerCss = b => !b ? GRADS[0] : b.startsWith('grad:') ? GRADS[+b.slice(5)] : `center/cover url("${encodeURI(b).replace(/"/g, '%22')}"), ${GRADS[4]}`;
 const peopleList = names => names.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)} · ${esc(prof(n).bio || '')}</span></div>`).join('') || '<p class="mut">Personne pour l’instant.</p>';
 const ago = I18n.ago;
-const go = (page, arg) => { if (page === 'settings') { tfa.loaded = false; tfa.setup = null; tfa.codes = null; } if (page === 'stats') st.loaded = false; if (page === 'dev') { dev.loaded = false; dev.fresh = null; dev.detail = null; } view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
+const go = (page, arg) => { if (page === 'security') { ses.loaded = false; ses.msg = ''; } if (page === 'settings') { tfa.loaded = false; tfa.setup = null; tfa.codes = null; } if (page === 'stats') st.loaded = false; if (page === 'dev') { dev.loaded = false; dev.fresh = null; dev.detail = null; } view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
 // ---- fil paginé côté serveur (/api/feed) : pages de 10 posts, défilement infini, bandeau « N nouveaux posts » ----
 const PAGE = 10, fs = { scope: null, who: null, ids: [], more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: 0 };
 // clé du fil affiché : « feed », « explore » ou « list:<propriétaire>:<id> » (fil dédié d'une liste de comptes)
@@ -178,6 +178,29 @@ async function tfaLoad() {
   try { tfa.data = await sync.get('/api/2fa'); } catch (e) { err = e.message; }
   tfa.loaded = true; if (view.page === 'settings') { const k = document.activeElement && document.activeElement.id; if (!/^tfa-/.test(k || '')) refresh(); }
 }
+// sessions actives et journal de sécurité (données du serveur, propres au compte)
+const ses = { data: null, loaded: false, msg: '' };
+const SEC_EVENTS = { login: '🔓 Connexion', login_fail: '⚠️ Échec de connexion', mfa_fail: '⚠️ Mauvais code de double authentification', signup: '🎉 Création du compte', logout: '🚪 Déconnexion', logout_all: '🚪 Déconnexion de tous les appareils', password_change: '🔑 Mot de passe changé', password_reset: '🔑 Mot de passe réinitialisé par e-mail', session_revoked: '🛑 Appareil révoqué', sessions_revoked: '🛑 Autres appareils révoqués' };
+async function sesLoad() {
+  try { ses.data = await sync.get('/api/sessions'); } catch (e) { err = e.message; }
+  ses.loaded = true; if (view.page === 'security') refresh();
+}
+function sessionsCard() {
+  if (!ses.loaded) { sesLoad(); return '<div class="card"><h2>💻 Sessions actives</h2><p class="mut" role="status">Chargement…</p></div>'; }
+  const d = ses.data || { sessions: [], log: [] };
+  return `<div class="card" role="group" aria-labelledby="h-ses"><h2 id="h-ses">💻 Sessions actives (${d.sessions.length})</h2>
+    <p class="mut">Les appareils connectés à votre compte : navigateur, date de connexion et dernière activité.</p>
+    ${d.sessions.map(x => `<div class="card"><b>${esc(x.label)}</b>${x.current ? ' <span class="ok">· cet appareil</span>' : ''}<br><span class="mut">connecté ${dt(x.created)} · dernière activité ${dt(x.lastSeen)}</span>${x.current ? '' : ` <button data-ses="rm:${x.id}" aria-label="Révoquer la session ${esc(x.label)}">Révoquer</button>`}</div>`).join('') || '<p class="mut">Aucune session.</p>'}
+    ${d.sessions.length > 1 ? '<button data-ses="rmall">🛑 Révoquer tous les autres appareils</button>' : ''}${ses.msg ? `<p class="ok" role="status">${esc(ses.msg)}</p>` : ''}</div>
+    <div class="card" role="group" aria-labelledby="h-slog"><h2 id="h-slog">📜 Journal de sécurité</h2><p class="mut">Connexions, échecs et changements de mot de passe (100 derniers événements, sans adresse IP).</p>
+    <ul class="slog" style="list-style:none;padding:0;margin:0;display:grid;gap:4px">${d.log.map(x => `<li>${SEC_EVENTS[x.kind] || esc(x.kind)} <span class="mut">· ${dt(x.at)}${x.label ? ' · ' + esc(x.label) : ''}</span></li>`).join('') || '<li class="mut">Aucun événement pour l’instant.</li>'}</ul></div>`;
+}
+document.addEventListener('click', ev => {
+  const b = ev.target.closest('[data-ses]'); if (!b) return;
+  const a = b.dataset.ses;
+  if (a.startsWith('rm:')) attempt(async () => { await sync.send('/api/session-revoke', { id: a.slice(3) }); ses.msg = 'Appareil révoqué ✔'; await sesLoad(); });
+  else if (a === 'rmall') { if (confirm('Déconnecter tous les autres appareils ?')) attempt(async () => { await sync.send('/api/sessions-revoke', {}); ses.msg = 'Autres appareils révoqués ✔'; await sesLoad(); }); }
+});
 const qrSvg = text => { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createSvgTag(5, 3, 'QR code à scanner avec votre appli d’authentification', 'QR code TOTP'); };
 const groupCode = c => String(c).replace(/(.{4})(?=.)/g, '$1 ');
 function tfaCard() {
@@ -523,6 +546,7 @@ function render() {
       <div class="card"><b>Changer le mot de passe</b>
       <input id="sec-old" type="password" placeholder="Mot de passe actuel" autocomplete="current-password"><input id="sec-new" type="password" placeholder="Nouveau mot de passe (4 min)" autocomplete="new-password"><input id="sec-new2" type="password" placeholder="Confirmer le nouveau mot de passe" autocomplete="new-password">
       <button data-chpw>Changer le mot de passe</button> <p class="mut">Les autres appareils seront déconnectés. Après 5 connexions ratées, le pseudo est bloqué 60 s.</p></div>
+      ${sessionsCard()}
       <div class="card"><b>Se déconnecter partout</b><p class="mut">Ferme toutes les sessions ouvertes, y compris celle-ci.</p><button data-logoutall>🚪 Déconnecter tous mes appareils</button></div>
       <div class="card"><b>Supprimer mon compte</b><p class="mut">Supprime définitivement le compte, ses posts, réponses, likes et messages.</p>
       ${net.isAdmin(me) ? '<p class="mut">Le compte Streamer ne peut pas être supprimé.</p>' : '<input id="sec-del" type="password" placeholder="Mot de passe pour confirmer"><button data-delacc>🗑 Supprimer mon compte et mes posts</button>'}</div>${e}${view.ok ? `<p class="ok">${esc(view.ok)}</p>` : ''}`;

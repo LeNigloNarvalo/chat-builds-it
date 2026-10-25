@@ -3,7 +3,7 @@
 // et envoient leurs actions à /api/call, authentifiées par une session aléatoire (seul son hachage SHA-256 est stocké).
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
-const Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp } = require('./totp.js'), { Backups } = require('./backup.js'), { Public } = require('./public.js');
+const Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp, deviceLabel } = require('./totp.js'), { Backups } = require('./backup.js'), { Public } = require('./public.js');
 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
@@ -22,7 +22,10 @@ function createServer(opts = {}) {
     CREATE TABLE IF NOT EXISTS tokens (hash TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL, expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS views (post INTEGER NOT NULL, viewer TEXT NOT NULL, author TEXT NOT NULL, at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS views_author ON views (author, at);
-    CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, name TEXT NOT NULL, epoch INTEGER NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL);`);
+    CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, name TEXT NOT NULL, epoch INTEGER NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS security_log (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, kind TEXT NOT NULL, label TEXT NOT NULL, at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS security_log_name ON security_log (name, at);`);
+  for (const col of ['label TEXT', 'last_seen INTEGER']) { try { db.exec('ALTER TABLE sessions ADD COLUMN ' + col); } catch (e) { /* colonne déjà présente */ } }
   const getRow = db.prepare('SELECT v, version FROM kv WHERE k = ?'), putRow = db.prepare(`INSERT INTO kv (k, v, version) VALUES (?, ?, 1)
     ON CONFLICT(k) DO UPDATE SET v = excluded.v, version = version + 1`);
   const storage = { getItem: k => { const r = getRow.get(k); return r ? r.v : null; }, setItem: (k, v) => { putRow.run(k, String(v)); if (k === Social.KEY) { announce(); setImmediate(() => { try { dev.scan(); } catch (e) { console.error('Webhooks :', e); } }); } } };
@@ -64,20 +67,28 @@ function createServer(opts = {}) {
   };
 
   // ---- sessions ----
-  const insS = db.prepare('INSERT INTO sessions (hash, name, epoch, created, expires) VALUES (?, ?, ?, ?, ?)'), getS = db.prepare('SELECT * FROM sessions WHERE hash = ?'),
+  const insS = db.prepare('INSERT INTO sessions (hash, name, epoch, created, expires, label, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)'), getS = db.prepare('SELECT * FROM sessions WHERE hash = ?'),
     delS = db.prepare('DELETE FROM sessions WHERE hash = ?'), delUser = db.prepare('DELETE FROM sessions WHERE name = ?'),
     trimS = db.prepare('DELETE FROM sessions WHERE hash IN (SELECT hash FROM sessions WHERE name = ? ORDER BY created DESC LIMIT -1 OFFSET ?)'), purge = db.prepare('DELETE FROM sessions WHERE expires < ?');
-  const openSession = name => {
+  // journal de sécurité (connexions, échecs, changements de mot de passe, révocations) : navigateur et système seulement, jamais d'adresse IP
+  const insL = db.prepare('INSERT INTO security_log (name, kind, label, at) VALUES (?, ?, ?, ?)'), trimL = db.prepare('DELETE FROM security_log WHERE name = ? AND id NOT IN (SELECT id FROM security_log WHERE name = ? ORDER BY id DESC LIMIT 200)');
+  const secLog = (name, kind, req) => { insL.run(name, kind, req ? deviceLabel(req.headers['user-agent']) : '', Date.now()); trimL.run(name, name); };
+  const openSession = (name, req, kind) => {
     const token = crypto.randomBytes(32).toString('hex'), now = Date.now();
-    purge.run(now); insS.run(sha(token), name, net.epoch(name), now, now + SESSION_MS); trimS.run(name, MAX_SESSIONS);
+    purge.run(now); insS.run(sha(token), name, net.epoch(name), now, now + SESSION_MS, req ? deviceLabel(req.headers['user-agent']) : 'Appareil du stream', now); trimS.run(name, MAX_SESSIONS);
+    if (kind) secLog(name, kind, req);
     return { name, token };
   };
+  const listS = db.prepare('SELECT hash, label, created, last_seen, expires FROM sessions WHERE name = ? AND expires > ? ORDER BY COALESCE(last_seen, created) DESC'), delSOne = db.prepare('DELETE FROM sessions WHERE name = ? AND hash = ?'),
+    delSOthers = db.prepare('DELETE FROM sessions WHERE name = ? AND hash != ?'), touchS = db.prepare('UPDATE sessions SET last_seen = ? WHERE hash = ?'), listL = db.prepare('SELECT kind, label, at FROM security_log WHERE name = ? ORDER BY id DESC LIMIT 100');
+  const sessionsOf = (name, cur) => listS.all(name, Date.now()).map(r => ({ id: r.hash.slice(0, 16), label: r.label || 'Navigateur', created: r.created, lastSeen: r.last_seen || r.created, current: r.hash === cur }));
   function auth(req) {
     const t = /^Bearer (cnch_[0-9a-f]{40})$/.exec(req.headers.authorization || ''); // jeton d'API personnel : n'ouvre que /api/v1/*
     if (t) { const k = dev.checkToken(t[1]); return k && { name: k.name, scopes: k.scopes, tokenId: k.id, api: true }; }
     const m = /^Bearer ([0-9a-f]{64})$/.exec(req.headers.authorization || ''); if (!m) return null;
     const s = getS.get(sha(m[1])); if (!s || s.expires < Date.now()) return null;
     try { if (net.epoch(s.name) !== s.epoch) { delS.run(s.hash); return null; } } catch (e) { delS.run(s.hash); return null; }
+    if (Date.now() - (s.last_seen || 0) > 60000) touchS.run(Date.now(), s.hash);
     return { name: net.profile(s.name).name, hash: s.hash };
   }
 
@@ -130,19 +141,23 @@ function createServer(opts = {}) {
     const route = req.method + ' ' + url.pathname;
     if (route === 'GET /api/health') return send(res, 200, { ok: true });
     if (/^POST \/api\/(signup|login|stream-session|forgot|reset|verify-email)$/.test(route) && limited(req)) throw new Http(429, 'Trop de requêtes : réessayez dans une minute');
-    if (route === 'POST /api/signup') { const b = await body(req); const name = await net.signup(b.name, b.password, b.bio); return send(res, 200, openSession(name)); }
+    if (route === 'POST /api/signup') { const b = await body(req); const name = await net.signup(b.name, b.password, b.bio); return send(res, 200, openSession(name, req, 'signup')); }
     if (route === 'POST /api/login') {
-      const b = await body(req), name = await net.login(String(b.name || ''), String(b.password || ''));
+      const b = await body(req); let name;
+      try { name = await net.login(String(b.name || ''), String(b.password || '')); } catch (e) {
+        try { secLog(net.profile(String(b.name || '')).name, 'login_fail', req); } catch (x) { /* compte inconnu : rien à journaliser */ }
+        throw e;
+      }
       // double authentification : appareil de confiance, sinon code TOTP ou code de secours
-      if (!tfa.enabled(name) || tfa.isTrusted(name, b.trusted)) return send(res, 200, openSession(name));
+      if (!tfa.enabled(name) || tfa.isTrusted(name, b.trusted)) return send(res, 200, openSession(name, req, 'login'));
       if (!b.code) return send(res, 200, { mfa: true });
-      if (!tfa.verify(name, b.code)) throw new Http(400, 'Code incorrect');
-      return send(res, 200, Object.assign(openSession(name), b.trust ? { trusted: tfa.trust(name, req.headers['user-agent']) } : {}));
+      if (!tfa.verify(name, b.code)) { secLog(name, 'mfa_fail', req); throw new Http(400, 'Code incorrect'); }
+      return send(res, 200, Object.assign(openSession(name, req, 'login'), b.trust ? { trusted: tfa.trust(name, req.headers['user-agent']) } : {}));
     }
     // vue du stream : ouvre le vrai compte « Streamer » SANS mot de passe, uniquement depuis la machine du serveur
     if (route === 'POST /api/stream-session') {
       if (!loopback(req)) throw new Http(403, 'Réservé à la machine du stream');
-      return send(res, 200, openSession(await net.ensureStreamer()));
+      return send(res, 200, openSession(await net.ensureStreamer(), req));
     }
     // récupération de compte (sans session) : réponse identique que le compte existe ou non
     if (route === 'POST /api/forgot') {
@@ -155,7 +170,7 @@ function createServer(opts = {}) {
       if (pw.length < 4) throw new Http(400, 'Nouveau mot de passe trop court (4 min)');
       const t = takeToken('reset', b.token), u = net.findRecoverable(t.name);
       if (!u || u.email !== t.email) throw new Http(400, 'Lien invalide : l\'adresse du compte a changé');
-      await net.resetPassword(t.name, pw); tfa.revokeDevices(t.name); delUser.run(t.name); delTUser.run(t.name, 'reset'); // toutes les sessions actives sont révoquées
+      await net.resetPassword(t.name, pw); tfa.revokeDevices(t.name); delUser.run(t.name); delTUser.run(t.name, 'reset'); secLog(t.name, 'password_reset', req); // toutes les sessions actives sont révoquées
       return send(res, 200, { ok: true, name: t.name });
     }
     if (route === 'POST /api/verify-email') {
@@ -274,13 +289,20 @@ function createServer(opts = {}) {
       }
       throw new Http(404, 'Route inconnue');
     }
-    if (route === 'POST /api/logout') { delS.run(me.hash); return send(res, 200, { ok: true }); }
-    if (route === 'POST /api/logout-all') { net.logoutAll(me.name); tfa.revokeDevices(me.name); delUser.run(me.name); dev.revokeAll(me.name); return send(res, 200, { ok: true }); }
+    if (route === 'GET /api/sessions') return send(res, 200, { sessions: sessionsOf(me.name, me.hash), log: listL.all(me.name) });
+    if (route === 'POST /api/session-revoke') { // révoque un appareil (jamais celui-ci : pour cela, « Quitter »)
+      const b = await body(req), id = String(b.id || ''), s = /^[0-9a-f]{16}$/.test(id) && listS.all(me.name, Date.now()).find(r => r.hash.startsWith(id));
+      if (!s) throw new Http(404, 'Session introuvable'); if (s.hash === me.hash) throw new Http(400, 'C\'est la session de cet appareil : utilisez « Quitter »');
+      delSOne.run(me.name, s.hash); secLog(me.name, 'session_revoked', req); return send(res, 200, { ok: true });
+    }
+    if (route === 'POST /api/sessions-revoke') { delSOthers.run(me.name, me.hash); secLog(me.name, 'sessions_revoked', req); return send(res, 200, { ok: true }); }
+    if (route === 'POST /api/logout') { delS.run(me.hash); secLog(me.name, 'logout', req); return send(res, 200, { ok: true }); }
+    if (route === 'POST /api/logout-all') { secLog(me.name, 'logout_all', req); net.logoutAll(me.name); tfa.revokeDevices(me.name); delUser.run(me.name); dev.revokeAll(me.name); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/password') {
       const b = await body(req); await net.changePassword(me.name, String(b.oldPw || ''), String(b.newPw || ''));
-      delUser.run(me.name); tfa.revokeDevices(me.name); return send(res, 200, openSession(me.name)); // les autres appareils sont déconnectés
+      delUser.run(me.name); tfa.revokeDevices(me.name); return send(res, 200, openSession(me.name, req, 'password_change')); // les autres appareils sont déconnectés
     }
-    if (route === 'POST /api/delete-account') { const b = await body(req); await net.deleteAccount(me.name, String(b.password || '')); delV.run(me.name.toLowerCase(), me.name.toLowerCase()); delUser.run(me.name); tfa.forget(me.name); dev.forget(me.name); return send(res, 200, { ok: true }); }
+    if (route === 'POST /api/delete-account') { const b = await body(req); await net.deleteAccount(me.name, String(b.password || '')); delV.run(me.name.toLowerCase(), me.name.toLowerCase()); delUser.run(me.name); db.prepare('DELETE FROM security_log WHERE name = ?').run(me.name); tfa.forget(me.name); dev.forget(me.name); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/read-notifications') { net.notifications(me.name, true); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/call') {
       const b = await body(req);
