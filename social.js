@@ -2,13 +2,14 @@
 // Chaque appel relit le storage (lecture-modification-écriture) : aucune copie ancienne n'est conservée en mémoire.
 (function (root) {
   const KEY = 'twitchgram.v1';
-  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], drafts: [], groups: [], audit: [], seq: 1, attempts: Object.create(null) });
+  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], appeals: [], drafts: [], groups: [], audit: [], seq: 1, attempts: Object.create(null) });
   const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000, POLL_MAX_MIN = 7 * 1440, MAX_OWN_GROUPS = 10, MAX_RULES = 600;
 
   const RESERVED = 'streamer';
   // signalements : motifs, sanctions de modération (durée de suspension en heures)
   const REASONS = { spam: 'Spam ou publicité', harcelement: 'Harcèlement', haine: 'Haine ou discrimination', violence: 'Violence ou menace', nsfw: 'Contenu inapproprié', autre: 'Autre' };
-  const ACTIONS = ['dismiss', 'delete', 'warn', 'suspend', 'ban'];
+  const SANC_TXT = { warn: 'Avertissement', suspend: 'Suspension', ban: 'Bannissement' };
+  const ACTIONS = ['dismiss', 'hide', 'delete', 'warn', 'suspend', 'ban'];
   // images jointes : jusqu'à 4 par post/message, en data URL (redimensionnées côté navigateur), avec texte alternatif
   const MAX_IMAGES = 4, MAX_IMG_CHARS = 400000, IMG_RE = /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+\/=]+$/;
   function cleanImages(list) {
@@ -68,7 +69,7 @@
         for (const x of Object.values(db.users)) { x.following = x.following.filter(f => f !== n); for (const l of x.lists || []) l.members = l.members.filter(f => f !== n); }
         db.messages = db.messages.filter(m => m.from !== n && m.to !== n); db.drafts = db.drafts.filter(d => d.author !== n);
         db.reposts = db.reposts.filter(r => r.by !== n && !gone.has(r.postId));
-        db.reports = db.reports.filter(r => r.by !== n && r.target !== n);
+        db.reports = db.reports.filter(r => r.by !== n && r.target !== n); db.appeals = (db.appeals || []).filter(a => a.user !== n);
         for (const x of Object.values(db.users)) { if (x.blocked) x.blocked = x.blocked.filter(f => f !== n); if (x.muted) x.muted = x.muted.filter(f => f !== n); }
         db.notifs = db.notifs.filter(x => x.from !== n && x.to !== n && !gone.has(x.postId));
         delete db.users[n.toLowerCase()]; delete db.attempts[n.toLowerCase()];
@@ -629,12 +630,14 @@
         const open = db.reports.filter(r => r.postId === postId && r.status === 'open'); need(open.length, 'Aucun signalement ouvert pour ce post');
         const target = db.users[lc(open[0].target)], hours = Math.min(24 * 90, Math.max(1, +opts.hours || 24));
         if (action !== 'dismiss' && target) need(!target.admin, 'Impossible de sanctionner un administrateur');
+        const hp = action === 'hide' && db.posts.find(x => x.id === postId);
+        if (action === 'hide') { need(hp, 'Post introuvable'); hp.hidden = { at: now(), by: user(by).name, reason: REASONS[open[0].reason] }; notify(hp.author, user(by).name, 'hide', postId); }
         if (target && ['warn', 'suspend', 'ban'].includes(action)) {
           const prev = target.sanction || {};
           target.sanction = { type: action, at: now(), by: user(by).name, reason: REASONS[open[0].reason], warnings: (prev.warnings || 0) + (action === 'warn' ? 1 : 0) };
           if (action === 'suspend') target.sanction.until = now() + hours * 36e5;
           (target.sanctions = target.sanctions || []).push({ type: action, at: now(), reason: REASONS[open[0].reason], hours: action === 'suspend' ? hours : 0, postId });
-          notify(target.name, user(by).name, 'sanction', null);
+          notify(target.name, user(by).name, 'sanction', null, { what: action });
         }
         audit(by, 'report-' + action, target ? target.name : open[0].target, `post #${postId} · ${REASONS[open[0].reason]} · ${open.length} signalement(s)` + (action === 'suspend' ? ` · ${hours} h` : ''));
         for (const r of open) Object.assign(r, { status: action === 'dismiss' ? 'dismissed' : 'actioned', action, closedAt: now(), closedBy: user(by).name });
@@ -643,6 +646,37 @@
         return open.length;
       },
       // ---- tableau de bord d'administration : utilisateurs, statistiques globales, journal d'audit ----
+      appeal(by, kind, postId, text) {
+        const u = user(by); text = String(text || '').trim();
+        need(['sanction', 'hide'].includes(kind), 'Type d’appel inconnu'); need(text.length >= 5 && text.length <= 500, 'Expliquez votre appel : 5 à 500 caractères');
+        let subject;
+        if (kind === 'sanction') { const s = api.sanctionOf(u.name); need(s, 'Aucune mesure à contester'); postId = null; subject = SANC_TXT[s.type] + ' · ' + (s.reason || ''); }
+        else { const p = db.posts.find(x => x.id === postId); need(p && p.author === u.name && p.hidden, 'Ce post n’est pas masqué'); subject = (p.text || '').slice(0, 120); }
+        db.appeals = db.appeals || [];
+        need(!db.appeals.some(a => a.user === u.name && a.kind === kind && a.postId === postId && a.status === 'open'), 'Vous avez déjà fait appel : un modérateur va répondre');
+        const a = { id: id(), user: u.name, kind, postId, text, at: now(), status: 'open', subject };
+        db.appeals.push(a); for (const m of Object.values(db.users)) if (m.admin) notify(m.name, u.name, 'appeal', postId, { what: 'new' });
+        save(); return a;
+      },
+      // admin : appels ouverts ; membre : ses propres appels (ouverts et tranchés)
+      appeals(by) {
+        const u = user(by), l = db.appeals || [];
+        return u.admin ? l.filter(a => a.status === 'open').sort((a, b) => a.at - b.at) : l.filter(a => a.user === u.name).sort((a, b) => b.at - a.at);
+      },
+      hasAppealed: (by, kind, postId) => (db.appeals || []).some(a => lc(a.user) === lc(by) && a.kind === kind && a.postId === (postId || null) && a.status === 'open'),
+      decideAppeal(by, appealId, accept, answer) {
+        need(api.isAdmin(by), 'Réservé à l’administrateur');
+        const a = (db.appeals || []).find(x => x.id === appealId); need(a && a.status === 'open', 'Appel introuvable ou déjà traité');
+        answer = String(answer || '').trim().slice(0, 300);
+        if (accept) {
+          const u = db.users[lc(a.user)], p = db.posts.find(x => x.id === a.postId);
+          if (a.kind === 'sanction') { if (u) delete u.sanction; } else if (p) delete p.hidden;
+        }
+        Object.assign(a, { status: accept ? 'accepted' : 'rejected', answer, closedAt: now(), closedBy: user(by).name });
+        audit(by, accept ? 'appeal-accept' : 'appeal-reject', a.user, (a.kind === 'hide' ? `post #${a.postId}` : 'sanction') + (answer ? ' · ' + answer : ''));
+        notify(a.user, user(by).name, 'appeal', a.postId, { what: accept ? 'accepted' : 'rejected', answer });
+        save();
+      },
       adminUsers(by) {
         need(api.isAdmin(by), 'Réservé à l’administrateur');
         return Object.values(db.users).map(u => ({ name: u.name, display: u.display || u.name, joined: u.joined, admin: !!u.admin, sanction: api.sanctionOf(u.name), warnings: (u.sanctions || []).length,
@@ -804,10 +838,11 @@
       return c;
     });
     return {
-      users, posts: db.posts.filter(p => !p.group || readable.has(p.group)), groups, reposts: db.reposts, seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), attempts: {},
+      users, posts: db.posts.filter(p => !p.group || readable.has(p.group)).map(p => p.hidden && !me.admin && p.author !== me.name ? Object.assign({}, p, { text: '', images: [], poll: undefined, history: [], quoteOf: undefined }) : p), groups, reposts: db.reposts, seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), attempts: {},
       messages: db.messages.filter(m => m.from === me.name || m.to === me.name),
       notifs: db.notifs.filter(n => n.to === me.name),
       audit: me.admin ? (db.audit || []).slice(-300) : [], totals: me.admin ? { hiddenPosts: db.posts.filter(p => !p.replyTo && p.group && !readable.has(p.group)).length, hiddenMessages: db.messages.filter(m => m.from !== me.name && m.to !== me.name).length } : undefined,
+      appeals: me.admin ? (db.appeals || []).slice(-200) : (db.appeals || []).filter(a => a.user === me.name),
       reports: me.admin ? db.reports : db.reports.filter(r => r.by === me.name).map(r => ({ id: r.id, postId: r.postId, by: r.by, status: r.status })),
     };
   }

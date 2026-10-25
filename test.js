@@ -128,6 +128,17 @@ assert.strictEqual(n2.importUser('fred', evil).messages, 1);
   n.liftSanction('Streamer', 'bob'); assert.doesNotThrow(() => n.post('bob', 'ok'));
   const p2 = n.post('bob', 'spam!'); n.report('cyd', p2.id, 'spam');
   n.moderate('Streamer', p2.id, 'ban'); assert.throws(() => n.post('bob', 'x'), /banni/); assert.ok(n.notifications('bob').some(x => x.type === 'sanction'));
+  // masquer un post + appel
+  const ph = n.post('cyd', 'limite'); n.report('ana', ph.id, 'autre'); n.moderate('Streamer', ph.id, 'hide');
+  assert.ok(n.notifications('cyd').some(x => x.type === 'hide')); assert.ok(n.explore().some(p => p.id === ph.id && p.hidden));
+  assert.strictEqual(require('./social.js').snapshot(JSON.parse(st.getItem(require('./social.js').KEY)), 'ana').posts.find(p => p.id === ph.id).text, '');
+  assert.throws(() => n.appeal('ana', 'hide', ph.id, 'pas à moi'), /pas masqué/); assert.throws(() => n.appeal('cyd', 'hide', ph.id, 'x'), /5 à 500/);
+  n.appeal('cyd', 'hide', ph.id, 'Ce post respecte les règles'); assert.throws(() => n.appeal('cyd', 'hide', ph.id, 'encore une fois'), /déjà/);
+  assert.strictEqual(n.appeals('Streamer').length, 1); assert.throws(() => n.decideAppeal('cyd', n.appeals('cyd')[0].id, true), /administrateur/);
+  n.decideAppeal('Streamer', n.appeals('Streamer')[0].id, true, 'Erreur de notre part');
+  assert.ok(!n.explore().find(p => p.id === ph.id).hidden && n.notifications('cyd').some(x => x.type === 'appeal' && x.what === 'accepted'));
+  n.adminSanction('Streamer', 'cyd', 'warn', 1, 'x'); n.appeal('cyd', 'sanction', null, 'Je conteste'); n.decideAppeal('Streamer', n.appeals('Streamer')[0].id, false, 'Maintenu');
+  assert.ok(n.sanctionOf('cyd') && n.appeals('cyd')[0].status === 'rejected'); n.liftSanction('Streamer', 'cyd');
   const p3 = n.post('cyd', 'mauvais'); n.report('ana', p3.id, 'nsfw'); n.moderate('Streamer', p3.id, 'delete');
   assert.ok(!n.explore().some(p => p.id === p3.id) && n.history('Streamer', 1)[0].action === 'delete');
   const p4 = n.post('cyd', 'ok'); n.report('ana', p4.id, 'autre'); n.moderate('Streamer', p4.id, 'dismiss'); assert.ok(n.explore().some(p => p.id === p4.id));
