@@ -10,3 +10,6 @@ main{max-width:620px;margin:16px auto;padding:0 12px;display:grid;gap:12px}
 .post .who{font-weight:700;cursor:pointer}.post .acts{display:flex;gap:8px;margin-top:8px}.post .acts button{padding:3px 10px}
 .err{color:#ff6b6b}.tag,.mention{color:#b794ff;cursor:pointer}.msg{padding:6px 10px;border-radius:10px;max-width:80%;background:var(--bd)}.msg.me{background:var(--acc);margin-left:auto}
 .av{display:inline-block;width:32px;height:32px;border-radius:50%;text-align:center;line-height:32px;font-weight:700;margin-right:8px;vertical-align:middle}
+
+.trend{margin:8px 0 0;padding-left:22px;display:grid;gap:6px}.trend li{position:relative}.bar{display:block;height:4px;border-radius:2px;background:var(--acc);margin-top:2px;transition:width .6s}
+.rank{display:grid;grid-template-columns:36px 1fr;align-items:start}.rank .medal{font-size:20px;padding-top:12px}.rank .mut{grid-column:2;margin-top:-6px}

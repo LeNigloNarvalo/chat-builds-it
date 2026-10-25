@@ -83,6 +83,18 @@
         for (const p of db.posts) for (const t of p.text.match(/#\w+/g) || []) c[t.toLowerCase()] = (c[t.toLowerCase()] || 0) + 1;
         return Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 5);
       },
+      // score d'un post : likes + réponses, pondérés par la fraîcheur (demi-vie ~3 h)
+      score(p) { const h = Math.max(0, now() - p.at) / 36e5; return (1 + p.likes.length * 2 + db.posts.filter(r => r.replyTo === p.id).length * 3) * Math.pow(0.5, h / 3); },
+      // classement des posts « en tendance », meilleur score d'abord
+      ranking(limit) {
+        return db.posts.filter(p => !p.replyTo).map(p => ({ post: p, score: this.score(p) })).sort((a, b) => b.score - a.score).slice(0, limit || 5);
+      },
+      // hashtags du moment : score = somme des scores des posts qui les contiennent
+      trendingLive(limit) {
+        const c = {};
+        for (const p of db.posts) for (const t of new Set((p.text.match(/#\w+/g) || []).map(x => x.toLowerCase()))) { const e = c[t] || (c[t] = { tag: t, count: 0, score: 0 }); e.count++; e.score += this.score(p); }
+        return Object.values(c).sort((a, b) => b.score - a.score).slice(0, limit || 8);
+      },
       followers: n => Object.values(db.users).filter(u => u.following.includes(user(n).name)).map(u => u.name),
       profile: n => user(n),
       isAdmin: n => !!(db.users[(n || '').toLowerCase()] || {}).admin,

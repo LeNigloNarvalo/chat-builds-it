@@ -26,4 +26,6 @@ const d = Net({ d: {}, getItem(k) { return this.d[k] || null; }, setItem(k, v) {
 assert.strictEqual(d.seedDemo(), 'Admin'); assert.strictEqual(d.seedDemo(), 'Admin');
 assert.ok(d.isAdmin('admin') && d.explore().length >= 4 && d.feed('Admin').length > 0 && d.notifications('Admin').length > 0);
 d.deletePost('Admin', d.explore().find(x => x.author === 'Luna').id);
+const tl = d.trendingLive(); assert.ok(tl.length >= 2 && tl[0].score >= tl[1].score && tl[0].tag.startsWith('#'));
+const rk = d.ranking(3); assert.ok(rk.length === 3 && rk[0].score >= rk[1].score && rk.every(r => !r.post.replyTo));
 console.log('ok');

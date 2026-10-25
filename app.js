@@ -34,7 +34,7 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length;
-  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['dm', '✉️ Messages'], ['profile', '👤 Profil']]
+  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['dm', '✉️ Messages'], ['profile', '👤 Profil']]
     .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
   const list = ps => ps.map(p => postHTML(p)).join('') || '<p class="mut">Rien ici pour l’instant.</p>';
@@ -42,6 +42,10 @@ function render() {
   if (view.page === 'feed') h = composer('Quoi de neuf ?') + e + list(net.feed(me));
   else if (view.page === 'explore') {
     h = composer('Quoi de neuf ?') + e + `<div class="card"><b>Tendances</b> ${net.trending().map(([t, c]) => `<span class="tag" data-search="${t}">${t} (${c})</span>`).join(' ') || '<span class="mut">aucune</span>'}</div>` + list(net.explore());
+  } else if (view.page === 'trends') {
+    const medal = i => ['🥇', '🥈', '🥉'][i] || `#${i + 1}`;
+    h = `<div class="card"><b>🔴 En direct · hashtags du moment</b><ol class="trend">${net.trendingLive().map(t => `<li><span class="tag" data-search="${t.tag}">${t.tag}</span> <span class="mut">${t.count} post${t.count > 1 ? 's' : ''}</span><i class="bar" style="width:${Math.max(6, Math.round(t.score / (net.trendingLive(1)[0].score || 1) * 100))}%"></i></li>`).join('') || '<li class="mut">aucun hashtag</li>'}</ol></div>
+    <div class="card"><b>🏆 Classement des posts</b></div>` + net.ranking(6).map((r, i) => `<div class="rank"><span class="medal">${medal(i)}</span>${postHTML(r.post)}<span class="mut">score ${r.score.toFixed(1)}</span></div>`).join('') + (e || '');
   } else if (view.page === 'search') {
     const r = net.search(view.arg);
     h = `<div class="card"><input id="q" placeholder="Pseudo, mot, #tag" value="${esc(view.arg || '')}"><button data-dosearch>Chercher</button></div>` +
@@ -85,3 +89,16 @@ document.addEventListener('click', ev => {
   else if ('dosearch' in D) go('search', v('#q'));
 });
 render();
+// « live » : la page Tendances se rafraîchit seule ; en vue stream, des spectateurs simulés likent et postent
+const BOTS = ['Luna', 'Pixel', 'Neo'], TAGS = ['#twitch', '#opensource', '#live', '#code', '#pixelart', '#gg'];
+const pick = l => l[Math.floor(Math.random() * l.length)];
+setInterval(() => {
+  if (!me) return;
+  if (STREAM) try {
+    const bot = pick(BOTS), roots = net.explore();
+    if (Math.random() < 0.3) net.post(bot, `${pick(['Ça chauffe', 'Quel live', 'Trop fort'])} ! ${pick(TAGS)}`);
+    else if (roots.length) { const p = pick(roots); if (!p.likes.includes(bot)) net.toggleLike(bot, p.id); }
+  } catch (e) {}
+  if (view.page === 'trends') render();
+}, 3000);
+if (STREAM) go('trends');
