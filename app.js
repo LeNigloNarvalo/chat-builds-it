@@ -11,6 +11,17 @@ let prefs = A11y.load(store);
 const applyPrefs = () => A11y.apply(prefs, document, sysDark.matches);
 sysDark.addEventListener && sysDark.addEventListener('change', applyPrefs);
 applyPrefs();
+let langPref = I18n.load(store);
+const t = I18n.t;
+const browserLangs = () => navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language];
+const applyLang = () => {
+  I18n.set(I18n.resolve(langPref, browserLangs()));
+  document.title = t('title'); const q = (s, f) => { const e = document.querySelector(s); if (e) f(e); };
+  q('.skip', e => { e.textContent = t('skip'); }); q('#nav', e => e.setAttribute('aria-label', t('nav.label')));
+  q('.phi', e => { e.title = t('phi', { n: I18n.num(1.618, { minimumFractionDigits: 3 }) }); e.textContent = 'φ ' + I18n.num(1.618, { minimumFractionDigits: 3 }); });
+  q('#offline', e => { e.textContent = t('offline.banner'); });
+};
+applyLang();
 let th = Theme.load(store);
 const applyTheme = () => Theme.apply(th, document);
 applyTheme();
@@ -35,7 +46,7 @@ const av = (n, big) => `<span class="av${big ? ' big' : ''}" style="background:$
 const GRADS = ['linear-gradient(135deg,#9146ff,#ff4d8d)', 'linear-gradient(135deg,#00c6ff,#0072ff)', 'linear-gradient(135deg,#f7971e,#ffd200)', 'linear-gradient(135deg,#11998e,#38ef7d)', 'linear-gradient(135deg,#232526,#9146ff)', 'linear-gradient(135deg,#ff512f,#dd2476)'];
 const bannerCss = b => !b ? GRADS[0] : b.startsWith('grad:') ? GRADS[+b.slice(5)] : `center/cover url("${encodeURI(b).replace(/"/g, '%22')}"), ${GRADS[4]}`;
 const peopleList = names => names.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)} · ${esc(prof(n).bio || '')}</span></div>`).join('') || '<p class="mut">Personne pour l’instant.</p>';
-const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'à l’instant' : m < 60 ? m + ' min' : m < 1440 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' j'; };
+const ago = I18n.ago;
 const go = (page, arg) => { if (page === 'settings') { tfa.loaded = false; tfa.setup = null; tfa.codes = null; } if (page === 'stats') st.loaded = false; if (page === 'dev') { dev.loaded = false; dev.fresh = null; dev.detail = null; } view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
 // ---- fil paginé côté serveur (/api/feed) : pages de 10 posts, défilement infini, bandeau « N nouveaux posts » ----
 const PAGE = 10, fs = { scope: null, who: null, ids: [], more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: 0 };
@@ -146,7 +157,7 @@ function notifyNew() {
 sync.onChange(() => { refresh(); notifyNew(); });
 window.addEventListener('storage', ev => { if (ev.key === SESSION) sync.pull(true).then(() => refresh(), () => refresh());  // connexion/déconnexion dans un autre onglet
   if (ev.key === Theme.KEY) { th = Theme.load(store); applyTheme(); if (view.page === 'theme' && me) refresh(); }
-  if (ev.key === A11Y_KEY) { prefs = A11y.load(store); applyPrefs(); } if (ev.key === null) refresh(); });
+  if (ev.key === A11Y_KEY) { prefs = A11y.load(store); applyPrefs(); } if (ev.key === I18n.KEY) { langPref = I18n.load(store); applyLang(); refresh(); } if (ev.key === null) refresh(); });
 const openSession = name => { me = name; };
 
 // ---- double authentification (TOTP) : tout est stocké côté serveur, la page ne garde que la dernière lecture ----
@@ -201,6 +212,12 @@ document.addEventListener('click', ev => {
   else if (a === 'copy') { try { navigator.clipboard.writeText(tfa.codes.join('\n')); tfa.msg = 'Codes copiés ✔'; } catch (x) { tfa.msg = 'Sélectionnez les codes pour les copier'; } render(); }
   else if (a === 'download') download(`cornichon-${me}-codes-de-secours.txt`, `Codes de secours Cornichon (@${me}) — chacun ne sert qu'une fois\n\n${tfa.codes.join('\n')}\n`);
 });
+function langCard() {
+  const eff = I18n.get(), now = Date.now();
+  return `<div class="card" role="group" aria-labelledby="h-lang"><h2 id="h-lang">${t('lang.title')}</h2>
+    <b id="l-lang">${t('lang.label')}</b><div class="row" role="group" aria-labelledby="l-lang"><button data-lang="auto" aria-pressed="${langPref === 'auto'}" class="${langPref === 'auto' ? 'on' : ''}">${t('lang.auto', { n: langName(I18n.detect(browserLangs())) })}</button>${Object.entries(I18n.LANGS).map(([k, l]) => `<button data-lang="${k}" lang="${k}" aria-pressed="${langPref === k}" class="${langPref === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <p class="mut" role="status">${t('lang.sample', { date: I18n.dateTime(now, { dateStyle: 'full', timeStyle: 'short' }), num: I18n.num(1234567.89) })}</p><p class="mut">${t('lang.help')}</p></div>`;
+}
 function notifCard() {
   const np = Notif.load(store), ok = Notif.supported(), on = np.enabled && perm === 'granted';
   return `<div class="card" role="group" aria-labelledby="h-app"><h2 id="h-app">📲 Application et notifications</h2>
@@ -213,24 +230,38 @@ function notifCard() {
     <p class="mut">Réglages enregistrés sur cet appareil. Les notifications s’affichent quand l’appli est ouverte ou installée, même en arrière-plan.</p></div>`;
 }
 const groupTag = id => { try { const g = net.group(id); return `<button class="lnk gtag" data-cmopen="${g.id}" aria-label="Communauté ${esc(g.name)}">👥 ${esc(g.name)}</button>`; } catch (e) { return ''; } };
+// traduction d'un post (état par post, propre à ce visiteur) : { busy } | { text, from, to, approx } | { error }
+const trans = {};
+const langName = c => I18n.LANGS[c] || c;
+const translateBar = (p, tx) => !tx ? `<button class="lnk" data-tr="${p.id}">${t('post.translate')}</button>`
+  : tx.busy ? `<span class="mut" role="status">${t('post.translating')}</span>`
+  : tx.error ? `<span class="err" role="alert">${esc(tx.error)}</span> <button class="lnk" data-trclose="${p.id}">✕</button>`
+  : `<span class="mut" role="status">🌐 ${t('post.translated', { from: langName(tx.from), to: langName(tx.to) })}${tx.approx ? ' · ' + t('post.approx') : ''}${tx.same ? '' : ''}</span> <button class="lnk" data-trclose="${p.id}">${t('post.original')}</button>`;
+async function translatePost(id) {
+  const p = net.db().posts.find(x => x.id === id); if (!p) return;
+  trans[id] = { busy: true }; refresh();
+  try { const r = await I18n.translate(p.text, I18n.get()); trans[id] = r.same ? { error: t('post.cantTranslate') + ' (' + langName(r.from) + ')' } : r; }
+  catch (e) { trans[id] = { error: e.message }; }
+  refresh();
+}
 function postHTML(p, thread) {
   const liked = me && p.likes.includes(me), n = net.replies(p.id, me).length, editing = view.editing === p.id && net.canEdit(me, p.id);
   const saved = net.isBookmarked(me, p.id), rp = net.hasReposted(me, p.id), rc = net.repostCount(p.id), hist = p.history || [];
-  const edited = p.editedAt ? `<button class="lnk" data-hist="${p.id}" aria-expanded="${view.hist === p.id}">modifié · v${hist.length + 1}</button>` : '';
+  const edited = p.editedAt ? `<button class="lnk" data-hist="${p.id}" aria-expanded="${view.hist === p.id}">${t('post.edited', { n: hist.length + 1 })}</button>` : '';
   const histHTML = p.editedAt && view.hist === p.id ? `<div class="hist"><b>Historique des modifications</b>${hist.map((h, i) => `<div class="mut">v${i + 1} · ${ago(h.at)} · ${esc(h.text)} ${net.canEdit(me, p.id) ? `<button class="lnk" data-restore="${p.id}:${i}">restaurer</button>` : ''}</div>`).join('')}<div>v${hist.length + 1} (actuelle) · ${esc(p.text)}</div></div>` : '';
-  const body = editing ? `<textarea id="edit-txt" maxlength="280">${esc(view.restore && view.restore.id === p.id ? view.restore.text : p.text)}</textarea><button data-saveedit="${p.id}">💾 Enregistrer</button> <button data-canceledit>Annuler</button> <span class="mut">${Math.ceil(net.editLeft(p.id) / 60000)} min restantes</span>` : `${p.text ? `<p>${rich(p.text)}</p>` : ''}${gallery(p.images, 'p', p.id)}`;
-  const pollH = pollHTML(p);
+  const body = editing ? `<textarea id="edit-txt" maxlength="280">${esc(view.restore && view.restore.id === p.id ? view.restore.text : p.text)}</textarea><button data-saveedit="${p.id}">${t('post.save')}</button> <button data-canceledit>${t('post.cancel')}</button> <span class="mut">${Math.ceil(net.editLeft(p.id) / 60000)} min restantes</span>` : `${p.text ? `<p>${tx && tx.text ? rich(tx.text) : rich(p.text)}</p>` : ''}${p.text ? translateBar(p, tx) : ''}${gallery(p.images, 'p', p.id)}`;
+  const pollH = pollHTML(p), tx = trans[p.id];
   return `<div class="card post" data-pid="${p.id}">${av(p.author)}<span class="who" data-user="${p.author}">${esc(shown(p.author))}</span> <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span> ${edited}${p.group ? groupTag(p.group) : ''}
   ${body}${pollH}${histHTML}${view.reporting === p.id ? reportForm(p.id) : ''}<div class="acts"><button data-like="${p.id}" class="${liked ? 'on' : ''}">♥ ${p.likes.length}</button>
-  <button data-open="${p.id}">💬 ${n}</button>${!p.replyTo && p.author !== me ? `<button data-repost="${p.id}" class="${rp ? 'on' : ''}" aria-pressed="${rp}" aria-label="${rp ? 'Annuler le repartage' : 'Repartager sur mon profil'}">🔁 ${rc}</button>` : rc ? `<span class="mut">🔁 ${rc}</span>` : ''}
-  ${p.author !== me && !net.isAdmin(p.author) ? `<button data-report="${p.id}" class="${net.hasReported(me, p.id) ? 'on' : ''}" aria-label="${net.hasReported(me, p.id) ? 'Post déjà signalé' : 'Signaler le post'}" ${net.hasReported(me, p.id) ? 'disabled' : ''}>🚩</button>` : ''}<button data-bm="${p.id}" class="${saved ? 'on' : ''}" aria-pressed="${saved}" aria-label="${saved ? 'Retirer des favoris' : 'Mettre en favori'}">${saved ? '🔖' : '📑'}</button>${net.canEdit(me, p.id) && !editing ? `<button data-edit="${p.id}" aria-label="Modifier le post">✏️</button>` : ''}${p.author === me || net.isAdmin(me) ? `<button data-del="${p.id}">🗑</button>` : ''}</div></div>`;
+  <button data-open="${p.id}">💬 ${n}</button>${!p.replyTo && p.author !== me ? `<button data-repost="${p.id}" class="${rp ? 'on' : ''}" aria-pressed="${rp}" aria-label="${rp ? t('post.unrepost') : t('post.repost')}">🔁 ${rc}</button>` : rc ? `<span class="mut">🔁 ${rc}</span>` : ''}
+  ${p.author !== me && !net.isAdmin(p.author) ? `<button data-report="${p.id}" class="${net.hasReported(me, p.id) ? 'on' : ''}" aria-label="${net.hasReported(me, p.id) ? t('post.reported') : t('post.report')}" ${net.hasReported(me, p.id) ? 'disabled' : ''}>🚩</button>` : ''}<button data-bm="${p.id}" class="${saved ? 'on' : ''}" aria-pressed="${saved}" aria-label="${saved ? t('post.unbookmark') : t('post.bookmark')}">${saved ? '🔖' : '📑'}</button>${net.canEdit(me, p.id) && !editing ? `<button data-edit="${p.id}" aria-label="${t('post.edit')}">✏️</button>` : ''}${p.author === me || net.isAdmin(me) ? `<button data-del="${p.id}">🗑</button>` : ''}</div></div>`;
 }
 const reportForm = id => `<div class="card report" role="group" aria-label="Signaler ce post"><b>🚩 Signaler ce post</b>
   <label>Motif <select id="rp-reason">${Object.entries(net.reasons()).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</select></label>
   <label>Précisions (facultatif)<textarea id="rp-note" maxlength="300"></textarea></label>
   <button data-sendreport="${id}">Envoyer le signalement</button> <button data-cancelreport>Annuler</button></div>`;
 const SANC = { warn: '⚠️ Avertissement', suspend: '⏸ Suspension', ban: '⛔ Bannissement' };
-const sancLabel = s => `${SANC[s.type]}${s.type === 'suspend' ? ` jusqu’à ${new Date(s.until).toLocaleString('fr-FR')}` : ''} · ${esc(s.reason || '')}`;
+const sancLabel = s => `${SANC[s.type]}${s.type === 'suspend' ? ` jusqu’à ${I18n.dateTime(s.until)}` : ''} · ${esc(s.reason || '')}`;
 function modPage(e) {
   const q = net.queue(me), hist = net.history(me, 15), sl = net.sanctioned(me), R = net.reasons();
   return `<div class="card"><h2>🛡 File de modération</h2><p class="mut">${q.length} post${q.length > 1 ? 's' : ''} à examiner, les plus signalés d’abord.</p></div>${e}` +
@@ -245,7 +276,7 @@ function modPage(e) {
 let curDraft = null, draftMsg = '';
 const dtimers = {};
 const localInput = ms => { const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60000); return d.toISOString().slice(0, 16); };
-const when = ms => new Date(ms).toLocaleString('fr-FR', { dateStyle: 'full', timeStyle: 'short' });
+const when = ms => I18n.dateTime(ms, { dateStyle: 'full', timeStyle: 'short' });
 const pollDraft = { on: false, opts: ['', ''], minutes: 60 };
 const DURS = [[5, '5 minutes'], [60, '1 heure'], [360, '6 heures'], [1440, '1 jour'], [4320, '3 jours'], [10080, '7 jours']];
 const pollBox = () => !pollDraft.on ? `<button class="lnk" data-pollon>📊 Ajouter un sondage</button>` : `<fieldset class="pollbox"><legend>📊 Sondage</legend>
@@ -267,8 +298,8 @@ function pollHTML(p) {
       : `<button class="popt" data-vote="${p.id}:${i}">${esc(o.text)}</button>`;
   }).join('')}<div class="mut">${total} vote${total > 1 ? 's' : ''} · ${open ? 'se termine dans ' + lt : 'sondage clos'}</div></div>`;
 }
-const composer = (ph, reply) => reply ? `<div class="card"><textarea id="txt" maxlength="280" placeholder="${ph}"></textarea>${attachBox('post')}<button data-send="${reply}">Publier</button></div>`
-  : `<div class="card"><textarea id="txt" data-draft="new" maxlength="280" placeholder="${ph}"></textarea>${attachBox('post')}${pollBox()}<div class="row"><button data-send="">Publier</button>
+const composer = (ph, reply) => reply ? `<div class="card"><textarea id="txt" maxlength="280" placeholder="${ph}"></textarea>${attachBox('post')}<button data-send="${reply}">${t('composer.send')}</button></div>`
+  : `<div class="card"><textarea id="txt" data-draft="new" maxlength="280" placeholder="${ph}"></textarea>${attachBox('post')}${pollBox()}<div class="row"><button data-send="">${t('composer.send')}</button>
   <label class="inl">ou le <input type="datetime-local" id="plan-at" aria-label="Date de publication planifiée" value="${localInput(Date.now() + 3600000)}"></label><button data-plan>📅 Planifier</button></div>
   <p class="mut" id="dr-note" role="status">Brouillon enregistré automatiquement · <button class="lnk" data-page="drafts">voir mes brouillons</button></p></div>`;
 function draftsPage(e) {
@@ -310,9 +341,9 @@ function whoToFollow() {
 }
 function render() {
   const nav = $('#nav'), app = $('#app');
-  $('#me').innerHTML = me ? `${STREAM ? '<b>🔴 STREAM</b> ' : ''}@${esc(me)}${net.isAdmin(me) ? ' 👑 admin' : ''} <button data-logout>Quitter</button>` : '';
-  if (booting) { nav.innerHTML = ''; app.innerHTML = '<p class="mut" role="status">Connexion au serveur…</p>'; return; }
-  if (me && !sync.online()) $('#me').innerHTML += ' <span class="err" role="status">⚠ hors ligne</span>';
+  $('#me').innerHTML = me ? `${STREAM ? '<b>🔴 STREAM</b> ' : ''}@${esc(me)}${net.isAdmin(me) ? t('me.admin') : ''} <button data-logout>${t('me.logout')}</button>` : '';
+  if (booting) { nav.innerHTML = ''; app.innerHTML = `<p class="mut" role="status">${t('loading.server')}</p>`; return; }
+  if (me && !sync.online()) $('#me').innerHTML += ` <span class="err" role="status">${t('offline.short')}</span>`;
   if (LINK && LINK.kind === 'reset' && !linkMsg) {
     nav.innerHTML = '';
     app.innerHTML = `<div class="card"><h2>🔑 Nouveau mot de passe</h2><p class="mut">Ce lien ne fonctionne qu'une fois et expire au bout de 30 minutes. Vos sessions ouvertes seront fermées.</p>
@@ -333,35 +364,35 @@ function render() {
   }
   if (!me && mfa) {
     nav.innerHTML = '';
-    app.innerHTML = `<div class="card"><h2>🔐 Double authentification</h2><p class="mut">Compte @${esc(mfa.name)} : saisissez le code à 6 chiffres de votre appli d’authentification, ou un code de secours.</p>
+    app.innerHTML = `<div class="card"><h2>${t('mfa.title')}</h2><p class="mut">Compte @${esc(mfa.name)} : saisissez le code à 6 chiffres de votre appli d’authentification, ou un code de secours.</p>
       <input id="mfa-code" inputmode="text" autocomplete="one-time-code" placeholder="123 456 ou code de secours" aria-label="Code de double authentification" autofocus>
-      <label class="mut"><input type="checkbox" id="mfa-trust" style="width:auto"> Faire confiance à cet appareil pendant 30 jours</label><br>
-      <button data-mfago>Valider</button> <button data-mfaback>Annuler</button><p class="err" role="alert">${esc(err)}</p></div>`;
+      <label class="mut"><input type="checkbox" id="mfa-trust" style="width:auto"> ${t('mfa.trust')}</label><br>
+      <button data-mfago>${t('mfa.ok')}</button> <button data-mfaback>${t('mfa.cancel')}</button><p class="err" role="alert">${esc(err)}</p></div>`;
     const c = $('#mfa-code'); if (c) c.focus();
     return;
   }
   if (!me) {
     nav.innerHTML = '';
-    app.innerHTML = `<div class="card"><h2>Bienvenue dans le bocal Cornichon</h2><input id="u" placeholder="Pseudo"><input id="pw" type="password" placeholder="Mot de passe"><input id="bio" placeholder="Bio (inscription)">
-    <button data-login>Connexion</button> <button data-signup>Créer un compte</button> <button class="lnk" data-forgot>Mot de passe oublié ?</button><p class="err">${esc(err)}</p>${linkMsg ? `<p class="ok" role="status">${esc(linkMsg)}</p>` : ''}</div>`;
+    app.innerHTML = `<div class="card"><h2>${t('auth.welcome')}</h2><input id="u" placeholder="${t('auth.user')}"><input id="pw" type="password" placeholder="${t('auth.password')}"><input id="bio" placeholder="${t('auth.bio')}">
+    <button data-login>${t('auth.login')}</button> <button data-signup>${t('auth.signup')}</button> <button class="lnk" data-forgot>${t('auth.forgot')}</button><p class="err">${esc(err)}</p>${linkMsg ? `<p class="ok" role="status">${esc(linkMsg)}</p>` : ''}</div>`;
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['groups', `👥 Communautés ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `🗂 Listes ${(net.lists(me, me) || []).length || ''}`], ['drafts', `📝 Brouillons ${net.drafts(me).length || ''}`], ['dm', `✉️ Messages ${unreadDm.total || ''}`], ['profile', '👤 Profil'], ['theme', '🎨 Thème'], ['settings', '⚙️ Réglages'], ['blocks', '🚫 Bloqués'], ['security', '🔒 Sécurité'], ['stats', '📈 Statistiques'], ['dev', '🔑 API & Webhooks'], ['diag', '✅ Vérification']].concat(net.isAdmin(me) ? [['mod', `🛡 Modération ${net.queue(me).length || ''}`]] : [])
+  nav.innerHTML = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['search', t('nav.search')], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['theme', t('nav.theme')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['mod', `${t('nav.mod')} ${net.queue(me).length || ''}`]] : [])
     .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
   // onglets du fil : global + une entrée par liste (les siennes)
   const tabs = () => { const ls = net.lists(me, me); return `<div class="card tabs" role="tablist" aria-label="Choix du fil"><button role="tab" aria-selected="${view.page === 'feed'}" class="${view.page === 'feed' ? 'on' : ''}" data-page="feed">🏠 Tout</button>${ls.map(l => `<button role="tab" aria-selected="${view.page === 'list' && view.arg.id === l.id}" class="${view.page === 'list' && view.arg.id === l.id && view.arg.owner === me ? 'on' : ''}" data-lopen="${esc(me)}:${l.id}">${l.public ? '🌐' : '🔒'} ${esc(l.name)}</button>`).join('')}<button data-page="lists">＋ Listes</button></div>`; };
   const mySanc = net.sanctionOf(me);
-  const list = ps => ps.map(p => postHTML(p)).join('') || '<p class="mut">Rien ici pour l’instant.</p>';
+  const list = ps => ps.map(p => postHTML(p)).join('') || `<p class="mut">${t('empty')}</p>`;
   let h = '';
   const paged = () => {
-    if (fs.scope !== feedScope() || fs.who !== me || !fs.loaded) return '<p class="mut" role="status">Chargement du fil…</p>';
+    if (fs.scope !== feedScope() || fs.who !== me || !fs.loaded) return `<p class="mut" role="status">${t('loading.feed')}</p>`;
     const ps = fs.ids.map(i => net.db().posts.find(p => p.id === i)).filter(Boolean);
-    return (fs.fresh ? `<button class="card newbar" data-newposts>⬆ ${fs.fresh} nouveau${fs.fresh > 1 ? 'x' : ''} post${fs.fresh > 1 ? 's' : ''}</button>` : '') + list(ps)
-      + (fs.more ? '<button class="card morebar" id="more" data-more>Chargement de la suite…</button>' : ps.length ? '<p class="mut" role="status">Vous avez tout vu 🥒</p>' : '');
+    return (fs.fresh ? `<button class="card newbar" data-newposts>${I18n.tn('new', fs.fresh)}</button>` : '') + list(ps)
+      + (fs.more ? `<button class="card morebar" id="more" data-more>${t('loading.more')}</button>` : ps.length ? `<p class="mut" role="status">${t('seen.all')}</p>` : '');
   };
-  if (view.page === 'feed') h = composer('Quoi de neuf ?') + whoToFollow() + tabs() + e + paged();
+  if (view.page === 'feed') h = composer(t('composer.ph')) + whoToFollow() + tabs() + e + paged();
   else if (view.page === 'dev') h = devPage(e);
   else if (view.page === 'stats') h = statsPage(e);
   else if (view.page === 'groups') h = groupsPage(e);
@@ -369,7 +400,7 @@ function render() {
   else if (view.page === 'lists') h = listsPage(e);
   else if (view.page === 'list') h = listPage(e, paged);
   else if (view.page === 'explore') {
-    h = composer('Quoi de neuf ?') + whoToFollow() + e + `<div class="card"><b>Tendances</b> ${net.trending().map(([t, c]) => `<span class="tag" data-search="${t}">${t} (${c})</span>`).join(' ') || '<span class="mut">aucune</span>'}</div>` + paged();
+    h = composer(t('composer.ph')) + whoToFollow() + e + `<div class="card"><b>Tendances</b> ${net.trending().map(([t, c]) => `<span class="tag" data-search="${t}">${t} (${c})</span>`).join(' ') || '<span class="mut">aucune</span>'}</div>` + paged();
   } else if (view.page === 'trends') {
     const medal = i => ['🥇', '🥈', '🥉'][i] || `#${i + 1}`;
     h = `<div class="card"><b>🔴 En direct · hashtags du moment</b><ol class="trend">${net.trendingLive().map(t => `<li><span class="tag" data-search="${t.tag}">${t.tag}</span> <span class="mut">${t.count} post${t.count > 1 ? 's' : ''}</span><i class="bar" style="width:${Math.max(6, Math.round(t.score / (net.trendingLive(1)[0].score || 1) * 100))}%"></i></li>`).join('') || '<li class="mut">aucun hashtag</li>'}</ol></div>
@@ -388,13 +419,13 @@ function render() {
     h = net.notifications(me, true).map(n => `<div class="card" ${n.type === 'group' ? `data-cmopen="${n.group}"` : n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}>${n.from ? `<b>${esc(n.from)}</b> ` : '📊 '}${n.type === 'group' ? `${L.group[n.what] || 'communauté'} · 👥 ${esc(gname(n.group))}` : L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') || '<p class="mut">Aucune notification.</p>';
   } else if (view.page === 'thread') {
     const p = net.db().posts.find(x => x.id === view.arg);
-    h = p ? postHTML(p) + composer('Votre réponse…', p.id) + e + net.replies(p.id, me).map(r => postHTML(r)).join('') : '<p class="mut">Post supprimé.</p>';
+    h = p ? postHTML(p) + composer(t('composer.reply'), p.id) + e + net.replies(p.id, me).map(r => postHTML(r)).join('') : '<p class="mut">Post supprimé.</p>';
   } else if (view.page === 'profile') {
     const name = view.arg || me, u = net.profile(name), fl = net.followers(name), self = u.name === me;
     h = `<div class="card prof"><div class="banner" style="background:${bannerCss(u.banner)}"></div><div class="pbody">${av(u.name, true)}<b class="pname">${esc(u.display || u.name)}</b> <span class="mut">@${esc(u.name)}</span>
       <p>${esc(u.bio) || '<span class="mut">Pas de bio</span>'}</p>${u.link ? `<p><a href="${esc(u.link)}" target="_blank" rel="noopener noreferrer nofollow">🔗 ${esc(u.link.replace(/^https?:\/\//, ''))}</a></p>` : ''}
-      <p class="stats"><button data-sub="followers:${u.name}" class="${view.sub === 'followers' ? 'on' : ''}"><b>${fl.length}</b> abonnés</button> <button data-sub="following:${u.name}" class="${view.sub === 'following' ? 'on' : ''}"><b>${u.following.length}</b> abonnements</button></p>` +
-      (self ? `<button data-page="settings">⚙️ Modifier le profil</button>` : `<button data-follow="${u.name}">${fl.includes(me) ? 'Se désabonner' : 'Suivre'}</button> <button data-chat="${u.name}">Message</button>` + (u.admin ? '' : ` <button data-mute="${u.name}" aria-pressed="${net.isMuted(me, u.name)}">${net.isMuted(me, u.name) ? '🔊 Ne plus masquer' : '🔇 Masquer'}</button> <button data-block="${u.name}" aria-pressed="${net.isBlocked(me, u.name)}">${net.isBlocked(me, u.name) ? '✅ Débloquer' : '🚫 Bloquer'}</button>`)) + (net.sanctionOf(u.name) && net.isAdmin(me) ? ` <span class="err">${sancLabel(net.sanctionOf(u.name))}</span>` : '') + `</div></div>${e}` + profileLists(u.name, self) +
+      <p class="stats"><button data-sub="followers:${u.name}" class="${view.sub === 'followers' ? 'on' : ''}"><b>${I18n.num(fl.length)}</b> ${t('followers')}</button> <button data-sub="following:${u.name}" class="${view.sub === 'following' ? 'on' : ''}"><b>${I18n.num(u.following.length)}</b> ${t('following')}</button></p>` +
+      (self ? `<button data-page="settings">⚙️ Modifier le profil</button>` : `<button data-follow="${u.name}">${fl.includes(me) ? t('unfollow') : t('follow')}</button> <button data-chat="${u.name}">${t('message')}</button>` + (u.admin ? '' : ` <button data-mute="${u.name}" aria-pressed="${net.isMuted(me, u.name)}">${net.isMuted(me, u.name) ? '🔊 Ne plus masquer' : '🔇 Masquer'}</button> <button data-block="${u.name}" aria-pressed="${net.isBlocked(me, u.name)}">${net.isBlocked(me, u.name) ? '✅ Débloquer' : '🚫 Bloquer'}</button>`)) + (net.sanctionOf(u.name) && net.isAdmin(me) ? ` <span class="err">${sancLabel(net.sanctionOf(u.name))}</span>` : '') + `</div></div>${e}` + profileLists(u.name, self) +
       (view.sub ? `<div class="card"><b>${view.sub === 'followers' ? 'Abonnés' : 'Abonnements'}</b> <button data-sub="">✕</button></div>` + peopleList(view.sub === 'followers' ? fl : u.following) : (net.timeline(name, me).map(t => (t.by ? `<p class="mut rt">🔁 ${esc(shown(t.by))} a repartagé</p>` : '') + postHTML(t.post)).join('') || '<p class="mut">Rien ici pour l’instant.</p>'));
   } else if (view.page === 'mod' && net.isAdmin(me)) {
     h = modPage(e);
@@ -407,19 +438,20 @@ function render() {
     h = themePage();
   } else if (view.page === 'settings') {
     const u = net.profile(me), b = u.banner || '';
-    h = `<div class="card"><h2>⚙️ Réglages du profil</h2><div class="banner" id="pvb" style="background:${bannerCss(b)}"></div>
-      <label>Pseudo affiché<input id="s-display" maxlength="30" value="${esc(u.display || '')}" placeholder="${esc(u.name)}"></label>
-      <label>Bio<textarea id="s-bio" maxlength="160">${esc(u.bio)}</textarea></label>
-      <label>Couleur d’avatar<input id="s-avatar" type="color" value="${u.avatar || '#9146ff'}"></label>
-      <label>Image de bannière (URL) <input id="s-banner" value="${esc(/^grad:/.test(b) ? '' : b)}" placeholder="https://…/image.jpg"></label>
+    h = `<div class="card"><h2>${t('set.profile')}</h2><div class="banner" id="pvb" style="background:${bannerCss(b)}"></div>
+      <label>${t('set.display')}<input id="s-display" maxlength="30" value="${esc(u.display || '')}" placeholder="${esc(u.name)}"></label>
+      <label>${t('set.bio')}<textarea id="s-bio" maxlength="160">${esc(u.bio)}</textarea></label>
+      <label>${t('set.avatar')}<input id="s-avatar" type="color" value="${u.avatar || '#9146ff'}"></label>
+      <label>${t('set.banner')} <input id="s-banner" value="${esc(/^grad:/.test(b) ? '' : b)}" placeholder="https://…/image.jpg"></label>
       <div class="grads">${GRADS.map((g, i) => `<button data-grad="${i}" style="background:${g}" title="Dégradé ${i + 1}"></button>`).join('')}</div>
-      <label>Lien web<input id="s-link" value="${esc(u.link || '')}" placeholder="https://twitch.tv/…"></label>
+      <label>${t('set.link')}<input id="s-link" value="${esc(u.link || '')}" placeholder="https://twitch.tv/…"></label>
       <input id="s-gradv" type="hidden" value="${/^grad:/.test(b) ? b : ''}">
-      <button data-saveprofile>💾 Enregistrer</button> <button data-page="security">🔒 Sécurité</button> <button data-user="${u.name}">Voir mon profil</button>${e}</div>
-      <div class="card" role="group" aria-labelledby="h-look"><h2 id="h-look">🎨 Apparence et accessibilité</h2>
-      <b id="l-theme">Thème</b><div class="row" role="group" aria-labelledby="l-theme">${[['auto', '🖥 Auto'], ['light', '☀️ Clair'], ['dark', '🌙 Sombre']].map(([k, l]) => `<button data-theme="${k}" aria-pressed="${prefs.theme === k}" class="${prefs.theme === k ? 'on' : ''}">${l}</button>`).join('')}</div>
-      <b id="l-size">Taille du texte : ${prefs.size} %</b><div class="row" role="group" aria-labelledby="l-size"><button data-size="-1" aria-label="Réduire le texte" ${prefs.size === A11y.SIZES[0] ? 'disabled' : ''}>A−</button><button data-size="0" aria-label="Taille normale">A</button><button data-size="1" aria-label="Agrandir le texte" ${prefs.size === A11y.SIZES[A11y.SIZES.length - 1] ? 'disabled' : ''}>A+</button></div>
-      <p class="mut">Navigation au clavier : Tab / Maj+Tab, Entrée ou Espace pour activer. Ces préférences restent sur cet appareil.</p></div>
+      <button data-saveprofile>${t('set.save')}</button> <button data-page="security">${t('set.security')}</button> <button data-user="${u.name}">${t('set.viewProfile')}</button>${e}</div>
+      <div class="card" role="group" aria-labelledby="h-look"><h2 id="h-look">${t('set.look')}</h2>
+      <b id="l-theme">${t('set.theme')}</b><div class="row" role="group" aria-labelledby="l-theme">${[['auto', t('set.auto')], ['light', t('set.light')], ['dark', t('set.dark')]].map(([k, l]) => `<button data-theme="${k}" aria-pressed="${prefs.theme === k}" class="${prefs.theme === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <b id="l-size">${t('set.size', { n: I18n.num(prefs.size) })}</b><div class="row" role="group" aria-labelledby="l-size"><button data-size="-1" aria-label="${t('set.smaller')}" ${prefs.size === A11y.SIZES[0] ? 'disabled' : ''}>A−</button><button data-size="0" aria-label="${t('set.normal')}">A</button><button data-size="1" aria-label="${t('set.bigger')}" ${prefs.size === A11y.SIZES[A11y.SIZES.length - 1] ? 'disabled' : ''}>A+</button></div>
+      <p class="mut">${t('set.keyboard')}</p></div>
+      ${langCard()}
       ${notifCard()}
       ${tfaCard()}
       <div class="card" role="group" aria-labelledby="h-data"><h2 id="h-data">📦 Mes données</h2><p class="mut">Exporte ton profil, tes posts et tes messages en JSON (sans mot de passe), ou importe un export pour les fusionner dans ton compte.</p>
@@ -463,7 +495,7 @@ async function statsLoad() {
   st.busy = false; st.loaded = true; if (view.page === 'stats') render();
 }
 const SERIES = [['views', '👁 Vues', '#9146ff'], ['reactions', '♥ Réactions', '#ff4d8d'], ['replies', '💬 Réponses', '#00a3ff'], ['followers', '➕ Nouveaux abonnés', '#2a9d4a']];
-const nfmt = n => n.toLocaleString('fr-FR');
+const nfmt = n => I18n.num(n);
 function barChart(vals, labels, color, title) {
   const max = Math.max(1, ...vals);
   return `<div class="bars" role="img" aria-label="${esc(title)} : ${vals.map((v, i) => labels[i] + ' ' + v).join(', ')}">${vals.map((v, i) => `<span class="bar" title="${esc(labels[i])} : ${v}" style="height:${Math.max(v ? 4 : 1, Math.round(v / max * 100))}%;background:${color}"></span>`).join('')}</div>`;
@@ -471,7 +503,7 @@ function barChart(vals, labels, color, title) {
 function statsPage(e) {
   if (!st.loaded) { statsLoad(); return '<div class="card"><h2>📈 Statistiques de mes publications</h2><p class="mut" role="status">Chargement…</p></div>'; }
   const d = st.data; if (!d) return `<div class="card"><h2>📈 Statistiques</h2>${e}<button data-statsgo="${st.days}">Réessayer</button></div>`;
-  const dl = d.series.map(x => new Date(x.day + 'T12:00:00Z').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', timeZone: 'UTC' }));
+  const dl = d.series.map(x => I18n.date(new Date(x.day + 'T12:00:00Z').getTime(), { day: 'numeric', month: 'short', timeZone: 'UTC' }));
   const hmax = Math.max(1, ...d.hours), best = d.hours.map((v, h) => [v, h]).sort((a, b) => b[0] - a[0] || a[1] - b[1]).filter(x => x[0] > 0).slice(0, 3).map(x => x[1]);
   const tiles = SERIES.map(([k, l, c]) => `<div class="card tile"><span class="mut">${l}</span><b style="color:${c}">${nfmt(d.totals[k])}</b><span class="mut">sur ${d.days} jours</span></div>`).join('');
   const charts = SERIES.map(([k, l, c]) => `<div class="card"><b>${l} par jour</b>${barChart(d.series.map(x => x[k]), dl, c, l + ' par jour')}<div class="axis"><span>${dl[0]}</span><span>${dl[dl.length - 1]}</span></div></div>`).join('');
@@ -499,7 +531,7 @@ async function devLoad() {
   try { dev.data = await sync.get('/api/dev'); dev.loaded = true; } catch (e) { err = e.message; dev.loaded = true; }
   if (view.page === 'dev') { const k = document.activeElement && document.activeElement.id; if (!/^dv-/.test(k || '')) refresh(); }
 }
-const dt = t => t ? new Date(t).toLocaleString('fr-FR') : '—';
+const dt = ms => ms ? I18n.dateTime(ms) : '—';
 const EVLAB = { mention: '💬 nouvelle mention', follow: '➕ nouvel abonné', ping: '🏓 ping' };
 function devPage(e) {
   if (!dev.loaded) { devLoad(); return '<p class="mut" role="status">Chargement…</p>'; }
@@ -714,7 +746,7 @@ document.addEventListener('click', async ev => {
   } else if ('notiftest' in b.dataset) Notif.show({ id: 'test' + Date.now(), type: 'mention' }, 'Le bocal');
 });
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-mfago],*[data-mfaback],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
+  const d = ev.target.closest('*[data-tr],*[data-trclose],*[data-lang],*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-mfago],*[data-mfaback],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
   if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
@@ -753,6 +785,7 @@ document.addEventListener('click', ev => {
     if (!confirm('Supprimer définitivement votre compte et tous vos posts ?')) return;
     await net.deleteAccount(me, v('#sec-del')); me = null; view = { page: 'feed' };
   });
+  else if ('lang' in D) { langPref = I18n.save(store, D.lang); applyLang(); notice = t('lang.changed', { n: langName(I18n.get()) }); render(); }
   else if ('theme' in D) { prefs = A11y.save(store, { theme: D.theme }); applyPrefs(); render(); }
   else if ('size' in D) { const i = A11y.SIZES.indexOf(prefs.size), j = D.size === '0' ? A11y.SIZES.indexOf(100) : Math.max(0, Math.min(A11y.SIZES.length - 1, i + +D.size)); prefs = A11y.save(store, { size: A11y.SIZES[j] }); applyPrefs(); render(); }
   else if ('export' in D) attempt(async () => { download(`cornichon-${me}.json`, JSON.stringify(await net.exportUser(me), null, 2)); notice = 'Export téléchargé ✔'; });
@@ -844,6 +877,8 @@ document.addEventListener('click', ev => {
     let poll = null; if (pollDraft.on) { pollRead(); poll = { options: pollDraft.opts, minutes: pollDraft.minutes }; }
     await net.post(me, v('#txt'), null, pend.post, poll, +D.cmsend); pend.post = []; if (poll) pollReset(); feedLoad(true);
   });
+  else if ('tr' in D) translatePost(+D.tr);
+  else if ('trclose' in D) { delete trans[+D.trclose]; render(); }
   else if ('user' in D) go('profile', D.user);
   else if ('sfollow' in D) attempt(async () => { await net.toggleFollow(me, D.sfollow); if (feedScope()) feedLoad(true); });
   else if ('sdismiss' in D) attempt(() => net.dismissSuggestion(me, D.sdismiss));
