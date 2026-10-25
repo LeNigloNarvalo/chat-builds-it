@@ -39,8 +39,9 @@ const go = (page, arg) => { view = { page, arg }; pend.post = []; pend.dm = []; 
 // ---- fil paginé côté serveur (/api/feed) : pages de 10 posts, défilement infini, bandeau « N nouveaux posts » ----
 const PAGE = 10, fs = { scope: null, who: null, ids: [], more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: 0 };
 // clé du fil affiché : « feed », « explore » ou « list:<propriétaire>:<id> » (fil dédié d'une liste de comptes)
-const feedScope = () => !me ? null : view.page === 'feed' || view.page === 'explore' ? view.page : view.page === 'list' && view.arg ? 'list:' + view.arg.owner + ':' + view.arg.id : null;
-const feedQuery = sc => { const [k, o, i] = sc.split(':'); return k === 'list' ? `scope=list&owner=${encodeURIComponent(o)}&list=${i}` : 'scope=' + k; };
+const groupReadable = id => { try { const g = net.group(id); return g.public || net.groupRole(me, id) !== null && net.groupRole(me, id) !== 'pending' && net.groupRole(me, id) !== 'invited'; } catch (e) { return false; } };
+const feedScope = () => !me ? null : view.page === 'feed' || view.page === 'explore' ? view.page : view.page === 'list' && view.arg ? 'list:' + view.arg.owner + ':' + view.arg.id : view.page === 'group' && view.arg && groupReadable(view.arg) && (view.tab || 'feed') === 'feed' ? 'group:' + view.arg : null;
+const feedQuery = sc => { const [k, o, i] = sc.split(':'); return k === 'list' ? `scope=list&owner=${encodeURIComponent(o)}&list=${i}` : k === 'group' ? `scope=group&group=${o}` : 'scope=' + k; };
 async function feedLoad(reset) {
   const sc = feedScope(); if (!sc) return;
   if (reset || fs.scope !== sc || fs.who !== me) Object.assign(fs, { scope: sc, who: me, ids: [], more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: fs.gen + 1 });
@@ -157,6 +158,7 @@ function notifCard() {
     <div role="group" aria-label="Types de notifications">${Object.entries(Notif.TYPES).map(([k, l]) => `<label class="inl"><input type="checkbox" data-notiftype="${k}" ${np.types[k] ? 'checked' : ''}> ${l}</label>`).join('<br>')}</div>
     <p class="mut">Réglages enregistrés sur cet appareil. Les notifications s’affichent quand l’appli est ouverte ou installée, même en arrière-plan.</p></div>`;
 }
+const groupTag = id => { try { const g = net.group(id); return `<button class="lnk gtag" data-cmopen="${g.id}" aria-label="Communauté ${esc(g.name)}">👥 ${esc(g.name)}</button>`; } catch (e) { return ''; } };
 function postHTML(p, thread) {
   const liked = me && p.likes.includes(me), n = net.replies(p.id, me).length, editing = view.editing === p.id && net.canEdit(me, p.id);
   const saved = net.isBookmarked(me, p.id), rp = net.hasReposted(me, p.id), rc = net.repostCount(p.id), hist = p.history || [];
@@ -164,7 +166,7 @@ function postHTML(p, thread) {
   const histHTML = p.editedAt && view.hist === p.id ? `<div class="hist"><b>Historique des modifications</b>${hist.map((h, i) => `<div class="mut">v${i + 1} · ${ago(h.at)} · ${esc(h.text)} ${net.canEdit(me, p.id) ? `<button class="lnk" data-restore="${p.id}:${i}">restaurer</button>` : ''}</div>`).join('')}<div>v${hist.length + 1} (actuelle) · ${esc(p.text)}</div></div>` : '';
   const body = editing ? `<textarea id="edit-txt" maxlength="280">${esc(view.restore && view.restore.id === p.id ? view.restore.text : p.text)}</textarea><button data-saveedit="${p.id}">💾 Enregistrer</button> <button data-canceledit>Annuler</button> <span class="mut">${Math.ceil(net.editLeft(p.id) / 60000)} min restantes</span>` : `${p.text ? `<p>${rich(p.text)}</p>` : ''}${gallery(p.images, 'p', p.id)}`;
   const pollH = pollHTML(p);
-  return `<div class="card post">${av(p.author)}<span class="who" data-user="${p.author}">${esc(shown(p.author))}</span> <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span> ${edited}
+  return `<div class="card post">${av(p.author)}<span class="who" data-user="${p.author}">${esc(shown(p.author))}</span> <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span> ${edited}${p.group ? groupTag(p.group) : ''}
   ${body}${pollH}${histHTML}${view.reporting === p.id ? reportForm(p.id) : ''}<div class="acts"><button data-like="${p.id}" class="${liked ? 'on' : ''}">♥ ${p.likes.length}</button>
   <button data-open="${p.id}">💬 ${n}</button>${!p.replyTo && p.author !== me ? `<button data-repost="${p.id}" class="${rp ? 'on' : ''}" aria-pressed="${rp}" aria-label="${rp ? 'Annuler le repartage' : 'Repartager sur mon profil'}">🔁 ${rc}</button>` : rc ? `<span class="mut">🔁 ${rc}</span>` : ''}
   ${p.author !== me && !net.isAdmin(p.author) ? `<button data-report="${p.id}" class="${net.hasReported(me, p.id) ? 'on' : ''}" aria-label="${net.hasReported(me, p.id) ? 'Post déjà signalé' : 'Signaler le post'}" ${net.hasReported(me, p.id) ? 'disabled' : ''}>🚩</button>` : ''}<button data-bm="${p.id}" class="${saved ? 'on' : ''}" aria-pressed="${saved}" aria-label="${saved ? 'Retirer des favoris' : 'Mettre en favori'}">${saved ? '🔖' : '📑'}</button>${net.canEdit(me, p.id) && !editing ? `<button data-edit="${p.id}" aria-label="Modifier le post">✏️</button>` : ''}${p.author === me || net.isAdmin(me) ? `<button data-del="${p.id}">🗑</button>` : ''}</div></div>`;
@@ -282,7 +284,7 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['lists', `🗂 Listes ${(net.lists(me, me) || []).length || ''}`], ['drafts', `📝 Brouillons ${net.drafts(me).length || ''}`], ['dm', `✉️ Messages ${unreadDm.total || ''}`], ['profile', '👤 Profil'], ['theme', '🎨 Thème'], ['settings', '⚙️ Réglages'], ['blocks', '🚫 Bloqués'], ['security', '🔒 Sécurité'], ['diag', '✅ Vérification']].concat(net.isAdmin(me) ? [['mod', `🛡 Modération ${net.queue(me).length || ''}`]] : [])
+  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['groups', `👥 Communautés ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `🗂 Listes ${(net.lists(me, me) || []).length || ''}`], ['drafts', `📝 Brouillons ${net.drafts(me).length || ''}`], ['dm', `✉️ Messages ${unreadDm.total || ''}`], ['profile', '👤 Profil'], ['theme', '🎨 Thème'], ['settings', '⚙️ Réglages'], ['blocks', '🚫 Bloqués'], ['security', '🔒 Sécurité'], ['diag', '✅ Vérification']].concat(net.isAdmin(me) ? [['mod', `🛡 Modération ${net.queue(me).length || ''}`]] : [])
     .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
   // onglets du fil : global + une entrée par liste (les siennes)
@@ -297,6 +299,8 @@ function render() {
       + (fs.more ? '<button class="card morebar" id="more" data-more>Chargement de la suite…</button>' : ps.length ? '<p class="mut" role="status">Vous avez tout vu 🥒</p>' : '');
   };
   if (view.page === 'feed') h = composer('Quoi de neuf ?') + whoToFollow() + tabs() + e + paged();
+  else if (view.page === 'groups') h = groupsPage(e);
+  else if (view.page === 'group') h = groupPage(e, paged);
   else if (view.page === 'lists') h = listsPage(e);
   else if (view.page === 'list') h = listPage(e, paged);
   else if (view.page === 'explore') {
@@ -314,8 +318,9 @@ function render() {
     h = `<div class="card"><input id="q" placeholder="Pseudo, mot, #tag" value="${esc(view.arg || '')}"><button data-dosearch>Chercher</button></div>` +
       r.users.map(u => `<div class="card">${av(u.name)}<span class="who" data-user="${u.name}">${esc(shown(u.name))}</span> <span class="mut">${esc(u.bio)}</span></div>`).join('') + list(r.posts);
   } else if (view.page === 'notifs') {
-    const L = { sanction: 'a pris une mesure de modération contre votre compte', like: 'a aimé votre post', reply: 'a répondu à votre post', mention: 'vous a mentionné', follow: 'vous suit', repost: 'a repartagé votre post', poll: 'Votre sondage est terminé : voir les résultats' };
-    h = net.notifications(me, true).map(n => `<div class="card" ${n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}>${n.from ? `<b>${esc(n.from)}</b> ` : '📊 '}${L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') || '<p class="mut">Aucune notification.</p>';
+    const L = { sanction: 'a pris une mesure de modération contre votre compte', like: 'a aimé votre post', reply: 'a répondu à votre post', mention: 'vous a mentionné', follow: 'vous suit', repost: 'a repartagé votre post', group: Notif.TEXT.group, poll: 'Votre sondage est terminé : voir les résultats' };
+    const gname = id => { try { return net.group(id).name; } catch (x) { return 'une communauté supprimée'; } };
+    h = net.notifications(me, true).map(n => `<div class="card" ${n.type === 'group' ? `data-cmopen="${n.group}"` : n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}>${n.from ? `<b>${esc(n.from)}</b> ` : '📊 '}${n.type === 'group' ? `${L.group[n.what] || 'communauté'} · 👥 ${esc(gname(n.group))}` : L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') || '<p class="mut">Aucune notification.</p>';
   } else if (view.page === 'thread') {
     const p = net.db().posts.find(x => x.id === view.arg);
     h = p ? postHTML(p) + composer('Votre réponse…', p.id) + e + net.replies(p.id, me).map(r => postHTML(r)).join('') : '<p class="mut">Post supprimé.</p>';
@@ -383,6 +388,61 @@ function render() {
   const m = $('#more'); if (m) more.observe(m);
   if (feedScope() && (fs.scope !== feedScope() || fs.who !== me)) feedLoad(true);
 }
+// ---- communautés thématiques ----
+const ROLES = { owner: '👑 propriétaire', mod: '🛡 modérateur', member: 'membre', pending: '⏳ demande envoyée', invited: '✉️ invité' };
+const gcount = g => g.count != null ? g.count : g.members.length;
+const gbadge = g => g.public ? '🌐 publique' : '🔒 privée';
+function groupActions(g, r) {
+  return r === 'owner' ? '' : r === 'mod' || r === 'member' ? `<button data-cmleave="${g.id}">Quitter</button>`
+    : r === 'pending' ? `<button data-cmleave="${g.id}">Annuler la demande</button>`
+    : r === 'invited' ? `<button data-cmrespond="${g.id}:1">✔ Accepter l’invitation</button> <button data-cmrespond="${g.id}:0">Refuser</button>`
+    : g.public ? `<button data-cmjoin="${g.id}">＋ Rejoindre</button>` : `<button data-cmjoin="${g.id}">🔑 Demander à rejoindre</button>`;
+}
+function groupsPage(e) {
+  const all = net.groups(), role = g => net.groupRole(me, g.id), q = (view.q || '').toLowerCase();
+  const invited = all.filter(g => role(g) === 'invited'), mine = all.filter(g => ['owner', 'mod', 'member'].includes(role(g))), rest = all.filter(g => !mine.includes(g) && !invited.includes(g) && (!q || (g.name + ' ' + g.desc).toLowerCase().includes(q)));
+  const row = g => `<div class="card person"><b>${esc(g.name)}</b> <span class="mut">${gbadge(g)} · ${gcount(g)} membre${gcount(g) > 1 ? 's' : ''}${role(g) ? ' · ' + ROLES[role(g)] : ''}</span><br><span class="mut">${esc(g.desc) || 'Pas de description'}</span><div class="row"><button data-cmopen="${g.id}">Ouvrir</button> ${groupActions(g, role(g))}</div></div>`;
+  return `<div class="card"><h2>👥 Communautés</h2><p class="mut">Des groupes thématiques, publics (adhésion libre) ou privés (sur demande ou invitation), avec leurs règles, leurs modérateurs et leur propre fil.</p>
+    <b>Créer une communauté</b>
+    <input id="g-name" maxlength="40" placeholder="Nom (ex. Speedrun, Jardinage…)" aria-label="Nom de la communauté">
+    <input id="g-desc" maxlength="160" placeholder="Description (de quoi parle-t-on ici ?)" aria-label="Description">
+    <textarea id="g-rules" maxlength="600" placeholder="Règles de la communauté (une par ligne)" aria-label="Règles"></textarea>
+    <label class="inl"><input type="checkbox" id="g-pub" checked> publique (décoche pour une communauté privée sur demande)</label> <button data-cmnew>Créer la communauté</button></div>${e}`
+    + (invited.length ? `<div class="card"><b>✉️ Invitations reçues (${invited.length})</b></div>` + invited.map(row).join('') : '')
+    + `<div class="card"><b>Mes communautés (${mine.length})</b></div>` + (mine.map(row).join('') || '<p class="mut">Tu n’es dans aucune communauté : crée la première ou rejoins-en une ci-dessous.</p>')
+    + `<div class="card"><b>Découvrir</b> <input id="g-q" placeholder="Filtrer par nom ou sujet" value="${esc(view.q || '')}" aria-label="Filtrer les communautés"></div>` + (rest.map(row).join('') || '<p class="mut">Rien à découvrir pour l’instant.</p>');
+}
+document.addEventListener('input', ev => { if (ev.target.id === 'g-q') { view.q = ev.target.value; const p = ev.target.selectionStart; refresh(); const x = document.getElementById('g-q'); if (x) { x.focus(); x.setSelectionRange(p, p); } } });
+function groupPage(e, paged) {
+  let g; try { g = net.group(view.arg); } catch (x) { return '<div class="card"><p class="mut">Cette communauté n’existe pas ou a été supprimée.</p><button data-page="groups">Communautés</button></div>'; }
+  const r = net.groupRole(me, g.id), member = ['owner', 'mod', 'member'].includes(r), mod = r === 'owner' || r === 'mod', tab = view.tab || 'feed', owner = r === 'owner';
+  const reqs = g.requests.filter(n => n !== me).length;
+  const tabs = [['feed', '📰 Fil'], ['members', `👥 Membres ${gcount(g)}`], ['rules', '📜 Règles']].concat(mod ? [['manage', `🛠 Gestion ${reqs || ''}`]] : []);
+  const head = `<div class="card"><p><button data-page="groups">← Communautés</button></p><h2>${g.public ? '🌐' : '🔒'} ${esc(g.name)}</h2><p>${esc(g.desc) || '<span class="mut">Pas de description</span>'}</p>
+    <p class="mut">${gbadge(g)} · ${gcount(g)} membre${gcount(g) > 1 ? 's' : ''} · créée par @${esc(g.owner)}${r ? ' · tu es ' + ROLES[r] : ''}</p><div class="row">${groupActions(g, r)}</div></div>
+    <div class="card tabs" role="tablist" aria-label="Sections de la communauté">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${tab === k}" class="${tab === k ? 'on' : ''}" data-cmtab="${k}">${l}</button>`).join('')}</div>${e}`;
+  const person = n => { const rl = g.owner.toLowerCase() === n.toLowerCase() ? 'owner' : g.mods.some(m => m.toLowerCase() === n.toLowerCase()) ? 'mod' : 'member';
+    return `<div class="card person"><span class="who" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)} · ${ROLES[rl]}</span></span>
+    ${mod && rl !== 'owner' && n !== me && (rl === 'member' || owner) ? `<button data-cmrm="${g.id}:${esc(n)}:0">Retirer</button> <button data-cmrm="${g.id}:${esc(n)}:1">Bannir</button>` : ''}${owner && rl !== 'owner' ? ` <button data-cmmod="${g.id}:${esc(n)}:${rl === 'mod' ? 0 : 1}">${rl === 'mod' ? 'Retirer des modérateurs' : '🛡 Nommer modérateur'}</button>` : ''}</div>`; };
+  const canInvite = g.public ? member : mod;
+  if (tab === 'rules') return head + `<div class="card"><h3>📜 Règles</h3><p class="rules">${esc(g.rules) || '<span class="mut">Aucune règle précisée.</span>'}</p><p class="mut">Modération : ${[g.owner, ...g.mods].map(n => '@' + esc(n)).join(', ')}</p></div>`;
+  if (tab === 'members') {
+    if (!member && !g.public) return head + '<div class="card"><p class="mut">La liste des membres est réservée aux membres.</p></div>';
+    const names = [g.owner, ...g.mods, ...g.members.filter(n => n !== g.owner && !g.mods.includes(n))];
+    return head + (canInvite ? `<div class="card"><b>✉️ Inviter quelqu’un</b> <input id="g-inv" placeholder="Pseudo à inviter" aria-label="Pseudo à inviter"> <button data-cminv="${g.id}">Inviter</button></div>` : '') + names.map(person).join('');
+  }
+  if (tab === 'manage' && mod) {
+    const ok = notice ? `<p class="ok" role="status">${esc(notice)}</p>` : '';
+    return head + `<div class="card"><b>📩 Demandes d’adhésion (${g.requests.length})</b></div>` + (g.requests.map(n => `<div class="card person"><span class="who" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)}</span></span> <button data-cmreq="${g.id}:${esc(n)}:1">✔ Accepter</button> <button data-cmreq="${g.id}:${esc(n)}:0">✕ Refuser</button></div>`).join('') || '<p class="mut">Aucune demande en attente.</p>')
+      + `<div class="card"><b>✉️ Invitations en attente (${g.invites.length})</b>${g.invites.map(n => `<div class="row"><span>@${esc(n)}</span><button data-cmcancel="${g.id}:${esc(n)}">Annuler</button></div>`).join('') || '<p class="mut">Aucune.</p>'}</div>`
+      + `<div class="card"><b>⛔ Bannis (${g.banned.length})</b>${g.banned.map(n => `<div class="row"><span>@${esc(n)}</span><button data-cmunban="${g.id}:${esc(n)}">Débannir</button></div>`).join('') || '<p class="mut">Aucun.</p>'}</div>`
+      + `<div class="card"><b>✏️ Informations</b>${owner ? `<input id="g-ename" maxlength="40" value="${esc(g.name)}" aria-label="Nom de la communauté">` : ''}<input id="g-edesc" maxlength="160" value="${esc(g.desc)}" aria-label="Description"><textarea id="g-erules" maxlength="600" aria-label="Règles">${esc(g.rules)}</textarea>
+        ${owner ? `<label class="inl"><input type="checkbox" id="g-epub" ${g.public ? 'checked' : ''}> publique</label> ` : ''}<button data-cmsave="${g.id}">💾 Enregistrer</button> ${owner ? `<button data-cmdel="${g.id}">🗑 Supprimer la communauté</button>` : ''}${ok}</div>`;
+  }
+  if (!member) return head + (g.public ? paged() : `<div class="card"><p class="mut">🔒 Communauté privée : ${r === 'pending' ? 'ta demande est en attente de validation par les modérateurs.' : r === 'invited' ? 'accepte l’invitation pour y entrer.' : 'demande à la rejoindre pour voir son fil et y publier. Lis d’abord ses règles dans l’onglet 📜.'}</p></div>`);
+  const composer = `<div class="card"><textarea id="txt" maxlength="280" placeholder="Publier dans ${esc(g.name)}…" aria-label="Publier dans ${esc(g.name)}"></textarea>${attachBox('post')}${pollBox()}<div class="row"><button data-cmsend="${g.id}">Publier dans la communauté</button> <button class="lnk" data-cmtab="rules">📜 Règles</button></div></div>`;
+  return head + composer + paged();
+}
 // ---- listes de comptes ----
 function listsPage(e) {
   const mine = net.lists(me, me);
@@ -410,7 +470,7 @@ function profileLists(name, self) {
 }
 // accessibilité : éléments cliquables non-boutons focalisables, états ARIA, libellés
 function a11yPass() {
-  document.querySelectorAll('#app [data-user]:not(button),#app [data-search]:not(button),#app [data-open]:not(button)').forEach(x => { x.tabIndex = 0; x.setAttribute('role', 'button'); });
+  document.querySelectorAll('#app [data-user]:not(button),#app [data-search]:not(button),#app [data-open]:not(button),#app [data-cmopen]:not(button)').forEach(x => { x.tabIndex = 0; x.setAttribute('role', 'button'); });
   document.querySelectorAll('#nav button').forEach(b => { if (b.classList.contains('on')) b.setAttribute('aria-current', 'page'); });
   document.querySelectorAll('#app [data-like]').forEach(b => { b.setAttribute('aria-pressed', b.classList.contains('on')); b.setAttribute('aria-label', b.textContent.trim().slice(2) + ' j’aime'); });
   document.querySelectorAll('#app [data-open]:is(button)').forEach(b => b.setAttribute('aria-label', b.textContent.trim().slice(2) + ' réponses'));
@@ -515,7 +575,7 @@ document.addEventListener('click', async ev => {
   } else if ('notiftest' in b.dataset) Notif.show({ id: 'test' + Date.now(), type: 'mention' }, 'Le bocal');
 });
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
+  const d = ev.target.closest('*[data-page],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
   if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
@@ -615,6 +675,24 @@ document.addEventListener('click', ev => {
   else if ('ldel' in D) { if (confirm('Supprimer cette liste ?')) attempt(async () => { await net.deleteList(me, +D.ldel); go('lists'); }); }
   else if ('ladd' in D) attempt(async () => { const n = (v('#l-add') || '').trim().replace(/^@/, ''); if (!n) throw new Error('Pseudo à ajouter ?'); const t = net.profile(n).name; if (!net.listsWith(me, t).includes(+D.ladd)) await net.toggleListMember(me, +D.ladd, t); });
   else if ('lmem' in D) { const [i, n] = D.lmem.split(':'); attempt(() => net.toggleListMember(me, +i, n)); }
+  else if ('cmopen' in D) { err = ''; go('group', +D.cmopen); }
+  else if ('cmtab' in D) { view.tab = D.cmtab; err = ''; fs.scope = null; render(); }
+  else if ('cmnew' in D) attempt(async () => { const g = await net.createGroup(me, v('#g-name'), v('#g-desc'), v('#g-rules'), $('#g-pub').checked); go('group', g.id); });
+  else if ('cmjoin' in D) attempt(async () => { await net.joinGroup(me, +D.cmjoin); fs.scope = null; });
+  else if ('cmleave' in D) attempt(async () => { await net.leaveGroup(me, +D.cmleave); fs.scope = null; });
+  else if ('cmreq' in D) { const [i, n, a] = D.cmreq.split(':'); attempt(() => net.handleRequest(me, +i, n, a === '1')); }
+  else if ('cminv' in D) attempt(async () => { const n = (v('#g-inv') || '').trim().replace(/^@/, ''); if (!n) throw new Error('Pseudo à inviter ?'); await net.inviteToGroup(me, +D.cminv, net.profile(n).name); const x = $('#g-inv'); if (x) x.value = ''; });
+  else if ('cmrespond' in D) { const [i, a] = D.cmrespond.split(':'); attempt(async () => { await net.respondInvite(me, +i, a === '1'); fs.scope = null; }); }
+  else if ('cmcancel' in D) { const [i, n] = D.cmcancel.split(':'); attempt(() => net.cancelInvite(me, +i, n)); }
+  else if ('cmrm' in D) { const [i, n, b] = D.cmrm.split(':'); if (confirm(b === '1' ? `Bannir @${n} de la communauté ?` : `Retirer @${n} de la communauté ?`)) attempt(() => net.removeFromGroup(me, +i, n, b === '1')); }
+  else if ('cmunban' in D) { const [i, n] = D.cmunban.split(':'); attempt(() => net.unbanFromGroup(me, +i, n)); }
+  else if ('cmmod' in D) { const [i, n, o] = D.cmmod.split(':'); attempt(() => net.setGroupMod(me, +i, n, o === '1')); }
+  else if ('cmsave' in D) attempt(async () => { const id = +D.cmsave, g = net.group(id), o = { desc: v('#g-edesc'), rules: v('#g-erules') }; if (net.groupRole(me, id) === 'owner') { o.name = v('#g-ename'); o.public = $('#g-epub').checked; } await net.updateGroup(me, id, o); notice = 'Communauté enregistrée ✔'; });
+  else if ('cmdel' in D) { if (confirm('Supprimer cette communauté et tous ses posts ?')) attempt(async () => { await net.deleteGroup(me, +D.cmdel); go('groups'); }); }
+  else if ('cmsend' in D) attempt(async () => {
+    let poll = null; if (pollDraft.on) { pollRead(); poll = { options: pollDraft.opts, minutes: pollDraft.minutes }; }
+    await net.post(me, v('#txt'), null, pend.post, poll, +D.cmsend); pend.post = []; if (poll) pollReset(); feedLoad(true);
+  });
   else if ('user' in D) go('profile', D.user);
   else if ('sfollow' in D) attempt(async () => { await net.toggleFollow(me, D.sfollow); if (feedScope()) feedLoad(true); });
   else if ('sdismiss' in D) attempt(() => net.dismissSuggestion(me, D.sdismiss));

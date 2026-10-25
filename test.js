@@ -210,9 +210,9 @@ console.log('ok');
   assert.ok(m.name && m.start_url && m.display === 'standalone' && m.icons.length && fs.existsSync(__dirname + '/' + m.icons[0].src));
   const sw = fs.readFileSync(__dirname + '/sw.js', 'utf8'); assert.ok(/addEventListener\('fetch'/.test(sw) && /api\/feed/.test(sw) && /notificationclick/.test(sw));
   const store = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = String(v); } };
-  assert.deepStrictEqual(Notif.load(store), { enabled: false, types: { mention: true, reply: true, follow: true, poll: true } });
+  assert.deepStrictEqual(Notif.load(store), { enabled: false, types: { mention: true, reply: true, follow: true, poll: true, group: true } });
   const L = [{ id: 1, type: 'mention', read: false }, { id: 2, type: 'like', read: false }, { id: 3, type: 'follow', read: false }, { id: 4, type: 'reply', read: true }, { id: 5, type: 'reply', read: false }];
-  const on = { enabled: true, types: { mention: true, reply: true, follow: false, poll: true } };
+  const on = { enabled: true, types: { mention: true, reply: true, follow: false, poll: true, group: true } };
   assert.deepStrictEqual(Notif.pick(L, on, null), { show: [], seen: 5 }); // première ouverture : rien d'ancien
   assert.deepStrictEqual(Notif.pick(L, on, 0).show.map(n => n.id), [1, 5]); // pas de like, pas d'abonné (désactivé), pas de déjà lu
   assert.strictEqual(Notif.pick(L, { enabled: false, types: on.types }, 0).show.length, 0);
@@ -256,4 +256,46 @@ console.log('ok');
   const nt = n.notifications('ana').filter(x => x.type === 'poll'); assert.strictEqual(nt.length, 1); assert.strictEqual(nt[0].postId, p.id);
   assert.strictEqual(n.db().posts[0].poll.options[0].votes[0], 'bob');
   console.log('ok sondages');
+})().catch(e => { console.error(e); process.exit(1); });
+
+(async () => {
+  const S = require('./social.js'); const m = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
+  const n = Net(m); for (const u of ['own', 'mod', 'mem', 'out', 'ban']) await n.signup(u, 'pass1');
+  assert.throws(() => n.createGroup('own', 'ab'), /3 à 40/);
+  const pub = n.createGroup('own', 'Speedrun', 'Courir vite', '1. Pas de spoil', true), priv = n.createGroup('own', 'Secret', '', 'Entre amis', false);
+  assert.throws(() => n.createGroup('mod', 'speedrun'), /déjà/);
+  // adhésion libre (publique) / sur demande (privée)
+  assert.strictEqual(n.joinGroup('mod', pub.id), 'member'); assert.throws(() => n.joinGroup('mod', pub.id), /déjà/);
+  n.joinGroup('mem', pub.id); n.setGroupMod('own', pub.id, 'mod', true); assert.throws(() => n.setGroupMod('mod', pub.id, 'mem', true), /propriétaire/);
+  assert.strictEqual(n.joinGroup('mem', priv.id), 'pending'); assert.throws(() => n.joinGroup('mem', priv.id), /déjà envoyée/);
+  assert.throws(() => n.handleRequest('out', priv.id, 'mem', true), /modérateurs/);
+  assert.strictEqual(n.notifications('own').filter(x => x.type === 'group' && x.what === 'request').length, 1);
+  n.handleRequest('own', priv.id, 'mem', true); assert.strictEqual(n.groupRole('mem', priv.id), 'member');
+  // publier dans la communauté : membres seulement, hors des fils généraux
+  assert.throws(() => n.post('out', 'salut', null, [], null, pub.id), /Rejoignez/);
+  const gp = n.post('mem', 'run en 3 min #speed', null, [], null, pub.id), sp = n.post('mem', 'secret #speed', null, [], null, priv.id);
+  assert.strictEqual(n.explore().length, 0); assert.strictEqual(n.search('run', 'out').posts.length, 0); assert.strictEqual(n.trending().length, 0);
+  assert.deepStrictEqual(n.groupFeed('out', pub.id).map(p => p.id), [gp.id]);
+  assert.throws(() => n.groupFeed('out', priv.id), /privée/); assert.throws(() => n.toggleRepost('mod', gp.id), /communauté/);
+  assert.throws(() => n.toggleLike('out', sp.id), /introuvable/);
+  // vue du serveur : posts et membres d'une privée cachés aux non-membres
+  const v = S.snapshot(n.db(), 'out'); assert.ok(!v.posts.some(p => p.id === sp.id) && v.posts.some(p => p.id === gp.id));
+  const pv = v.groups.find(g => g.id === priv.id); assert.deepStrictEqual(pv.members, []); assert.strictEqual(pv.count, 2);
+  assert.ok(S.snapshot(n.db(), 'mem').posts.some(p => p.id === sp.id));
+  // invitations, modération, bannissement
+  assert.throws(() => n.inviteToGroup('mem', priv.id, 'out'), /modérateurs/);
+  assert.strictEqual(n.inviteToGroup('own', priv.id, 'out'), 'invited'); assert.strictEqual(n.groupRole('out', priv.id), 'invited');
+  assert.strictEqual(n.respondInvite('out', priv.id, true), true); assert.strictEqual(n.groupRole('out', priv.id), 'member');
+  n.joinGroup('ban', pub.id); n.post('ban', 'spam', null, [], null, pub.id);
+  const bp = n.groupFeed('mod', pub.id)[0]; n.deletePost('mod', bp.id); assert.strictEqual(n.groupFeed('own', pub.id).length, 1); // un modérateur supprime
+  assert.throws(() => n.deletePost('mem', n.groupFeed('own', pub.id)[0].id + 0 && bp.id), /interdite|interdit/i);
+  assert.throws(() => n.removeFromGroup('mem', pub.id, 'ban'), /modérateurs/); assert.throws(() => n.removeFromGroup('mod', pub.id, 'own'), /propriétaire/);
+  n.removeFromGroup('mod', pub.id, 'ban', true); assert.throws(() => n.joinGroup('ban', pub.id), /banni/); assert.throws(() => n.inviteToGroup('own', pub.id, 'ban'), /banni/);
+  n.unbanFromGroup('own', pub.id, 'ban'); assert.strictEqual(n.joinGroup('ban', pub.id), 'member');
+  // quitter / propriétaire / suppression
+  assert.throws(() => n.leaveGroup('own', pub.id), /propriétaire/); n.leaveGroup('ban', pub.id); assert.strictEqual(n.groupRole('ban', pub.id), null);
+  n.updateGroup('mod', pub.id, { rules: 'Nouvelle règle' }); assert.throws(() => n.updateGroup('mod', pub.id, { name: 'Autre' }), /propriétaire/);
+  n.updateGroup('own', priv.id, { public: true }); assert.ok(n.group(priv.id).public);
+  await n.deleteAccount('own', 'pass1'); assert.strictEqual(n.groups().length, 0); assert.strictEqual(n.db().posts.length, 0);
+  console.log('ok communautés');
 })().catch(e => { console.error(e); process.exit(1); });

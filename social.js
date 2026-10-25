@@ -2,8 +2,8 @@
 // Chaque appel relit le storage (lecture-modification-écriture) : aucune copie ancienne n'est conservée en mémoire.
 (function (root) {
   const KEY = 'twitchgram.v1';
-  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], drafts: [], seq: 1, attempts: Object.create(null) });
-  const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000, POLL_MAX_MIN = 7 * 1440;
+  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], drafts: [], groups: [], seq: 1, attempts: Object.create(null) });
+  const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000, POLL_MAX_MIN = 7 * 1440, MAX_OWN_GROUPS = 10, MAX_RULES = 600;
 
   const RESERVED = 'streamer';
   // signalements : motifs, sanctions de modération (durée de suspension en heures)
@@ -42,9 +42,9 @@
     const id = () => db.seq++;
     const need = (c, m) => { if (!c) throw new Error(m); };
     const user = n => { const u = db.users[(n || '').toLowerCase()]; need(u, 'Utilisateur introuvable'); return u; };
-    const notify = (to, from, type, postId) => {
+    const notify = (to, from, type, postId, extra) => {
       if (to === from) return;
-      db.notifs.push({ id: id(), to, from, type, postId: postId || null, at: now(), read: false });
+      db.notifs.push(Object.assign({ id: id(), to, from, type, postId: postId || null, at: now(), read: false }, extra));
     };
 
     const lc = n => String(n || '').toLowerCase();
@@ -61,12 +61,31 @@
     const scoreOf = p => { const h = Math.max(0, now() - p.at) / 36e5; return (1 + p.likes.length * 2 + db.posts.filter(r => r.replyTo === p.id).length * 3) * Math.pow(0.5, h / 3); };
 
     // création d'un post (sans sauvegarde) : partagée par la publication directe, les brouillons et la publication planifiée
-    const makePost = (author, text, replyTo, images, poll) => {
+    // ---- communautés : rôle d'un compte dans un groupe (owner | mod | member | pending | invited | null) ----
+    const grp = gid => { const g = db.groups.find(x => x.id === +gid); need(g, 'Communauté introuvable'); return g; };
+    const roleIn = (g, n) => !n ? null : lc(g.owner) === lc(n) ? 'owner' : has(g.mods, n) ? 'mod' : has(g.members, n) ? 'member' : has(g.requests, n) ? 'pending' : has(g.invites, n) ? 'invited' : null;
+    const isMember = (g, n) => ['owner', 'mod', 'member'].includes(roleIn(g, n));
+    const canMod = (g, n) => ['owner', 'mod'].includes(roleIn(g, n));
+    const canRead = (g, n) => g.public || isMember(g, n);
+    const needMod = (g, by) => need(canMod(g, user(by).name), 'Réservé aux modérateurs de la communauté');
+    const seen = (p, n) => { if (!p || !p.group) return true; const g = db.groups.find(x => x.id === p.group); return !!g && canRead(g, n); };
+    const dropGroup = g => { // supprime la communauté, ses posts et leurs réponses
+      const gone = new Set(db.posts.filter(p => p.group === g.id).map(p => p.id));
+      db.posts = db.posts.filter(p => !gone.has(p.id)); db.reposts = db.reposts.filter(r => !gone.has(r.postId));
+      for (const u of Object.values(db.users)) if (u.bookmarks) u.bookmarks = u.bookmarks.filter(i => !gone.has(i));
+      db.notifs = db.notifs.filter(x => x.group !== g.id && !gone.has(x.postId));
+      db.groups = db.groups.filter(x => x !== g);
+    };
+    const makePost = (author, text, replyTo, images, poll, group) => {
         text = (text || '').trim(); images = cleanImages(images);
         need((text || images.length) && text.length <= 280, 'Message vide ou > 280 caractères');
         user(author); guard(author);
-        if (replyTo) { const tp = db.posts.find(p => p.id === replyTo); need(tp, 'Post introuvable'); need(!blockedBy(author, tp.author), 'Cet utilisateur vous a bloqué : réponse impossible'); }
+        let gid = group ? +group : null;
+        if (replyTo) { const tp = db.posts.find(p => p.id === replyTo); need(tp, 'Post introuvable'); need(!blockedBy(author, tp.author), 'Cet utilisateur vous a bloqué : réponse impossible'); if (tp.group) gid = tp.group; }
+        let g = null;
+        if (gid) { g = grp(gid); need(isMember(g, author), 'Rejoignez la communauté pour y publier'); }
         const p = { id: id(), author: user(author).name, text, at: now(), likes: [], replyTo: replyTo || null };
+        if (g) p.group = g.id;
         if (images.length) p.images = images;
         if (poll) {
           need(!replyTo, 'Un sondage ne peut pas être une réponse');
@@ -78,8 +97,9 @@
           p.poll = { options: opts.map(text => ({ text, votes: [] })), endsAt: now() + Math.round(min * 60000), closed: false };
         }
         db.posts.push(p);
-        if (replyTo) notify(db.posts.find(x => x.id === replyTo).author, p.author, 'reply', p.id);
-        for (const m of text.match(/@\w+/g) || []) { const t = db.users[m.slice(1).toLowerCase()]; if (t) notify(t.name, p.author, 'mention', p.id); }
+        const seeable = n => !g || isMember(g, n);
+        if (replyTo) { const to = db.posts.find(x => x.id === replyTo).author; if (seeable(to)) notify(to, p.author, 'reply', p.id); }
+        for (const m of text.match(/@\w+/g) || []) { const t = db.users[m.slice(1).toLowerCase()]; if (t && seeable(t.name)) notify(t.name, p.author, 'mention', p.id); }
       return p;
     };
 
@@ -169,7 +189,10 @@
         need(!u.admin, 'Le compte Streamer ne peut pas être supprimé');
         need(u.pass.includes('$') && u.pass === await hashPw(password || '', u.pass.split('$')[0]), 'Mot de passe incorrect');
         load(); u = user(name);
-        const n = u.name, gone = new Set(db.posts.filter(p => p.author === n).map(p => p.id));
+        const n = u.name;
+        for (const g of db.groups.filter(x => lc(x.owner) === lc(n))) dropGroup(g); // ses communautés disparaissent avec lui
+        for (const g of db.groups) for (const k of ['mods', 'members', 'requests', 'invites', 'banned']) g[k] = g[k].filter(x => lc(x) !== lc(n));
+        const gone = new Set(db.posts.filter(p => p.author === n).map(p => p.id));
         db.posts = db.posts.filter(p => !gone.has(p.id) && !gone.has(p.replyTo));
         for (const p of db.posts) p.likes = p.likes.filter(x => x !== n);
         for (const x of Object.values(db.users)) { x.following = x.following.filter(f => f !== n); for (const l of x.lists || []) l.members = l.members.filter(f => f !== n); }
@@ -189,11 +212,11 @@
         db.users[RESERVED] = { name: 'Streamer', pass, bio: 'Compte du stream 🔴', following: [], joined: now(), admin: true, display: 'Streamer', avatar: '#9146ff', banner: 'grad:0' };
         save(); return 'Streamer';
       },
-      post(author, text, replyTo, images, poll) { const p = makePost(author, text, replyTo, images, poll); save(); return p; },
+      post(author, text, replyTo, images, poll, group) { const p = makePost(author, text, replyTo, images, poll, group); save(); return p; },
       // vote unique par compte : le choix est définitif ; refusé une fois le sondage clos
       vote(by, postId, choice) {
         const u = user(by); guard(by);
-        const p = db.posts.find(x => x.id === postId); need(p && p.poll, 'Sondage introuvable');
+        const p = db.posts.find(x => x.id === postId); need(p && p.poll && seen(p, by), 'Sondage introuvable');
         need(!p.poll.closed && p.poll.endsAt > now(), 'Ce sondage est clos');
         need(Number.isInteger(choice) && p.poll.options[choice], 'Choix invalide');
         need(!p.poll.options.some(o => o.votes.includes(u.name)), 'Vous avez déjà voté');
@@ -209,7 +232,7 @@
       },
       deletePost(by, postId) {
         const p = db.posts.find(x => x.id === postId);
-        need(p && (p.author === by || (db.users[by.toLowerCase()] || {}).admin), 'Suppression interdite');
+        need(p && (p.author === by || (db.users[by.toLowerCase()] || {}).admin || (p.group && db.groups.some(g => g.id === p.group && canMod(g, by)))), 'Suppression interdite');
         const gone = new Set([postId, ...db.posts.filter(x => x.replyTo === postId).map(x => x.id)]);
         db.posts = db.posts.filter(x => !gone.has(x.id));
         db.reposts = db.reposts.filter(r => !gone.has(r.postId));
@@ -270,13 +293,13 @@
       },
       // favoris : liste personnelle (stockée sur le compte, partagée via le storage)
       toggleBookmark(by, postId) {
-        const u = user(by); need(db.posts.find(x => x.id === postId), 'Post introuvable');
+        const u = user(by); need(seen(db.posts.find(x => x.id === postId), by) && db.posts.find(x => x.id === postId), 'Post introuvable');
         const b = u.bookmarks = u.bookmarks || [], i = b.indexOf(postId);
         if (i >= 0) b.splice(i, 1); else b.push(postId);
         save(); return i < 0;
       },
       isBookmarked: (by, postId) => !!(((db.users[(by || '').toLowerCase()] || {}).bookmarks || []).includes(postId)),
-      bookmarks: by => (user(by).bookmarks || []).slice().reverse().map(i => db.posts.find(p => p.id === i)).filter(p => p && !hiddenFor(by, p.author)),
+      bookmarks: by => (user(by).bookmarks || []).slice().reverse().map(i => db.posts.find(p => p.id === i)).filter(p => p && seen(p, by) && !hiddenFor(by, p.author)),
       // ---- listes de comptes : nommées, privées (visibles par leur auteur seul) ou publiques ; chacune a son propre fil ----
       createList(by, name, isPublic) {
         const u = user(by); guard(by); name = String(name || '').trim().replace(/\s+/g, ' ');
@@ -310,12 +333,12 @@
       // fil dédié : posts racines des seuls comptes de la liste
       listFeed(by, owner, listId) {
         const l = api.list(owner, listId, by);
-        return db.posts.filter(p => !p.replyTo && has(l.members, p.author) && !hiddenFor(by, p.author)).sort((a, b) => b.id - a.id);
+        return db.posts.filter(p => !p.replyTo && !p.group && has(l.members, p.author) && !hiddenFor(by, p.author)).sort((a, b) => b.id - a.id);
       },
       // repartage sur son profil (posts racines des autres uniquement)
       toggleRepost(by, postId) {
         const me = user(by), p = db.posts.find(x => x.id === postId); need(p, 'Post introuvable');
-        need(!p.replyTo, 'Seuls les posts peuvent être repartagés');
+        need(!p.replyTo, 'Seuls les posts peuvent être repartagés'); need(!p.group, 'Les posts d’une communauté ne se repartagent pas');
         need(p.author !== me.name, 'Impossible de repartager son propre post'); guard(by);
         const i = db.reposts.findIndex(r => r.by === me.name && r.postId === postId);
         if (i >= 0) db.reposts.splice(i, 1); else { db.reposts.push({ id: id(), by: me.name, postId, at: now() }); notify(p.author, me.name, 'repost', postId); }
@@ -325,12 +348,12 @@
       hasReposted: (by, postId) => db.reposts.some(r => r.by.toLowerCase() === (by || '').toLowerCase() && r.postId === postId),
       // profil : posts + repartages, récents d'abord
       timeline(n, by) {
-        const own = db.posts.filter(p => !p.replyTo && p.author.toLowerCase() === n.toLowerCase()).map(p => ({ post: p, at: p.at, by: null }));
+        const own = db.posts.filter(p => !p.replyTo && !p.group && p.author.toLowerCase() === n.toLowerCase()).map(p => ({ post: p, at: p.at, by: null }));
         const rt = db.reposts.filter(r => r.by.toLowerCase() === n.toLowerCase()).map(r => ({ post: db.posts.find(p => p.id === r.postId), at: r.at, by: r.by })).filter(x => x.post);
         return vis(by, own.concat(rt), x => x.post.author).filter(x => !x.by || !hiddenFor(by, x.by)).sort((a, b) => b.at - a.at);
       },
       toggleLike(by, postId) {
-        const p = db.posts.find(x => x.id === postId); need(p, 'Post introuvable'); user(by); guard(by);
+        const p = db.posts.find(x => x.id === postId); need(p && seen(p, by), 'Post introuvable'); user(by); guard(by);
         const i = p.likes.indexOf(by);
         if (i >= 0) p.likes.splice(i, 1); else { p.likes.push(by); notify(p.author, by, 'like', postId); }
         save(); return p.likes.length;
@@ -346,33 +369,33 @@
       // fil : posts racines des gens suivis + les siens, récents d'abord
       feed(by) {
         const me = user(by);
-        return db.posts.filter(p => !p.replyTo && !hiddenFor(by, p.author) && (p.author === me.name || me.following.includes(p.author))).sort((a, b) => b.id - a.id);
+        return db.posts.filter(p => !p.replyTo && !p.group && !hiddenFor(by, p.author) && (p.author === me.name || me.following.includes(p.author))).sort((a, b) => b.id - a.id);
       },
-      explore: by => vis(by, db.posts.filter(p => !p.replyTo), p => p.author).sort((a, b) => b.id - a.id),
+      explore: by => vis(by, db.posts.filter(p => !p.replyTo && !p.group), p => p.author).sort((a, b) => b.id - a.id),
       replies: (postId, by) => vis(by, db.posts.filter(p => p.replyTo === postId), p => p.author).sort((a, b) => a.id - b.id),
-      byUser: (n, by) => vis(by, db.posts.filter(p => !p.replyTo && p.author.toLowerCase() === n.toLowerCase()), p => p.author).sort((a, b) => b.id - a.id),
+      byUser: (n, by) => vis(by, db.posts.filter(p => !p.replyTo && !p.group && p.author.toLowerCase() === n.toLowerCase()), p => p.author).sort((a, b) => b.id - a.id),
       search(q, by) {
         q = (q || '').trim().toLowerCase(); if (!q) return { users: [], posts: [] };
         return {
           users: vis(by, Object.values(db.users).filter(u => u.name.toLowerCase().includes(q)), u => u.name),
-          posts: vis(by, db.posts.filter(p => p.text.toLowerCase().includes(q)), p => p.author).sort((a, b) => b.id - a.id),
+          posts: vis(by, db.posts.filter(p => !p.group && p.text.toLowerCase().includes(q)), p => p.author).sort((a, b) => b.id - a.id),
         };
       },
       trending() {
         const c = {};
-        for (const p of db.posts) for (const t of p.text.match(/#\w+/g) || []) c[t.toLowerCase()] = (c[t.toLowerCase()] || 0) + 1;
+        for (const p of db.posts) if (!p.group) for (const t of p.text.match(/#\w+/g) || []) c[t.toLowerCase()] = (c[t.toLowerCase()] || 0) + 1;
         return Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 5);
       },
       // score d'un post : likes + réponses, pondérés par la fraîcheur (demi-vie ~3 h)
       score: p => scoreOf(p),
       // classement des posts « en tendance », meilleur score d'abord
       ranking(limit, by) {
-        return vis(by, db.posts.filter(p => !p.replyTo), p => p.author).map(p => ({ post: p, score: scoreOf(p) })).sort((a, b) => b.score - a.score).slice(0, limit || 5);
+        return vis(by, db.posts.filter(p => !p.replyTo && !p.group), p => p.author).map(p => ({ post: p, score: scoreOf(p) })).sort((a, b) => b.score - a.score).slice(0, limit || 5);
       },
       // hashtags du moment : score = somme des scores des posts qui les contiennent
       trendingLive(limit) {
         const c = {};
-        for (const p of db.posts) for (const t of new Set((p.text.match(/#\w+/g) || []).map(x => x.toLowerCase()))) { const e = c[t] || (c[t] = { tag: t, count: 0, score: 0 }); e.count++; e.score += scoreOf(p); }
+        for (const p of db.posts) if (!p.group) for (const t of new Set((p.text.match(/#\w+/g) || []).map(x => x.toLowerCase()))) { const e = c[t] || (c[t] = { tag: t, count: 0, score: 0 }); e.count++; e.score += scoreOf(p); }
         return Object.values(c).sort((a, b) => b.score - a.score).slice(0, limit || 8);
       },
       // profil éditable : pseudo affiché, bio, couleur d'avatar, bannière (URL d'image ou dégradé), lien web
@@ -395,7 +418,7 @@
         const u = user(by);
         return { format: 'cornichon-export', version: 1, exportedAt: now(),
           profile: { name: u.name, display: u.display || '', bio: u.bio || '', avatar: u.avatar || '', banner: u.banner || '', link: u.link || '', following: u.following.slice() },
-          posts: db.posts.filter(p => p.author === u.name).map(p => ({ text: p.text, at: p.at, replyTo: p.replyTo, images: p.images || [] })),
+          posts: db.posts.filter(p => p.author === u.name && !p.group).map(p => ({ text: p.text, at: p.at, replyTo: p.replyTo, images: p.images || [] })),
           messages: db.messages.filter(m => m.from === u.name || m.to === u.name).map(m => ({ from: m.from, to: m.to, text: m.text, at: m.at, images: m.images || [] })) };
       },
       // import : fusionne profil, abonnements, posts et messages (sans doublons) dans le compte courant
@@ -452,7 +475,7 @@
       // pagination par curseur (id décroissant) : scope « feed » (abonnements) ou « explore » ; `after` compte les posts plus récents
       page(by, scope, o) {
         o = o || {};
-        const all = scope === 'feed' ? api.feed(by) : scope === 'list' ? api.listFeed(by, o.owner, +o.list) : api.explore(by), limit = Math.min(50, Math.max(1, +o.limit || 10));
+        const all = scope === 'feed' ? api.feed(by) : scope === 'group' ? api.groupFeed(by, +o.group) : scope === 'list' ? api.listFeed(by, o.owner, +o.list) : api.explore(by), limit = Math.min(50, Math.max(1, +o.limit || 10));
         if (o.after) return { count: all.filter(p => p.id > +o.after).length };
         const rest = o.before ? all.filter(p => p.id < +o.before) : all;
         return { posts: rest.slice(0, limit), more: rest.length > limit, total: all.length };
@@ -558,6 +581,94 @@
         delete u.sanction; save();
       },
       sanctioned: by => { need(api.isAdmin(by), 'Réservé à l’administrateur'); return Object.values(db.users).filter(u => u.sanction && (u.sanction.type !== 'suspend' || u.sanction.until > now())).map(u => ({ name: u.name, sanction: u.sanction })); },
+      // ---- communautés thématiques : publiques (lisibles par tous, adhésion libre) ou privées (sur demande ou invitation) ----
+      createGroup(by, name, desc, rules, isPublic) {
+        const u = user(by); guard(by); name = String(name || '').trim().replace(/\s+/g, ' '); desc = String(desc || '').trim(); rules = String(rules || '').trim();
+        need(name.length >= 3 && name.length <= 40, 'Nom de communauté : 3 à 40 caractères');
+        need(!db.groups.some(g => lc(g.name) === lc(name)), 'Une communauté porte déjà ce nom');
+        need(desc.length <= 160, 'Description : 160 caractères max'); need(rules.length <= MAX_RULES, `Règles : ${MAX_RULES} caractères max`);
+        need(db.groups.filter(g => lc(g.owner) === lc(u.name)).length < MAX_OWN_GROUPS, `${MAX_OWN_GROUPS} communautés maximum par compte`);
+        const g = { id: id(), name, desc, rules, public: !!isPublic, owner: u.name, mods: [], members: [u.name], requests: [], invites: [], banned: [], at: now() };
+        db.groups.push(g); save(); return g;
+      },
+      // le propriétaire change tout ; les modérateurs ajustent la description et les règles
+      updateGroup(by, gid, o) {
+        const g = grp(gid), u = user(by); needMod(g, by); o = o || {}; guard(by);
+        if (o.name !== undefined || o.public !== undefined) need(roleIn(g, u.name) === 'owner', 'Réservé au propriétaire');
+        if (o.name !== undefined) {
+          const name = String(o.name).trim().replace(/\s+/g, ' '); need(name.length >= 3 && name.length <= 40, 'Nom de communauté : 3 à 40 caractères');
+          need(!db.groups.some(x => x !== g && lc(x.name) === lc(name)), 'Une communauté porte déjà ce nom'); g.name = name;
+        }
+        if (o.desc !== undefined) { const d = String(o.desc).trim(); need(d.length <= 160, 'Description : 160 caractères max'); g.desc = d; }
+        if (o.rules !== undefined) { const r = String(o.rules).trim(); need(r.length <= MAX_RULES, `Règles : ${MAX_RULES} caractères max`); g.rules = r; }
+        if (o.public !== undefined) { g.public = !!o.public; if (g.public) { for (const n of g.requests.splice(0)) { g.members.push(n); notify(n, u.name, 'group', null, { group: g.id, what: 'accepted' }); } } }
+        save(); return g;
+      },
+      deleteGroup(by, gid) { const g = grp(gid); need(roleIn(g, user(by).name) === 'owner' || api.isAdmin(by), 'Réservé au propriétaire'); dropGroup(g); save(); },
+      // public : adhésion immédiate ; privé : demande (ou acceptation directe si on a été invité)
+      joinGroup(by, gid) {
+        const g = grp(gid), u = user(by); guard(by); const r = roleIn(g, u.name);
+        need(!has(g.banned, u.name), 'Vous êtes banni de cette communauté');
+        need(r !== 'owner' && r !== 'mod' && r !== 'member', 'Vous êtes déjà membre');
+        if (g.public || r === 'invited') { g.invites = g.invites.filter(x => lc(x) !== lc(u.name)); g.members.push(u.name); save(); return 'member'; }
+        need(r !== 'pending', 'Demande déjà envoyée');
+        g.requests.push(u.name); for (const m of new Set([g.owner, ...g.mods])) notify(m, u.name, 'group', null, { group: g.id, what: 'request' });
+        save(); return 'pending';
+      },
+      // quitter la communauté ou retirer sa demande d'adhésion
+      leaveGroup(by, gid) {
+        const g = grp(gid), n = user(by).name; need(roleIn(g, n) !== 'owner', 'Le propriétaire ne peut pas quitter : supprimez la communauté');
+        for (const k of ['mods', 'members', 'requests']) g[k] = g[k].filter(x => lc(x) !== lc(n));
+        save();
+      },
+      handleRequest(by, gid, who, accept) {
+        const g = grp(gid), u = user(by); needMod(g, by); guard(by); const t = user(who);
+        need(has(g.requests, t.name), 'Aucune demande de ce compte');
+        g.requests = g.requests.filter(x => lc(x) !== lc(t.name));
+        if (accept) { g.members.push(t.name); notify(t.name, u.name, 'group', null, { group: g.id, what: 'accepted' }); }
+        save(); return !!accept;
+      },
+      // invitation : tout membre d'une communauté publique, les modérateurs seuls pour une privée
+      inviteToGroup(by, gid, target) {
+        const g = grp(gid), u = user(by), t = user(target); guard(by);
+        need(g.public ? isMember(g, u.name) : canMod(g, u.name), g.public ? 'Rejoignez la communauté pour inviter' : 'Seuls les modérateurs invitent dans une communauté privée');
+        need(!isMember(g, t.name), 'Déjà membre'); need(!has(g.banned, t.name), 'Ce compte est banni de la communauté');
+        need(!blockedBy(u.name, t.name) && !has(t.blocked, u.name), 'Invitation impossible'); need(!has(g.invites, t.name), 'Déjà invité');
+        if (has(g.requests, t.name)) { g.requests = g.requests.filter(x => lc(x) !== lc(t.name)); g.members.push(t.name); notify(t.name, u.name, 'group', null, { group: g.id, what: 'accepted' }); save(); return 'member'; }
+        g.invites.push(t.name); notify(t.name, u.name, 'group', null, { group: g.id, what: 'invite' }); save(); return 'invited';
+      },
+      respondInvite(by, gid, accept) {
+        const g = grp(gid), n = user(by).name; need(has(g.invites, n), 'Aucune invitation');
+        g.invites = g.invites.filter(x => lc(x) !== lc(n)); if (accept) { need(!has(g.banned, n), 'Vous êtes banni de cette communauté'); g.members.push(n); }
+        save(); return !!accept;
+      },
+      cancelInvite(by, gid, who) { const g = grp(gid); needMod(g, by); g.invites = g.invites.filter(x => lc(x) !== lc(who)); save(); },
+      // retirer un membre (avec ou sans bannissement) : les modérateurs ne touchent ni aux autres modérateurs ni au propriétaire
+      removeFromGroup(by, gid, who, ban) {
+        const g = grp(gid), me = user(by).name; needMod(g, by); const t = user(who), r = roleIn(g, t.name);
+        need(r !== 'owner', 'Le propriétaire ne peut pas être retiré'); need(r !== 'mod' || roleIn(g, me) === 'owner', 'Seul le propriétaire retire un modérateur');
+        need(r !== null || ban, 'Ce compte n’est pas dans la communauté');
+        for (const k of ['mods', 'members', 'requests', 'invites']) g[k] = g[k].filter(x => lc(x) !== lc(t.name));
+        if (ban && !has(g.banned, t.name)) g.banned.push(t.name);
+        if (r === 'member' || r === 'mod') notify(t.name, me, 'group', null, { group: g.id, what: ban ? 'banned' : 'removed' });
+        save();
+      },
+      unbanFromGroup(by, gid, who) { const g = grp(gid); needMod(g, by); g.banned = g.banned.filter(x => lc(x) !== lc(who)); save(); },
+      setGroupMod(by, gid, who, on) {
+        const g = grp(gid); need(roleIn(g, user(by).name) === 'owner', 'Réservé au propriétaire'); const t = user(who), r = roleIn(g, t.name);
+        need(r === 'member' || r === 'mod', 'Ce compte doit d’abord être membre');
+        g.mods = g.mods.filter(x => lc(x) !== lc(t.name)); if (on) { g.mods.push(t.name); notify(t.name, g.owner, 'group', null, { group: g.id, what: 'mod' }); }
+        save(); return !!on;
+      },
+      groups: () => db.groups.slice().sort((a, b) => b.members.length - a.members.length || a.name.localeCompare(b.name)),
+      group: gid => grp(gid),
+      groupRole: (by, gid) => roleIn(grp(gid), by),
+      myGroups: by => db.groups.filter(g => isMember(g, by)),
+      // fil dédié : posts racines de la communauté (lisible par tous si publique, par ses membres sinon)
+      groupFeed(by, gid) {
+        const g = grp(gid); need(canRead(g, by), 'Communauté privée : demandez à la rejoindre');
+        return db.posts.filter(p => p.group === g.id && !p.replyTo && !hiddenFor(by, p.author)).sort((a, b) => b.id - a.id);
+      },
       notifications(by, markRead) {
         const l = db.notifs.filter(n => n.to === user(by).name && !hiddenFor(by, n.from)).sort((a, b) => b.id - a.id);
         if (markRead) { l.forEach(n => (n.read = true)); save(); }
@@ -583,8 +694,17 @@
       else if (me.admin) Object.assign(pub, { sanction });
       users[k] = JSON.parse(JSON.stringify(pub));
     }
+    // communautés : les privées ne montrent leurs membres, posts et demandes qu'à leurs membres
+    const readable = new Set(), groups = db.groups.map(g => {
+      const r = g.owner === me.name ? 'owner' : g.mods.includes(me.name) ? 'mod' : g.members.includes(me.name) ? 'member' : null, mod = r === 'owner' || r === 'mod', full = !!r || g.public;
+      if (full) readable.add(g.id);
+      const c = JSON.parse(JSON.stringify(g));
+      if (!mod) { c.banned = []; c.requests = g.requests.filter(x => x === me.name); c.invites = g.invites.filter(x => x === me.name); }
+      if (!full) { c.members = []; c.mods = []; c.count = g.members.length; }
+      return c;
+    });
     return {
-      users, posts: db.posts, reposts: db.reposts, seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), attempts: {},
+      users, posts: db.posts.filter(p => !p.group || readable.has(p.group)), groups, reposts: db.reposts, seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), attempts: {},
       messages: db.messages.filter(m => m.from === me.name || m.to === me.name),
       notifs: db.notifs.filter(n => n.to === me.name),
       reports: me.admin ? db.reports : db.reports.filter(r => r.by === me.name).map(r => ({ id: r.id, postId: r.postId, by: r.by, status: r.status })),
