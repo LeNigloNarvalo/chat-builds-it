@@ -161,6 +161,26 @@ const snap = require('./social.js').snapshot(n.db(), 'carol'); assert.ok(!JSON.s
 console.log('ok');
 })().catch(e => { console.error(e); process.exit(1); });
 
+// brouillons, planification, historique des versions
+(async () => {
+  const assert = require('assert'), { Net } = require('./social.js');
+  const m = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
+  let clock = 2e12; const n = Net(m, () => clock); await n.signup('dora', 'pass1'); await n.signup('eli', 'pass2');
+  const d = n.saveDraft('dora', null, 'brouillon 1', []); assert.strictEqual(n.drafts('dora').length, 1);
+  assert.strictEqual(n.saveDraft('dora', d.id, 'brouillon 1 bis', [], {}).text, 'brouillon 1 bis'); assert.strictEqual(n.drafts('dora').length, 1);
+  assert.strictEqual(n.drafts('eli').length, 0); assert.throws(() => n.saveDraft('eli', d.id, 'vol', []), /introuvable/); assert.throws(() => n.deleteDraft('eli', d.id));
+  assert.throws(() => n.saveDraft('dora', d.id, 'x', [], { scheduledAt: clock - 1 }), /futur/);
+  n.saveDraft('dora', d.id, 'planifié', [], { scheduledAt: clock + 60000 });
+  assert.strictEqual(n.publishDue(), 0); assert.strictEqual(n.explore().length, 0);
+  clock += 60001; assert.strictEqual(n.publishDue(), 1); assert.strictEqual(n.explore()[0].text, 'planifié'); assert.strictEqual(n.drafts('dora').length, 0);
+  const d2 = n.saveDraft('dora', null, 'à publier', []); assert.strictEqual(n.publishDraft('dora', d2.id).text, 'à publier');
+  assert.strictEqual(n.saveDraft('dora', n.saveDraft('dora', null, 'tmp', []).id, '', []), null); assert.strictEqual(n.drafts('dora').length, 0); // vidé = supprimé
+  assert.ok(!JSON.stringify(require('./social.js').snapshot(n.db(), 'eli')).includes('drafts":[{'));
+  const p = n.explore()[0]; n.editPost('dora', p.id, 'v2'); n.editPost('dora', p.id, 'v3');
+  assert.deepStrictEqual(n.db().posts.find(x => x.id === p.id).history.map(h => h.text), ['à publier', 'v2']);
+  console.log('ok brouillons');
+})().catch(e => { console.error(e); process.exit(1); });
+
 // nombre d'or : la feuille de style et l'en-tête l'appliquent
 {
   const fs = require('fs'), css = fs.readFileSync(__dirname + '/style.css', 'utf8'), html = fs.readFileSync(__dirname + '/index.html', 'utf8');

@@ -35,7 +35,7 @@ const GRADS = ['linear-gradient(135deg,#9146ff,#ff4d8d)', 'linear-gradient(135de
 const bannerCss = b => !b ? GRADS[0] : b.startsWith('grad:') ? GRADS[+b.slice(5)] : `center/cover url("${encodeURI(b).replace(/"/g, '%22')}"), ${GRADS[4]}`;
 const peopleList = names => names.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)} · ${esc(prof(n).bio || '')}</span></div>`).join('') || '<p class="mut">Personne pour l’instant.</p>';
 const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'à l’instant' : m < 60 ? m + ' min' : m < 1440 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' j'; };
-const go = (page, arg) => { view = { page, arg }; pend.post = []; pend.dm = []; fs.scope = null; render(); };
+const go = (page, arg) => { view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
 // ---- fil paginé côté serveur (/api/feed) : pages de 10 posts, défilement infini, bandeau « N nouveaux posts » ----
 const PAGE = 10, fs = { scope: null, who: null, ids: [], more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: 0 };
 const feedScope = () => me && (view.page === 'feed' || view.page === 'explore') ? view.page : null;
@@ -126,9 +126,9 @@ const openSession = name => { me = name; };
 function postHTML(p, thread) {
   const liked = me && p.likes.includes(me), n = net.replies(p.id, me).length, editing = view.editing === p.id && net.canEdit(me, p.id);
   const saved = net.isBookmarked(me, p.id), rp = net.hasReposted(me, p.id), rc = net.repostCount(p.id), hist = p.history || [];
-  const edited = p.editedAt ? `<button class="lnk" data-hist="${p.id}" aria-expanded="${view.hist === p.id}">modifié</button>` : '';
-  const histHTML = p.editedAt && view.hist === p.id ? `<div class="hist"><b>Historique des modifications</b>${hist.map(h => `<div class="mut">${ago(h.at)} · ${esc(h.text)}</div>`).join('')}<div>Actuel · ${esc(p.text)}</div></div>` : '';
-  const body = editing ? `<textarea id="edit-txt" maxlength="280">${esc(p.text)}</textarea><button data-saveedit="${p.id}">💾 Enregistrer</button> <button data-canceledit>Annuler</button> <span class="mut">${Math.ceil(net.editLeft(p.id) / 60000)} min restantes</span>` : `${p.text ? `<p>${rich(p.text)}</p>` : ''}${gallery(p.images, 'p', p.id)}`;
+  const edited = p.editedAt ? `<button class="lnk" data-hist="${p.id}" aria-expanded="${view.hist === p.id}">modifié · v${hist.length + 1}</button>` : '';
+  const histHTML = p.editedAt && view.hist === p.id ? `<div class="hist"><b>Historique des modifications</b>${hist.map((h, i) => `<div class="mut">v${i + 1} · ${ago(h.at)} · ${esc(h.text)} ${net.canEdit(me, p.id) ? `<button class="lnk" data-restore="${p.id}:${i}">restaurer</button>` : ''}</div>`).join('')}<div>v${hist.length + 1} (actuelle) · ${esc(p.text)}</div></div>` : '';
+  const body = editing ? `<textarea id="edit-txt" maxlength="280">${esc(view.restore && view.restore.id === p.id ? view.restore.text : p.text)}</textarea><button data-saveedit="${p.id}">💾 Enregistrer</button> <button data-canceledit>Annuler</button> <span class="mut">${Math.ceil(net.editLeft(p.id) / 60000)} min restantes</span>` : `${p.text ? `<p>${rich(p.text)}</p>` : ''}${gallery(p.images, 'p', p.id)}`;
   return `<div class="card post">${av(p.author)}<span class="who" data-user="${p.author}">${esc(shown(p.author))}</span> <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span> ${edited}
   ${body}${histHTML}${view.reporting === p.id ? reportForm(p.id) : ''}<div class="acts"><button data-like="${p.id}" class="${liked ? 'on' : ''}">♥ ${p.likes.length}</button>
   <button data-open="${p.id}">💬 ${n}</button>${!p.replyTo && p.author !== me ? `<button data-repost="${p.id}" class="${rp ? 'on' : ''}" aria-pressed="${rp}" aria-label="${rp ? 'Annuler le repartage' : 'Repartager sur mon profil'}">🔁 ${rc}</button>` : rc ? `<span class="mut">🔁 ${rc}</span>` : ''}
@@ -151,7 +151,41 @@ function modPage(e) {
   `<div class="card"><b>Comptes sanctionnés</b>${sl.map(x => `<div class="row"><span>@${esc(x.name)} · ${sancLabel(x.sanction)}</span><button data-lift="${esc(x.name)}">Lever</button></div>`).join('') || '<p class="mut">Aucun.</p>'}</div>
   <div class="card"><b>Historique</b>${hist.map(r => `<div class="mut">#${r.postId} @${esc(r.target)} · ${esc(R[r.reason] || r.reason)} → ${({ dismiss: 'sans suite', delete: 'post supprimé', warn: 'avertissement', suspend: 'suspension', ban: 'bannissement' })[r.action]} (${ago(r.closedAt)})</div>`).join('') || '<p class="mut">Vide.</p>'}</div>`;
 }
-const composer = (ph, reply) => `<div class="card"><textarea id="txt" maxlength="280" placeholder="${ph}"></textarea>${attachBox('post')}<button data-send="${reply || ''}">Publier</button></div>`;
+let curDraft = null, draftMsg = '';
+const dtimers = {};
+const localInput = ms => { const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60000); return d.toISOString().slice(0, 16); };
+const when = ms => new Date(ms).toLocaleString('fr-FR', { dateStyle: 'full', timeStyle: 'short' });
+const composer = (ph, reply) => reply ? `<div class="card"><textarea id="txt" maxlength="280" placeholder="${ph}"></textarea>${attachBox('post')}<button data-send="${reply}">Publier</button></div>`
+  : `<div class="card"><textarea id="txt" data-draft="new" maxlength="280" placeholder="${ph}"></textarea>${attachBox('post')}<div class="row"><button data-send="">Publier</button>
+  <label class="inl">ou le <input type="datetime-local" id="plan-at" aria-label="Date de publication planifiée" value="${localInput(Date.now() + 3600000)}"></label><button data-plan>📅 Planifier</button></div>
+  <p class="mut" id="dr-note" role="status">Brouillon enregistré automatiquement · <button class="lnk" data-page="drafts">voir mes brouillons</button></p></div>`;
+function draftsPage(e) {
+  const ds = net.drafts(me), sch = ds.filter(d => d.scheduledAt), plain = ds.filter(d => !d.scheduledAt);
+  const item = d => `<div class="card draft"><textarea id="dr-txt-${d.id}" data-draft="${d.id}" maxlength="280" aria-label="Texte du brouillon">${esc(d.text)}</textarea>
+    ${d.images && d.images.length ? `<p class="mut">📷 ${d.images.length} image${d.images.length > 1 ? 's' : ''} jointe${d.images.length > 1 ? 's' : ''}</p>` : ''}
+    ${d.scheduledAt ? `<p class="ok">📅 Publication prévue le ${esc(when(d.scheduledAt))} (heure du serveur)</p>` : ''}${d.failed ? `<p class="err">${esc(d.failed)}</p>` : ''}
+    <div class="row"><label class="inl">Date <input type="datetime-local" id="dr-at-${d.id}" value="${localInput(d.scheduledAt || Date.now() + 3600000)}"></label>
+    <button data-drplan="${d.id}">${d.scheduledAt ? '📅 Replanifier' : '📅 Planifier'}</button>${d.scheduledAt ? `<button data-drunplan="${d.id}">⏹ Déprogrammer</button>` : ''}
+    <button data-drpub="${d.id}">🚀 Publier maintenant</button><button data-drdel="${d.id}">🗑 Supprimer</button></div>
+    <span class="mut">enregistré ${ago(d.updatedAt)}</span></div>`;
+  return `<div class="card"><h2>📝 Brouillons & publications planifiées</h2><p class="mut">Ce que tu écris est sauvegardé automatiquement. Une publication planifiée part à l’heure choisie, même si tu fermes le navigateur : c’est le serveur qui s’en charge.</p><p class="ok" role="status">${esc(draftMsg)}</p></div>${e}` + composer('Écris un nouveau brouillon…')
+    + `<div class="card"><b>📅 Planifiés (${sch.length})</b></div>` + (sch.map(item).join('') || '<p class="mut">Aucune publication planifiée.</p>')
+    + `<div class="card"><b>📝 Brouillons (${plain.length})</b></div>` + (plain.map(item).join('') || '<p class="mut">Aucun brouillon.</p>');
+}
+// enregistrement automatique 0,8 s après la dernière frappe (relit puis écrit côté serveur)
+async function saveNow(k) {
+  const t = document.querySelector(`[data-draft="${k}"]`), note = $('#dr-note'); if (!t || !me) return;
+  const id = k === 'new' ? curDraft : +k, old = id ? net.drafts(me).find(x => x.id === id) : null;
+  try {
+    const d = await net.saveDraft(me, id, t.value, k === 'new' ? pend.post : (old ? old.images : []), {});
+    if (k === 'new') curDraft = d ? d.id : null;
+    if (note && k === 'new') note.innerHTML = d ? 'Brouillon enregistré ✔ <button class="lnk" data-page="drafts">voir mes brouillons</button>' : 'Brouillon automatique · <button class="lnk" data-page="drafts">voir mes brouillons</button>';
+  } catch (e) { if (note) note.textContent = 'Brouillon non enregistré : ' + e.message; }
+}
+document.addEventListener('input', ev => {
+  const k = ev.target.dataset && ev.target.dataset.draft; if (!k || !me) return;
+  clearTimeout(dtimers[k]); dtimers[k] = setTimeout(() => saveNow(k), 800);
+});
 
 function render() {
   const nav = $('#nav'), app = $('#app');
@@ -183,7 +217,7 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['dm', `✉️ Messages ${unreadDm.total || ''}`], ['profile', '👤 Profil'], ['theme', '🎨 Thème'], ['settings', '⚙️ Réglages'], ['blocks', '🚫 Bloqués'], ['security', '🔒 Sécurité'], ['diag', '✅ Vérification']].concat(net.isAdmin(me) ? [['mod', `🛡 Modération ${net.queue(me).length || ''}`]] : [])
+  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['drafts', `📝 Brouillons ${net.drafts(me).length || ''}`], ['dm', `✉️ Messages ${unreadDm.total || ''}`], ['profile', '👤 Profil'], ['theme', '🎨 Thème'], ['settings', '⚙️ Réglages'], ['blocks', '🚫 Bloqués'], ['security', '🔒 Sécurité'], ['diag', '✅ Vérification']].concat(net.isAdmin(me) ? [['mod', `🛡 Modération ${net.queue(me).length || ''}`]] : [])
     .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
   const mySanc = net.sanctionOf(me);
@@ -202,6 +236,8 @@ function render() {
     const medal = i => ['🥇', '🥈', '🥉'][i] || `#${i + 1}`;
     h = `<div class="card"><b>🔴 En direct · hashtags du moment</b><ol class="trend">${net.trendingLive().map(t => `<li><span class="tag" data-search="${t.tag}">${t.tag}</span> <span class="mut">${t.count} post${t.count > 1 ? 's' : ''}</span><i class="bar" style="width:${Math.max(6, Math.round(t.score / (net.trendingLive(1)[0].score || 1) * 100))}%"></i></li>`).join('') || '<li class="mut">aucun hashtag</li>'}</ol></div>
     <div class="card"><b>🏆 Classement des posts</b></div>` + net.ranking(6, me).map((r, i) => `<div class="rank"><span class="medal">${medal(i)}</span>${postHTML(r.post)}<span class="mut">score ${r.score.toFixed(1)}</span></div>`).join('') + (e || '');
+  } else if (view.page === 'drafts') {
+    h = draftsPage(e);
   } else if (view.page === 'bookmarks') {
     h = `<div class="card"><h2>🔖 Mes favoris</h2><p class="mut">Les posts que tu as mis de côté (visibles par toi seul).</p></div>${e}` + list(net.bookmarks(me));
   } else if (view.page === 'search') {
@@ -369,7 +405,7 @@ function themeClick(D, v) {
 }
 
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift]');
+  const d = ev.target.closest('*[data-page],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
   if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
@@ -410,16 +446,36 @@ document.addEventListener('click', ev => {
   else if ('rmimg' in D) { const [k, i] = D.rmimg.split(':'); pend[k].splice(+i, 1); err = ''; refresh(); }
   else if ('lbclose' in D) closeLb();
   else if ('lbnav' in D) { lb.i = (lb.i + +D.lbnav + lb.images.length) % lb.images.length; lightbox(); }
-  else if ('page' in D) { err = ''; notice = ''; go(D.page); $('#app').focus(); }
-  else if ('send' in D) attempt(async () => { await net.post(me, v('#txt'), D.send ? +D.send : null, pend.post); pend.post = []; if (feedScope()) feedLoad(true); });
+  else if ('page' in D) { err = ''; notice = ''; draftMsg = ''; go(D.page); $('#app').focus(); }
+  else if ('send' in D) attempt(async () => {
+    clearTimeout(dtimers.new); await net.post(me, v('#txt'), D.send ? +D.send : null, pend.post); pend.post = [];
+    if (!D.send && curDraft) { const id = curDraft; curDraft = null; await net.deleteDraft(me, id).catch(() => {}); }
+    if (feedScope()) feedLoad(true);
+  });
+  else if ('plan' in D) attempt(async () => {
+    const at = new Date(v('#plan-at')).getTime(); if (!at) throw new Error('Choisissez une date de publication');
+    clearTimeout(dtimers.new); await net.saveDraft(me, curDraft, v('#txt'), pend.post, { scheduledAt: at });
+    curDraft = null; pend.post = []; draftMsg = 'Publication planifiée ✔ le ' + when(at); go('drafts');
+  });
+  else if ('drplan' in D) attempt(async () => {
+    const id = +D.drplan, at = new Date(v('#dr-at-' + id)).getTime(); if (!at) throw new Error('Choisissez une date de publication');
+    clearTimeout(dtimers[id]); await net.saveDraft(me, id, v('#dr-txt-' + id), net.drafts(me).find(x => x.id === id).images, { scheduledAt: at }); draftMsg = 'Publication planifiée ✔ le ' + when(at);
+  });
+  else if ('drunplan' in D) attempt(async () => { const id = +D.drunplan; await net.saveDraft(me, id, v('#dr-txt-' + id), net.drafts(me).find(x => x.id === id).images, { scheduledAt: null }); draftMsg = 'Planification retirée ✔'; });
+  else if ('drpub' in D) attempt(async () => {
+    const id = +D.drpub; clearTimeout(dtimers[id]); await net.saveDraft(me, id, v('#dr-txt-' + id), net.drafts(me).find(x => x.id === id).images, {});
+    await net.publishDraft(me, id); draftMsg = 'Brouillon publié ✔';
+  });
+  else if ('drdel' in D) attempt(async () => { clearTimeout(dtimers[+D.drdel]); await net.deleteDraft(me, +D.drdel); draftMsg = 'Brouillon supprimé ✔'; });
+  else if ('restore' in D) { const [i, j] = D.restore.split(':'), p = net.db().posts.find(x => x.id === +i); if (p) { view.editing = p.id; view.hist = p.id; view.restore = { id: p.id, text: p.history[+j].text }; render(); } }
   else if ('newposts' in D) { feedLoad(true); window.scrollTo({ top: 0 }); }
   else if ('more' in D) feedLoad();
   else if ('like' in D) attempt(() => net.toggleLike(me, +D.like));
   else if ('bm' in D) attempt(() => net.toggleBookmark(me, +D.bm));
   else if ('repost' in D) attempt(() => net.toggleRepost(me, +D.repost));
   else if ('edit' in D) { view.editing = +D.edit; render(); const t = $('#edit-txt'); if (t) t.focus(); }
-  else if ('canceledit' in D) { view.editing = null; render(); }
-  else if ('saveedit' in D) attempt(async () => { await net.editPost(me, +D.saveedit, v('#edit-txt')); view.editing = null; });
+  else if ('canceledit' in D) { view.editing = null; view.restore = null; render(); }
+  else if ('saveedit' in D) attempt(async () => { await net.editPost(me, +D.saveedit, v('#edit-txt')); view.editing = null; view.restore = null; });
   else if ('hist' in D) { view.hist = view.hist === +D.hist ? null : +D.hist; render(); }
   else if ('report' in D) { view.reporting = +D.report; err = ''; render(); const x = $('#rp-reason'); if (x) x.focus(); }
   else if ('cancelreport' in D) { view.reporting = null; render(); }

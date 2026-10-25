@@ -101,13 +101,21 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   assert.strictEqual((await call('/api/login', null, { name: 'alice', password: 'nouveau1' })).status, 400);
   const np3 = await call('/api/login', null, { name: 'alice', password: 'reinit99' }); assert.ok(np3.token);
   np2.token = np3.token;
+  // brouillons privés + publication planifiée par l'horloge du serveur
+  const at = Date.now() + 1200;
+  const dr = await act(np2.token, 'saveDraft', null, 'programmé !', [], { scheduledAt: at }); assert.ok(dr.result.id);
+  assert.strictEqual((await call('/api/state?v=-1', b.token)).state.drafts.length, 0);
+  assert.strictEqual((await call('/api/state?v=-1', np2.token)).state.drafts.length, 1);
+  await new Promise(ok => setTimeout(ok, 1500));
+  s = await call('/api/state?v=-1', np2.token); assert.strictEqual(s.state.drafts.length, 0); assert.ok(s.state.posts.some(x => x.text === 'programmé !'));
+  assert.strictEqual((await act(np2.token, 'publishDue')).status, 400);
   // persistance : redémarrage sur le même fichier
   const raw = fs.readFileSync(dbFile); assert.ok(!raw.includes('secret2') && !raw.includes('nouveau1'));
   await new Promise(ok => server.close(ok));
   const s2 = createServer({ db: dbFile, authPerMin: 1000 }); await new Promise(ok => s2.listen(0, '127.0.0.1', ok));
   const base2 = 'http://127.0.0.1:' + s2.address().port;
   const r = await (await fetch(base2 + '/api/state?v=-1', { headers: { Authorization: 'Bearer ' + b.token } })).json();
-  assert.strictEqual(r.me, 'bob'); assert.strictEqual(r.state.posts.length, 14);
+  assert.strictEqual(r.me, 'bob'); assert.strictEqual(r.state.posts.length, 15);
   await new Promise(ok => s2.close(ok)); fs.rmSync(dir, { recursive: true });
   console.log('ok serveur');
 })().catch(e => { console.error(e); process.exit(1); });

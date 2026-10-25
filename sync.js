@@ -1,7 +1,7 @@
 // Client de synchronisation : le navigateur ne garde qu'une copie en lecture de SA vue des données (envoyée par le serveur) ;
 // toute modification passe par l'API et la session (clé « app.session », propre à chaque visiteur) prouve qui agit.
 (function (root) {
-  const WRITES = ['post', 'deletePost', 'editPost', 'toggleBookmark', 'toggleRepost', 'toggleLike', 'toggleFollow', 'updateProfile', 'importUser', 'send', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'exportUser', 'markDmRead'];
+  const WRITES = ['post', 'deletePost', 'editPost', 'toggleBookmark', 'toggleRepost', 'toggleLike', 'toggleFollow', 'updateProfile', 'importUser', 'send', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'exportUser', 'markDmRead', 'saveDraft', 'deleteDraft', 'publishDraft'];
   function Sync(store, SESSION) {
     const replica = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = String(v); }, removeItem(k) { delete this.d[k]; } };
     const base = Social.Net(replica);

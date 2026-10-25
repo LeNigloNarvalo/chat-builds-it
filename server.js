@@ -7,7 +7,7 @@ const Social = require('./social.js');
 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
-const ACTIONS = new Set(['post', 'deletePost', 'editPost', 'toggleBookmark', 'toggleRepost', 'toggleLike', 'toggleFollow', 'updateProfile', 'importUser', 'send', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'exportUser', 'markDmRead']);
+const ACTIONS = new Set(['post', 'deletePost', 'editPost', 'toggleBookmark', 'toggleRepost', 'toggleLike', 'toggleFollow', 'updateProfile', 'importUser', 'send', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'exportUser', 'markDmRead', 'saveDraft', 'deleteDraft', 'publishDraft']);
 const STATIC = new Set(['index.html', 'style.css', 'a11y.js', 'theme.js', 'social.js', 'sync.js', 'diag.js', 'app.js']);
 const TYPES = { html: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8' };
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
@@ -36,6 +36,10 @@ function createServer(opts = {}) {
     setImmediate(() => { announced = false; if (live.size) { const v = version(); for (const c of live) emit(c, 'update', { version: v }); } });
   }
   const beat = setInterval(() => { for (const c of live) { try { c.res.write(': ♥\n\n'); } catch (e) { live.delete(c); } } }, 25000); beat.unref();
+
+  // ---- publication planifiée : l'horloge du serveur publie les brouillons dont la date est arrivée ----
+  const tick = () => { try { net.publishDue(); } catch (e) { console.error('Publication planifiée :', e); } };
+  const sched = setInterval(tick, 5000); sched.unref(); tick();
 
   // ---- sessions ----
   const insS = db.prepare('INSERT INTO sessions (hash, name, epoch, created, expires) VALUES (?, ?, ?, ?, ?)'), getS = db.prepare('SELECT * FROM sessions WHERE hash = ?'),
@@ -129,6 +133,7 @@ function createServer(opts = {}) {
     }
     const me = auth(req); if (!me) throw new Http(401, 'Session expirée : reconnectez-vous');
     if (route === 'GET /api/state') {
+      tick();
       const v = version();
       if (+url.searchParams.get('v') === v) return send(res, 200, { unchanged: true, version: v, me: me.name });
       return send(res, 200, { version: v, me: me.name, state: Social.snapshot(net.db(), me.name) });
@@ -189,7 +194,7 @@ function createServer(opts = {}) {
       send(res, e.code >= 400 ? e.code : e.constructor === Error ? 400 : 500, { error: e.code >= 400 || e.constructor === Error ? e.message : 'Erreur interne du serveur : réessayez dans un instant' });
     }
   });
-  server.on('close', () => { clearInterval(beat); for (const c of live) c.res.end(); live.clear(); db.close(); });
+  server.on('close', () => { clearInterval(beat); clearInterval(sched); for (const c of live) c.res.end(); live.clear(); db.close(); });
   return server;
 }
 

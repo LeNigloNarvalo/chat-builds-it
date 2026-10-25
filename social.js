@@ -2,8 +2,8 @@
 // Chaque appel relit le storage (lecture-modification-écriture) : aucune copie ancienne n'est conservée en mémoire.
 (function (root) {
   const KEY = 'twitchgram.v1';
-  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], seq: 1, attempts: Object.create(null) });
-  const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000;
+  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], drafts: [], seq: 1, attempts: Object.create(null) });
+  const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_AHEAD_MS = 366 * 86400000;
 
   const RESERVED = 'streamer';
   // signalements : motifs, sanctions de modération (durée de suspension en heures)
@@ -59,6 +59,20 @@
     const blockedBy = (author, target) => has((db.users[lc(target)] || {}).blocked, author);
     const vis = (by, list, get) => by ? list.filter(x => !hiddenFor(by, get(x))) : list;
     const scoreOf = p => { const h = Math.max(0, now() - p.at) / 36e5; return (1 + p.likes.length * 2 + db.posts.filter(r => r.replyTo === p.id).length * 3) * Math.pow(0.5, h / 3); };
+
+    // création d'un post (sans sauvegarde) : partagée par la publication directe, les brouillons et la publication planifiée
+    const makePost = (author, text, replyTo, images) => {
+        text = (text || '').trim(); images = cleanImages(images);
+        need((text || images.length) && text.length <= 280, 'Message vide ou > 280 caractères');
+        user(author); guard(author);
+        if (replyTo) { const tp = db.posts.find(p => p.id === replyTo); need(tp, 'Post introuvable'); need(!blockedBy(author, tp.author), 'Cet utilisateur vous a bloqué : réponse impossible'); }
+        const p = { id: id(), author: user(author).name, text, at: now(), likes: [], replyTo: replyTo || null };
+        if (images.length) p.images = images;
+        db.posts.push(p);
+        if (replyTo) notify(db.posts.find(x => x.id === replyTo).author, p.author, 'reply', p.id);
+        for (const m of text.match(/@\w+/g) || []) { const t = db.users[m.slice(1).toLowerCase()]; if (t) notify(t.name, p.author, 'mention', p.id); }
+      return p;
+    };
 
     const api = {
       db: () => db,
@@ -148,7 +162,7 @@
         db.posts = db.posts.filter(p => !gone.has(p.id) && !gone.has(p.replyTo));
         for (const p of db.posts) p.likes = p.likes.filter(x => x !== n);
         for (const x of Object.values(db.users)) x.following = x.following.filter(f => f !== n);
-        db.messages = db.messages.filter(m => m.from !== n && m.to !== n);
+        db.messages = db.messages.filter(m => m.from !== n && m.to !== n); db.drafts = db.drafts.filter(d => d.author !== n);
         db.reposts = db.reposts.filter(r => r.by !== n && !gone.has(r.postId));
         db.reports = db.reports.filter(r => r.by !== n && r.target !== n);
         for (const x of Object.values(db.users)) { if (x.blocked) x.blocked = x.blocked.filter(f => f !== n); if (x.muted) x.muted = x.muted.filter(f => f !== n); }
@@ -164,18 +178,7 @@
         db.users[RESERVED] = { name: 'Streamer', pass, bio: 'Compte du stream 🔴', following: [], joined: now(), admin: true, display: 'Streamer', avatar: '#9146ff', banner: 'grad:0' };
         save(); return 'Streamer';
       },
-      post(author, text, replyTo, images) {
-        text = (text || '').trim(); images = cleanImages(images);
-        need((text || images.length) && text.length <= 280, 'Message vide ou > 280 caractères');
-        user(author); guard(author);
-        if (replyTo) { const tp = db.posts.find(p => p.id === replyTo); need(tp, 'Post introuvable'); need(!blockedBy(author, tp.author), 'Cet utilisateur vous a bloqué : réponse impossible'); }
-        const p = { id: id(), author: user(author).name, text, at: now(), likes: [], replyTo: replyTo || null };
-        if (images.length) p.images = images;
-        db.posts.push(p);
-        if (replyTo) notify(db.posts.find(x => x.id === replyTo).author, p.author, 'reply', p.id);
-        for (const m of text.match(/@\w+/g) || []) { const t = db.users[m.slice(1).toLowerCase()]; if (t) notify(t.name, p.author, 'mention', p.id); }
-        save(); return p;
-      },
+      post(author, text, replyTo, images) { const p = makePost(author, text, replyTo, images); save(); return p; },
       deletePost(by, postId) {
         const p = db.posts.find(x => x.id === postId);
         need(p && (p.author === by || (db.users[by.toLowerCase()] || {}).admin), 'Suppression interdite');
@@ -199,6 +202,44 @@
       },
       canEdit: (by, postId) => { const p = db.posts.find(x => x.id === postId); return !!(p && by && p.author.toLowerCase() === by.toLowerCase() && now() - p.at <= EDIT_MS); },
       editLeft: postId => { const p = db.posts.find(x => x.id === postId); return p ? Math.max(0, p.at + EDIT_MS - now()) : 0; },
+      // ---- brouillons & publication planifiée : privés à l'auteur, enregistrés automatiquement ----
+      // opts.scheduledAt : absent = inchangé, null = retire la planification, nombre = date de publication (ms, dans le futur)
+      saveDraft(by, draftId, text, images, opts) {
+        const u = user(by); text = String(text || '').trim(); images = cleanImages(images); opts = opts || {};
+        need(text.length <= 280, 'Plus de 280 caractères');
+        let d = draftId ? db.drafts.find(x => x.id === draftId) : null;
+        if (draftId) need(d && d.author === u.name, 'Brouillon introuvable');
+        if (!text && !images.length) { if (d) { db.drafts = db.drafts.filter(x => x !== d); save(); } return null; } // brouillon vidé = supprimé
+        if (!d) { need(db.drafts.filter(x => x.author === u.name).length < MAX_DRAFTS, `${MAX_DRAFTS} brouillons maximum`); d = { id: id(), author: u.name, text: '', images: [], scheduledAt: null }; db.drafts.push(d); }
+        if ('scheduledAt' in opts) {
+          const t = opts.scheduledAt;
+          if (t === null) d.scheduledAt = null;
+          else { need(Number.isFinite(+t) && +t > now(), 'La date de publication doit être dans le futur'); need(+t <= now() + MAX_AHEAD_MS, 'Planification limitée à un an'); need(text || images.length, 'Message vide'); guard(by); d.scheduledAt = Math.round(+t); }
+          delete d.failed;
+        }
+        d.text = text; d.images = images; d.updatedAt = now();
+        save(); return d;
+      },
+      drafts: by => db.drafts.filter(d => d.author.toLowerCase() === lc(by)).sort((a, b) => (a.scheduledAt || Infinity) - (b.scheduledAt || Infinity) || b.updatedAt - a.updatedAt),
+      deleteDraft(by, draftId) {
+        const d = db.drafts.find(x => x.id === draftId); need(d && d.author === user(by).name, 'Brouillon introuvable');
+        db.drafts = db.drafts.filter(x => x !== d); save();
+      },
+      publishDraft(by, draftId) {
+        const d = db.drafts.find(x => x.id === draftId); need(d && d.author === user(by).name, 'Brouillon introuvable');
+        const p = makePost(d.author, d.text, null, d.images); db.drafts = db.drafts.filter(x => x !== d); save(); return p;
+      },
+      // appelée par le serveur (horloge du serveur) : publie les brouillons dont la date est arrivée ; un échec (compte suspendu…) rend le brouillon à son auteur
+      publishDue() {
+        let n = 0, changed = false;
+        for (const d of db.drafts.slice()) {
+          if (!d.scheduledAt || d.scheduledAt > now()) continue;
+          try { makePost(d.author, d.text, null, d.images); db.drafts = db.drafts.filter(x => x !== d); n++; }
+          catch (e) { d.scheduledAt = null; d.failed = 'Publication planifiée échouée : ' + e.message; changed = true; }
+        }
+        if (n || changed) save();
+        return n;
+      },
       // favoris : liste personnelle (stockée sur le compte, partagée via le storage)
       toggleBookmark(by, postId) {
         const u = user(by); need(db.posts.find(x => x.id === postId), 'Post introuvable');
@@ -456,7 +497,7 @@
       users[k] = JSON.parse(JSON.stringify(pub));
     }
     return {
-      users, posts: db.posts, reposts: db.reposts, seq: db.seq, attempts: {},
+      users, posts: db.posts, reposts: db.reposts, seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), attempts: {},
       messages: db.messages.filter(m => m.from === me.name || m.to === me.name),
       notifs: db.notifs.filter(n => n.to === me.name),
       reports: me.admin ? db.reports : db.reports.filter(r => r.by === me.name).map(r => ({ id: r.id, postId: r.postId, by: r.by, status: r.status })),
