@@ -1115,7 +1115,7 @@ function renderPage() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['fts', '⚡ Recherche rapide'], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['media', `🖼 Médias ${net.media(me).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['qa', `❓ Questions ${net.questions(me, 'open').length || ''}`], ['orgs', `🏢 Pages ${net.orgInvites(me).length + net.myOrgs(me).filter(g => net.orgPosts(me, g.id, 'pending').length && net.orgRole(me, g.id) !== 'editor').length || ''}`], ['profile', t('nav.profile')], ['help', '❓ Aide'], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
+  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['fts', '⚡ Recherche rapide'], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['media', `🖼 Médias ${net.media(me).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['qa', `❓ Questions ${net.questions(me, 'open').length || ''}`], ['migrate', '🧳 Import et archives'], ['orgs', `🏢 Pages ${net.orgInvites(me).length + net.myOrgs(me).filter(g => net.orgPosts(me, g.id, 'pending').length && net.orgRole(me, g.id) !== 'editor').length || ''}`], ['profile', t('nav.profile')], ['help', '❓ Aide'], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
   const MAIN = ['feed', 'explore', 'fts', 'dm', 'profile'], btn = ([k, l]) => { const [ic, ...rest] = String(l).split(' '); return `<button data-page="${k}" class="${view.page === k ? 'on' : ''}" aria-label="${esc(rest.join(' ').trim() || l)}">${ic}<span class="lt"> ${rest.join(' ')}</span></button>`; };
   const main = MAIN.map(k => items.find(x => x[0] === k)), more = items.filter(x => !MAIN.includes(x[0]));
   const moreOn = more.some(x => x[0] === view.page), badge = more.some(x => /\d/.test(x[1].replace(/^\S+\s*/, ''))) ? ' •' : '';
@@ -1153,6 +1153,7 @@ function renderPage() {
   else if (view.page === 'groups') h = groupsPage(e);
   else if (view.page === 'events') h = eventsPage(e);
   else if (view.page === 'qa') h = qaPage(e);
+  else if (view.page === 'migrate') h = migratePage(e);
   else if (view.page === 'orgs') h = orgsPage(e);
   else if (view.page === 'org') h = orgPage(e);
   else if (view.page === 'group') h = groupPage(e, paged);
@@ -1547,6 +1548,108 @@ document.addEventListener('click', ev => {
   else if (act === 'delete') { if (confirm('Supprimer définitivement cette page, ses brouillons et ses publications ?')) attempt(async () => { await net.deleteOrg(me, +a); go('orgs'); }); }
 });
 
+// ---- assistant d'import et d'archivage : import CSV/JSON en 3 étapes (aperçu + doublons), archives planifiées, historique, restauration sélective ----
+const mg = { tab: 'import', step: 1, text: '', file: '', data: null, prev: null, sel: new Set(), res: null, rest: null, restRes: null, msg: '' };
+const MG_KINDS = { post: '📝 Posts', follow: '👥 Abonnements', list: '📋 Listes', bookmark: '🔖 Favoris', message: '✉️ Messages', profile: '🙍 Profil' };
+const MG_STATUS = { new: ['Nouveau', 'on'], duplicate: ['Doublon', ''], invalid: ['Invalide', 'err'] };
+const MG_TYPES = { manual: '💾 Archive manuelle', auto: '⏰ Archive automatique', email: '✉️ Envoyée par e-mail', download: '⬇️ Téléchargement', import: '⬆️ Import', restore: '♻️ Restauration' };
+const MG_EVERY = { off: 'Désactivée', daily: 'Tous les jours', weekly: 'Toutes les semaines', monthly: 'Tous les mois' };
+const MG_TEMPLATE = 'type,texte,date,utilisateur,liste\npost,"Mon premier post importé",2024-05-01,,\npost,"Un autre, avec une virgule",2024-05-02 18:30,,\nabonnement,,,un_pseudo,\nliste,,,un_pseudo,Mes amis\n';
+function mgItems(prev, sel, pre) {
+  if (!prev || !prev.items.length) return '<p class="mut">Aucun élément.</p>';
+  return Object.entries(MG_KINDS).map(([k, label]) => {
+    const its = prev.items.filter(i => i.kind === k); if (!its.length) return '';
+    const nn = its.filter(i => i.status === 'new').length;
+    return `<fieldset class="card"><legend><b>${label}</b> <span class="mut">${its.length} · ${nn} à ajouter</span></legend>
+      ${its.slice(0, 200).map(i => { const [sl, sc] = MG_STATUS[i.status]; return `<label class="inl mg-item"><input type="checkbox" id="${pre}-${i.key}" data-mgsel="${i.key}" ${i.status !== 'new' ? 'disabled' : ''} ${sel.has(i.key) ? 'checked' : ''}> <span class="badge ${sc}">${sl}</span> ${esc(i.label)}${i.reason ? ` <span class="mut">— ${esc(i.reason)}</span>` : ''}</label>`; }).join('')}
+      ${its.length > 200 ? `<p class="mut">… et ${its.length - 200} autres (inclus dans la sélection « tout cocher »).</p>` : ''}</fieldset>`;
+  }).join('');
+}
+function mgCounts(prev) { const c = prev.counts; return `<p><span class="badge on">${c.new} nouveau${c.new > 1 ? 'x' : ''}</span> <span class="badge">${c.duplicate} doublon${c.duplicate > 1 ? 's' : ''}</span> <span class="badge err">${c.invalid} invalide${c.invalid > 1 ? 's' : ''}</span></p>`; }
+function mgResult(r) { const p = Object.entries({ posts: 'post', follows: 'abonnement', lists: 'liste', bookmarks: 'favori', messages: 'message', profile: 'profil' }).filter(([k]) => r[k]).map(([k, l]) => `${r[k]} ${l}${r[k] > 1 && l !== 'profil' ? 's' : ''}`); return p.join(' · '); }
+function migratePage(e) {
+  const tabs = [['import', '⬆️ Importer'], ['archive', '🗄 Archives automatiques'], ['history', '🕘 Historique et restauration']];
+  const head = `<div class="card"><h2>🧳 Import et archivage</h2><p class="mut">Migrez vos posts, abonnements et listes depuis un fichier CSV ou JSON (avec aperçu et détection des doublons), et gardez une archive complète de votre compte, planifiée, téléchargeable ou envoyée par e-mail.</p>
+    <div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${mg.tab === k}" class="${mg.tab === k ? 'on' : ''}" data-mg="tab:${k}">${l}</button>`).join('')}</div></div>${e}`;
+  const msg = mg.msg ? `<p class="ok" role="status">${esc(mg.msg)}</p>` : '';
+  if (mg.tab === 'archive') {
+    const c = net.archiveCfg(me), mail = (net.profile(me) || {}).email, list = net.archives(me);
+    return head + `<div class="card" role="group" aria-labelledby="h-mg-plan"><h3 id="h-mg-plan">⏰ Planifier l’archive complète</h3>
+      <label>Fréquence <select id="mg-every">${Object.entries(MG_EVERY).map(([k, l]) => `<option value="${k}" ${c.every === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="inl"><input id="mg-email" type="checkbox" ${c.email ? 'checked' : ''} ${mail ? '' : 'disabled'}> Envoyer aussi chaque archive par e-mail${mail ? ' (' + esc(mail) + ')' : ' — confirmez d’abord une adresse dans les réglages'}</label>
+      <div class="row"><button class="on" data-mg="cfg">Enregistrer la planification</button></div>
+      <p class="mut">${c.every === 'off' ? 'Aucune archive automatique.' : `Prochaine archive : ${esc(I.dateTime(Math.max(c.next, Date.now())))}${c.last ? ' · dernière : ' + ago(c.last) : ''}. Les 3 plus récentes sont conservées.`}</p>${msg}</div>
+      <div class="card"><h3>🗄 Archive à la demande</h3><p class="mut">Posts, abonnements, listes, favoris, messages et profil — jamais votre mot de passe.</p>
+      <div class="row"><button data-mg="snap">💾 Archiver maintenant</button><button data-mg="full">⬇️ Télécharger l’archive complète</button></div></div>
+      <h3>Archives conservées</h3>${mgSnaps(list)}`;
+  }
+  if (mg.tab === 'history') {
+    const log = net.archiveLog(me), snaps = new Set(net.archives(me).map(a => a.id));
+    if (mg.rest) return head + mgRestore();
+    return head + msg + `<h3>Archives conservées</h3>${mgSnaps(net.archives(me))}<h3>Historique des exports et imports</h3>` +
+      (log.length ? `<div class="card"><table class="mg-log"><thead><tr><th>Date</th><th>Opération</th><th>Contenu</th><th>Taille</th><th></th></tr></thead><tbody>${log.map(x => `<tr><td>${esc(I.dateTime(x.at))}</td><td>${MG_TYPES[x.type] || x.type}${x.note ? ` <span class="mut">${esc(x.note)}</span>` : ''}</td><td>${x.counts ? esc(mgResult(x.counts) || '—') : '—'}</td><td>${x.size ? fsize(x.size) : '—'}</td><td>${x.snap && snaps.has(x.snap) ? `<button data-mg="dl:${x.snap}">⬇️</button> <button data-mg="rest:${x.snap}">♻️ Restaurer</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<p class="mut">Aucune opération pour l’instant.</p>');
+  }
+  // import : étape 1 fichier, 2 aperçu, 3 terminé
+  const steps = ['Fichier', 'Aperçu', 'Terminé'], bar = `<ol class="mg-steps" aria-label="Étapes">${steps.map((s, i) => `<li ${mg.step === i + 1 ? 'aria-current="step"' : ''} class="${mg.step === i + 1 ? 'on' : mg.step > i + 1 ? 'done' : ''}">${i + 1}. ${s}</li>`).join('')}</ol>`;
+  if (mg.step === 2 && mg.prev) {
+    const ns = [...mg.sel].length;
+    return head + `<div class="card">${bar}<h3>Aperçu avant import</h3><p class="mut">${esc(mg.file || 'Texte collé')} — décochez ce que vous ne voulez pas. Les doublons et les lignes invalides ne sont jamais importés.</p>${mgCounts(mg.prev)}
+      <div class="row"><button data-mg="all">Tout cocher</button><button data-mg="none">Tout décocher</button></div></div>${mgItems(mg.prev, mg.sel, 'mg-k')}
+      <div class="card row"><button data-mg="back">← Changer de fichier</button><button class="on" data-mg="apply" ${ns ? '' : 'disabled'}>Importer ${ns} élément${ns > 1 ? 's' : ''}</button></div>`;
+  }
+  if (mg.step === 3 && mg.res) return head + `<div class="card" role="status">${bar}<h3>✅ Import terminé</h3><p>${esc(mgResult(mg.res))} ajouté(s).</p><div class="row"><button data-mg="again">Importer un autre fichier</button><button data-mg="tab:history">Voir l’historique</button></div></div>`;
+  return head + `<div class="card">${bar}<h3>Choisissez le fichier à importer</h3>
+    <p class="mut">CSV (colonnes <code>type</code>, <code>texte</code>, <code>date</code>, <code>utilisateur</code>, <code>liste</code>) ou JSON (export Agora, tableau de lignes). Rien n’est écrit avant l’aperçu.</p>
+    <label>Fichier <input id="mg-file" type="file" accept=".csv,.json,.txt,text/csv,application/json"></label>
+    <label for="mg-text">Ou collez le contenu ici</label><textarea id="mg-text" class="json" rows="6" placeholder="type,texte,date,utilisateur,liste">${esc(mg.text)}</textarea>
+    <div class="row"><button class="on" data-mg="analyze">Analyser →</button><button data-mg="tpl">📄 Modèle CSV</button></div></div>`;
+}
+function mgSnaps(list) {
+  return list.map(a => `<div class="card"><b>${esc(I.dateTime(a.at))}</b> <span class="mut">· ${MG_TYPES[a.type] || a.type} · ${esc(mgResult(a.counts) || 'vide')} · ${fsize(a.size)}</span>
+    <div class="row"><button data-mg="rest:${a.id}">♻️ Restaurer…</button><button data-mg="dl:${a.id}">⬇️ Télécharger</button><button data-mg="del:${a.id}">🗑 Supprimer</button></div></div>`).join('') || '<p class="mut">Aucune archive conservée : cliquez sur « Archiver maintenant » ou planifiez-en une.</p>';
+}
+function mgRestore() {
+  const R = mg.rest, ns = R.sel.size;
+  if (R.res) return `<div class="card" role="status"><h3>♻️ Restauration terminée</h3><p>${esc(mgResult(R.res))} restauré(s).</p><button data-mg="restend">Retour à l’historique</button></div>`;
+  if (!R.prev) return '<p class="mut">Chargement de l’archive…</p>';
+  return `<div class="card"><h3>♻️ Restauration sélective</h3><p class="mut">Archive du ${esc(I.dateTime(R.at))} — seuls les éléments manquants sont réécrits ; rien n’est supprimé. Cochez ce que vous voulez récupérer.</p>${mgCounts(R.prev)}
+    <div class="row"><button data-mg="rall">Tout cocher</button><button data-mg="rnone">Tout décocher</button></div></div>${mgItems(R.prev, R.sel, 'mg-r')}
+    <div class="card row"><button data-mg="restend">← Annuler</button><button class="on" data-mg="restdo" ${ns ? '' : 'disabled'}>Restaurer ${ns} élément${ns > 1 ? 's' : ''}</button></div>`;
+}
+const mgNew = prev => new Set(prev.items.filter(i => i.status === 'new').map(i => i.key));
+async function mgAnalyze() {
+  const f = ($('#mg-file') || {}).files && $('#mg-file').files[0];
+  if (f) { mg.text = await f.text(); mg.file = f.name; } else { const t = ($('#mg-text') || {}).value; if (t !== undefined) { mg.text = t; if (!t.trim()) mg.file = ''; } }
+  mg.data = Social.normImport(mg.text); mg.prev = await net.previewImport(me, mg.data); mg.sel = mgNew(mg.prev); mg.step = 2; mg.msg = '';
+}
+document.addEventListener('change', ev => {
+  const c = ev.target.closest && ev.target.closest('[data-mgsel]'); if (!c) return;
+  const S = mg.rest && mg.tab === 'history' ? mg.rest.sel : mg.sel; if (c.checked) S.add(c.dataset.mgsel); else S.delete(c.dataset.mgsel);
+  refresh();
+});
+document.addEventListener('click', ev => {
+  const d = ev.target.closest('[data-mg]'); if (!d || !me) return;
+  const [act, a] = d.dataset.mg.split(':'), v = id => ($(id) || {}).value;
+  if (act === 'tab') { mg.tab = a; mg.msg = ''; mg.rest = null; err = ''; if (a === 'import' && mg.step === 3) { mg.step = 1; mg.res = null; } render(); }
+  else if (act === 'analyze') attempt(mgAnalyze);
+  else if (act === 'tpl') { download('modele-import.csv', MG_TEMPLATE, 'text/csv'); }
+  else if (act === 'back') { mg.step = 1; mg.prev = null; render(); }
+  else if (act === 'again') { Object.assign(mg, { step: 1, text: '', file: '', data: null, prev: null, res: null }); render(); }
+  else if (act === 'all') { mg.sel = mgNew(mg.prev); render(); }
+  else if (act === 'none') { mg.sel = new Set(); render(); }
+  else if (act === 'apply') attempt(async () => { mg.res = await net.applyImport(me, mg.data, [...mg.sel], mg.file || 'Texte collé'); mg.step = 3; });
+  else if (act === 'cfg') attempt(async () => { await net.setArchiveCfg(me, { every: v('#mg-every'), email: !!($('#mg-email') || {}).checked }); mg.msg = 'Planification enregistrée ✔'; });
+  else if (act === 'snap') attempt(async () => { await net.archiveCreate(me); mg.msg = 'Archive créée ✔'; });
+  else if (act === 'full') attempt(async () => { download(`agora-archive-${me}-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(await net.archiveFull(me), null, 2)); mg.msg = 'Archive téléchargée ✔'; });
+  else if (act === 'dl') attempt(async () => { download(`agora-archive-${me}-${a}.json`, JSON.stringify(await net.archiveData(me, +a), null, 2)); mg.msg = 'Archive téléchargée ✔'; });
+  else if (act === 'del') { if (confirm('Supprimer cette archive conservée ? (l’historique reste)')) attempt(async () => { await net.archiveDelete(me, +a); mg.msg = 'Archive supprimée'; }); }
+  else if (act === 'rest') attempt(async () => { const at = net.archives(me).find(x => x.id === +a); mg.tab = 'history'; mg.rest = { id: +a, at: at ? at.at : Date.now(), prev: null, sel: new Set(), res: null }; render(); mg.rest.prev = await net.archivePreview(me, +a); mg.rest.sel = mgNew(mg.rest.prev); });
+  else if (act === 'rall') { mg.rest.sel = mgNew(mg.rest.prev); render(); }
+  else if (act === 'rnone') { mg.rest.sel = new Set(); render(); }
+  else if (act === 'restdo') attempt(async () => { mg.rest.res = await net.archiveRestore(me, mg.rest.id, [...mg.rest.sel]); });
+  else if (act === 'restend') { mg.rest = null; render(); }
+});
+
 document.addEventListener('click', ev => {
   const d = ev.target.closest('[data-ev]'); if (!d || !me) return;
   const [act, a, b] = d.dataset.ev.split(':'), v = id => ($(id) || {}).value;
@@ -1653,7 +1756,7 @@ document.addEventListener('keydown', ev => {
 document.addEventListener('keydown', ev => {
   if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.matches && ev.target.matches('[role=button]:not(button)')) { ev.preventDefault(); ev.target.click(); }
 });
-const download = (name, text) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); };
+const download = (name, text, type) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: type || 'application/json' })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); };
 
 
 // ---- Centre d'aide : FAQ, guides, raccourcis, support avec suivi, palette Ctrl+K, visite guidée, thème par appareil ----

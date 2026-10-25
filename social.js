@@ -54,6 +54,68 @@
       return { src, alt: String((i && i.alt) || '').trim().slice(0, 200) };
     });
   }
+  // ---- assistant d'import : lecture d'un fichier CSV ou JSON, ramené à { posts, follows, lists, bookmarks, messages, profile } ----
+  // CSV : colonnes type (post|abonnement|liste), texte, date, utilisateur, liste ; JSON : export Agora, export d'archive ou tableau de lignes.
+  const IMPORT_MAX = 2000, IMPORT_MAX_BIG = 5000;
+  const IMP_COLS = { type: ['type', 'genre', 'kind', 'categorie'], text: ['text', 'texte', 'message', 'contenu', 'content', 'post'], at: ['at', 'date', 'createdat', 'created_at', 'horodatage', 'timestamp', 'publieele'], user: ['user', 'utilisateur', 'compte', 'pseudo', 'username', 'handle', 'name', 'nom', 'abonnement', 'following'], list: ['list', 'liste'] };
+  const IMP_KIND = { post: 'post', posts: 'post', publication: 'post', publications: 'post', follow: 'follow', follows: 'follow', following: 'follow', abonnement: 'follow', abonnements: 'follow', suivi: 'follow', list: 'list', lists: 'list', liste: 'list', listes: 'list' };
+  const impKey = s => String(s == null ? '' : s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim().replace(/[^a-z_]/g, '');
+  const impAt = v => { v = String(v == null ? '' : v).trim(); if (!v) return 0; if (/^\d+(\.\d+)?$/.test(v)) { const n = +v; return Math.round(n > 1e11 ? n : n * 1000); } const t = Date.parse(v); return isNaN(t) ? 0 : t; };
+  const impName = v => String(v == null ? '' : typeof v === 'object' ? v.name || v.user || v.username || '' : v).replace(/^@/, '').trim();
+  function csvRows(text) {
+    text = String(text || '').replace(/^﻿/, '');
+    const first = text.split(/\r?\n/, 1)[0], sep = [',', ';', '\t'].map(c => [c, first.split(c).length]).sort((a, b) => b[1] - a[1])[0][0];
+    const rows = []; let row = [], cell = '', q = false;
+    const endRow = () => { row.push(cell); cell = ''; if (row.some(x => x.trim())) rows.push(row); row = []; };
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (q) { if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += c; }
+      else if (c === '"' && !cell) q = true;
+      else if (c === sep) { row.push(cell); cell = ''; }
+      else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; endRow(); }
+      else cell += c;
+    }
+    endRow(); return rows;
+  }
+  function normImport(data) {
+    const out = { posts: [], follows: [], lists: [], bookmarks: [], messages: [], profile: null }, lists = new Map();
+    const row = o => {
+      const kind = IMP_KIND[impKey(o.type)] || (o.text ? 'post' : o.list ? 'list' : o.user ? 'follow' : '');
+      if (kind === 'post') out.posts.push({ text: String(o.text == null ? '' : o.text).trim(), at: impAt(o.at) });
+      else if (kind === 'follow') out.follows.push(impName(o.user));
+      else if (kind === 'list') {
+        const name = String(o.list || o.text || o.user || '').replace(/\s+/g, ' ').trim(), key = name.toLowerCase();
+        if (!lists.has(key)) { const l = { name, members: [], public: false }; lists.set(key, l); out.lists.push(l); }
+        if (o.list && o.user) lists.get(key).members.push(impName(o.user));
+      }
+    };
+    if (typeof data === 'string') {
+      const s = data.replace(/^﻿/, '').trim();
+      if (!s) throw new Error('Le fichier est vide');
+      if (/^[\[{]/.test(s)) { try { data = JSON.parse(s); } catch (e) { throw new Error('JSON invalide : ' + e.message); } }
+      else {
+        const rows = csvRows(s), head = rows[0].map(h => Object.keys(IMP_COLS).find(k => IMP_COLS[k].includes(impKey(h))) || '');
+        if (!head.some(Boolean)) throw new Error('En-têtes CSV non reconnus : attendu type, texte, date, utilisateur, liste');
+        for (const r of rows.slice(1)) { const o = {}; head.forEach((h, i) => { if (h && o[h] === undefined) o[h] = r[i]; }); row(o); }
+        data = null;
+      }
+    }
+    if (Array.isArray(data)) { for (const o of data) if (o && typeof o === 'object') row(o); else if (typeof o === 'string' && o.trim()) out.posts.push({ text: o.trim(), at: 0 }); }
+    else if (data && typeof data === 'object') {
+      const arr = x => Array.isArray(x) ? x : [], pr = data.profile && typeof data.profile === 'object' ? data.profile : {};
+      for (const p of arr(data.posts)) { if (typeof p === 'string') out.posts.push({ text: p.trim(), at: 0 }); else if (p && typeof p === 'object' && !p.replyTo) { const q = { text: String(p.text == null ? '' : p.text).trim(), at: impAt(p.at) }; if (Array.isArray(p.images) && p.images.length) q.images = p.images; out.posts.push(q); } }
+      for (const f of arr(data.follows).concat(arr(data.following), arr(data.abonnements), arr(pr.following))) out.follows.push(impName(f));
+      for (const l of arr(data.lists)) if (l && typeof l === 'object') out.lists.push({ name: String(l.name || '').replace(/\s+/g, ' ').trim(), members: arr(l.members).map(impName), public: !!l.public });
+      for (const b of arr(data.bookmarks)) { const id = +(b && typeof b === 'object' ? b.id : b); if (id) out.bookmarks.push({ id }); }
+      for (const m of arr(data.messages)) if (m && typeof m === 'object') { const q = { from: impName(m.from), to: impName(m.to), text: String(m.text == null ? '' : m.text).trim(), at: impAt(m.at) }; if (Array.isArray(m.images) && m.images.length) q.images = m.images; out.messages.push(q); }
+      if (data.profile && typeof data.profile === 'object') out.profile = ['display', 'bio', 'avatar', 'banner', 'link'].reduce((a, k) => (pr[k] === undefined ? a : Object.assign(a, { [k]: String(pr[k] || '') })), {});
+      if (out.profile && !Object.keys(out.profile).length) out.profile = null;
+    }
+    out.follows = out.follows.filter(Boolean);
+    if (out.posts.length > IMPORT_MAX_BIG || out.messages.length > IMPORT_MAX_BIG || out.follows.length > IMPORT_MAX || out.lists.length > IMPORT_MAX || out.bookmarks.length > IMPORT_MAX_BIG) throw new Error('Fichier trop volumineux : 5 000 posts et 2 000 abonnements au plus');
+    if (!out.posts.length && !out.follows.length && !out.lists.length && !out.bookmarks.length && !out.messages.length && !out.profile) throw new Error('Aucune donnée reconnue dans ce fichier (posts, abonnements ou listes)');
+    return out;
+  }
   // vidéos courtes et messages vocaux : un seul par post/message, en data URL (compressés côté navigateur), durée et taille limitées
   const MAX_MEDIA_CHARS = 2000000, MAX_VIDEO_S = 15, MAX_AUDIO_S = 120, MEDIA_RE = { video: /^data:video\/(webm|mp4)(;codecs=[A-Za-z0-9.,]+)?;base64,[A-Za-z0-9+\/=]+$/, audio: /^data:audio\/(webm|ogg|mp4|mpeg|wav)(;codecs=[A-Za-z0-9.,]+)?;base64,[A-Za-z0-9+\/=]+$/ };
   function cleanMedia(list) {
@@ -157,7 +219,7 @@ function Net(storage, now) {
         db.messages = db.messages.filter(m => m.from !== n && m.to !== n);
         for (const r of db.rooms) { r.members = r.members.filter(x => x !== n); r.msgs = r.msgs.filter(m => m.from !== n); delete r.read[lc(n)]; if (r.owner === n) r.owner = r.members[0]; }
         db.rooms = db.rooms.filter(r => r.members.length >= 2); db.msgReports = db.msgReports.filter(r => r.by !== n && r.target !== n);
-        db.questions = (db.questions || []).filter(q => q.to !== n && q.from !== n); for (const g of db.orgs || []) { g.members = g.members.filter(m => lc(m.user) !== lc(n)); g.invites = (g.invites || []).filter(i => lc(i.user) !== lc(n)); if (g.transfer && lc(g.transfer.to) === lc(n)) g.transfer = null; } db.orgs = (db.orgs || []).filter(g => g.members.length); db.orgPosts = (db.orgPosts || []).filter(p => db.orgs.some(g => g.id === p.org)); db.drafts = db.drafts.filter(d => d.author !== n); db.media = (db.media || []).filter(m => m.owner !== n);
+        db.questions = (db.questions || []).filter(q => q.to !== n && q.from !== n); for (const g of db.orgs || []) { g.members = g.members.filter(m => lc(m.user) !== lc(n)); g.invites = (g.invites || []).filter(i => lc(i.user) !== lc(n)); if (g.transfer && lc(g.transfer.to) === lc(n)) g.transfer = null; } db.archives = (db.archives || []).filter(a => a.owner !== n); db.archiveLog = (db.archiveLog || []).filter(a => a.owner !== n); if (db.archiveCfg) delete db.archiveCfg[lc(n)]; db.orgs = (db.orgs || []).filter(g => g.members.length); db.orgPosts = (db.orgPosts || []).filter(p => db.orgs.some(g => g.id === p.org)); db.drafts = db.drafts.filter(d => d.author !== n); db.media = (db.media || []).filter(m => m.owner !== n);
         db.reposts = db.reposts.filter(r => r.by !== n && !gone.has(r.postId));
         db.reports = db.reports.filter(r => r.by !== n && r.target !== n); db.appeals = (db.appeals || []).filter(a => a.user !== n); db.tickets = (db.tickets || []).filter(x => x.user !== n);
         for (const x of Object.values(db.users)) { if (x.blocked) x.blocked = x.blocked.filter(f => f !== n); if (x.muted) x.muted = x.muted.filter(f => f !== n); }
@@ -236,6 +298,99 @@ function Net(storage, now) {
     const cleanTag = t => { t = String(t || '').trim().toLowerCase(); if (t[0] !== '#') t = '#' + t; need(/^#\w{1,60}$/.test(t), 'Hashtag invalide'); return t; };
     const shareToken = () => randHex(12);
     const received = (by, o, l) => !!(l.share && ((db.users[lc(by)] || {}).sharedLists || []).some(r => lc(r.owner) === lc(o.name) && r.id === l.id && r.token === l.share));
+    // ---- import / archivage : plan (aperçu avec doublons), application, instantanés d'archive et journal des exports ----
+    const ARCH_EVERY = { off: 0, daily: 86400000, weekly: 7 * 86400000, monthly: 30 * 86400000 }, ARCH_KEEP = 3, ARCH_CAP = 800000, XLOG_MAX = 60;
+    const xlog = (u, type, note, counts, size, snap) => { const l = db.archiveLog = db.archiveLog || []; l.push({ id: id(), owner: u.name, at: now(), type, note: String(note || '').slice(0, 120), counts: counts || null, size: size || 0, snap: snap || null }); const mine = l.filter(x => x.owner === u.name); if (mine.length > XLOG_MAX) db.archiveLog = l.filter(x => x.owner !== u.name || mine.indexOf(x) >= mine.length - XLOG_MAX); };
+    const archCounts = d => ({ posts: d.posts.length, follows: d.follows.length, lists: d.lists.length, bookmarks: d.bookmarks.length, messages: d.messages.length });
+    // plan : pour chaque élément du fichier, « new » (sera ajouté), « duplicate » (déjà présent) ou « invalid » (avec la raison)
+    function planImport(u, raw) {
+      const d = normImport(raw), items = [], seen = { p: new Set(), f: new Set(), m: new Set(), b: new Set() }, add = (key, kind, label, status, reason, extra) => items.push(Object.assign({ key, kind, label: String(label).slice(0, 140), status, reason: reason || '' }, extra));
+      let newLists = 0;
+      d.posts.forEach((p, i) => {
+        let imgs = [], bad = ''; try { imgs = cleanImages(p.images); } catch (e) { bad = e.message; }
+        const text = p.text, at = p.at > now() ? 0 : p.at, k = text + '|' + at;
+        if (!bad && !text && !imgs.length) bad = 'Texte vide'; else if (!bad && text.length > 280) bad = 'Plus de 280 caractères';
+        const dup = !bad && (seen.p.has(k) || db.posts.some(x => x.author === u.name && !x.group && !x.replyTo && x.text === text && (!at || x.at === at)));
+        if (!bad) seen.p.add(k);
+        add('p' + i, 'post', text || (imgs.length ? '(image seule)' : '(vide)'), bad ? 'invalid' : dup ? 'duplicate' : 'new', bad || (dup ? 'Déjà publié' : ''), { at });
+      });
+      d.follows.forEach((n, i) => {
+        const t = db.users[lc(n)];
+        const bad = !t ? 'Compte introuvable' : t.name === u.name ? 'C’est votre propre compte' : '', dup = !bad && (has(u.following, t.name) || seen.f.has(lc(t.name)));
+        if (!bad) seen.f.add(lc(t.name));
+        add('f' + i, 'follow', '@' + (t ? t.name : n), bad ? 'invalid' : dup ? 'duplicate' : 'new', bad || (dup ? 'Déjà suivi' : ''));
+      });
+      d.lists.forEach((l, i) => {
+        const name = l.name, ex = (u.lists || []).find(x => lc(x.name) === lc(name)), known = [...new Set(l.members.map(m => (db.users[lc(m)] || {}).name).filter(n => n && n !== u.name))], miss = l.members.length - l.members.filter(m => db.users[lc(m)]).length;
+        const toAdd = known.filter(n => !ex || !has(ex.members, n));
+        let bad = !name ? 'Nom de liste vide' : name.length > 40 ? 'Nom de liste trop long (40 max)' : !ex && (u.lists || []).length + newLists >= MAX_LISTS ? `${MAX_LISTS} listes maximum` : '';
+        if (!bad && ex && ex.members.length + toAdd.length > MAX_LIST_MEMBERS) bad = 'Liste pleine';
+        const dup = !bad && ex && !toAdd.length;
+        if (!bad && !ex) newLists++;
+        add('l' + i, 'list', `${name || '(sans nom)'} · ${known.length} membre${known.length > 1 ? 's' : ''}`, bad ? 'invalid' : dup ? 'duplicate' : 'new', bad || (dup ? 'Liste déjà identique' : (ex ? `Fusion : +${toAdd.length} membre${toAdd.length > 1 ? 's' : ''}` : 'Nouvelle liste')) + (!bad && !dup && miss ? ` (${miss} compte${miss > 1 ? 's' : ''} introuvable${miss > 1 ? 's' : ''} ignoré${miss > 1 ? 's' : ''})` : ''));
+      });
+      d.bookmarks.forEach((b, i) => {
+        const p = db.posts.find(x => x.id === b.id), bad = !p || p.group || !seenBy(p, u.name) ? 'Post introuvable' : '', dup = !bad && (has(u.bookmarks, b.id) || seen.b.has(b.id));
+        if (!bad) seen.b.add(b.id);
+        add('b' + i, 'bookmark', p && !bad ? `@${p.author} : ${p.text}` : 'Post #' + b.id, bad ? 'invalid' : dup ? 'duplicate' : 'new', bad || (dup ? 'Déjà en favoris' : ''));
+      });
+      d.messages.forEach((m, i) => {
+        let imgs = [], bad = ''; try { imgs = cleanImages(m.images); } catch (e) { bad = e.message; }
+        const from = db.users[lc(m.from)], to = db.users[lc(m.to)];
+        if (!bad && ((!m.text && !imgs.length) || m.text.length > 500)) bad = 'Message vide ou trop long'; else if (!bad && (!from || !to || (from.name !== u.name && to.name !== u.name))) bad = 'Conversation étrangère à votre compte';
+        const k = bad ? '' : `${from.name}|${to.name}|${m.text}|${m.at}`, dup = !bad && (seen.m.has(k) || db.messages.some(x => x.from === from.name && x.to === to.name && x.text === m.text && x.at === m.at));
+        if (!bad) seen.m.add(k);
+        add('m' + i, 'message', `${m.from} → ${m.to} : ${m.text}`, bad ? 'invalid' : dup ? 'duplicate' : 'new', bad || (dup ? 'Déjà présent' : ''));
+      });
+      if (d.profile) {
+        const q = d.profile, diff = Object.keys(q).filter(k => (u[k] || '') !== q[k]);
+        const bad = (q.display || '').length > 30 ? 'Pseudo affiché : 30 caractères max' : (q.bio || '').length > 160 ? 'Bio : 160 caractères max' : q.avatar && !/^#[0-9a-fA-F]{6}$/.test(q.avatar) ? 'Couleur d’avatar invalide' : q.banner && !/^https?:\/\/\S+$/i.test(q.banner) && !/^grad:[0-5]$/.test(q.banner) ? 'Bannière invalide' : q.link && !/^https?:\/\/\S+$/i.test(q.link) ? 'Lien invalide' : '';
+        add('profile', 'profile', 'Profil : ' + (q.display || q.bio || u.name).slice(0, 60), bad ? 'invalid' : diff.length ? 'new' : 'duplicate', bad || (diff.length ? 'Modifie : ' + diff.join(', ') : 'Profil déjà identique'));
+      }
+      return { d, items };
+    }
+    const planView = p => ({ items: p.items, counts: p.items.reduce((c, x) => (c[x.status]++, c), { new: 0, duplicate: 0, invalid: 0 }) });
+    // écrit les éléments « new » retenus (keys absent = tous) ; relit et modifie la base courante
+    function runPlan(u, p, keys) {
+      const pick = new Set(keys || p.items.filter(x => x.status === 'new').map(x => x.key)), r = { posts: 0, follows: 0, lists: 0, bookmarks: 0, messages: 0, profile: 0 }, d = p.d, nextAt = (() => { let t = now(); return a => a || t++; })();
+      for (const it of p.items) {
+        if (it.status !== 'new' || !pick.has(it.key)) continue;
+        const i = +it.key.slice(1);
+        if (it.kind === 'post') { const s = d.posts[i], np = { id: id(), author: u.name, text: s.text, at: nextAt(s.at > now() ? 0 : s.at), likes: [], replyTo: null }, imgs = cleanImages(s.images); if (imgs.length) np.images = imgs; db.posts.push(np); r.posts++; }
+        else if (it.kind === 'follow') { const t = db.users[lc(d.follows[i])]; u.following.push(t.name); r.follows++; }
+        else if (it.kind === 'list') {
+          const l = d.lists[i], known = [...new Set(l.members.map(m => (db.users[lc(m)] || {}).name).filter(n => n && n !== u.name))], ls = u.lists = u.lists || [];
+          let ex = ls.find(x => lc(x.name) === lc(l.name)); if (!ex) { ex = { id: id(), name: l.name, public: !!l.public, share: null, members: [], at: now() }; ls.push(ex); }
+          for (const n of known) if (!has(ex.members, n)) ex.members.push(n); r.lists++;
+        }
+        else if (it.kind === 'bookmark') { (u.bookmarks = u.bookmarks || []).push(d.bookmarks[i].id); r.bookmarks++; }
+        else if (it.kind === 'message') { const m = d.messages[i], imgs = cleanImages(m.images), nm = { id: id(), from: db.users[lc(m.from)].name, to: db.users[lc(m.to)].name, text: m.text, at: m.at || now() }; if (imgs.length) nm.images = imgs; db.messages.push(nm); r.messages++; }
+        else if (it.kind === 'profile') { Object.assign(u, d.profile); r.profile = 1; }
+      }
+      return r;
+    }
+    const archBuild = u => ({
+      format: 'agora-archive', version: 1, createdAt: now(), account: u.name,
+      profile: { display: u.display || '', bio: u.bio || '', avatar: u.avatar || '', banner: u.banner || '', link: u.link || '' },
+      follows: u.following.slice(), lists: (u.lists || []).map(l => ({ name: l.name, members: l.members.slice(), public: !!l.public })),
+      bookmarks: (u.bookmarks || []).map(id => ({ id })),
+      posts: db.posts.filter(p => p.author === u.name && !p.group && !p.replyTo).sort((a, b) => a.at - b.at).map(p => ({ text: p.text, at: p.at, images: p.images || [] })),
+      messages: db.messages.filter(m => m.from === u.name || m.to === u.name).sort((a, b) => a.at - b.at).map(m => ({ from: m.from, to: m.to, text: m.text, at: m.at, images: m.images || [] })),
+    });
+    // un instantané stocké est plafonné (images puis plus anciens éléments écartés) ; le téléchargement « complet » ne l'est pas
+    function archFit(d) {
+      const fits = () => JSON.stringify(d).length <= ARCH_CAP; if (fits()) return d;
+      for (const k of ['posts', 'messages']) for (const x of d[k]) delete x.images; d.imagesOmitted = true;
+      for (const k of ['messages', 'posts']) while (!fits() && d[k].length > 20) { d[k] = d[k].slice(Math.ceil(d[k].length * 0.2)); d.truncated = true; }
+      return d;
+    }
+    function archSnap(u, type) {
+      const d = archFit(archBuild(u)), size = JSON.stringify(d).length, list = db.archives = db.archives || [], a = { id: id(), owner: u.name, at: now(), type, counts: archCounts(d), size, data: d };
+      list.push(a); const mine = list.filter(x => x.owner === u.name); for (const old of mine.slice(0, Math.max(0, mine.length - ARCH_KEEP))) list.splice(list.indexOf(old), 1);
+      xlog(u, type, d.truncated ? 'Archive plafonnée (très volumineuse)' : d.imagesOmitted ? 'Images omises (taille)' : '', a.counts, size, a.id); return a;
+    }
+    const archOf = (by, aid) => { const u = user(by), a = (db.archives || []).find(x => x.id === +aid && x.owner === u.name); need(a, 'Archive introuvable (elle a peut-être été supprimée)'); return a; };
+    const seenBy = (p, by) => p.author === by || !p.hidden;
     const ownList = (by, listId) => { const l = (user(by).lists || []).find(x => x.id === +listId); need(l, 'Liste introuvable'); return l; };
 
     const api = {
@@ -937,6 +1092,53 @@ function Net(storage, now) {
           const nm = { id: id(), from: from.name, to: to.name, text, at: +m.at || now() }; if (imgs.length) nm.images = imgs; db.messages.push(nm); r.messages++;
         }
         save(); return r;
+      },
+      // ---- assistant d'import et d'archivage ----
+      // aperçu (lecture seule) : chaque élément du fichier est « new », « duplicate » ou « invalid »
+      previewImport(by, data) { return planView(planImport(user(by), data)); },
+      applyImport(by, data, keys, label) {
+        const u = user(by); guard(by); const p = planImport(u, data);
+        need(keys == null || Array.isArray(keys), 'Sélection invalide');
+        const r = runPlan(u, p, keys == null ? null : keys.map(String)), n = r.posts + r.follows + r.lists + r.bookmarks + r.messages + r.profile;
+        need(n > 0, 'Rien à importer : tout est déjà présent ou invalide');
+        xlog(u, 'import', label || 'Import', r, 0); save(); return r;
+      },
+      archives: by => { const n = user(by).name; return (db.archives || []).filter(a => a.owner === n).map(({ data, ...m }) => m).reverse(); },
+      archiveLog: by => { const n = user(by).name; return (db.archiveLog || []).filter(x => x.owner === n).reverse(); },
+      archiveCfg: by => (db.archiveCfg || {})[lc(user(by).name)] || { every: 'off', email: false, next: 0, last: 0 },
+      archiveCreate(by) { const u = user(by); const a = archSnap(u, 'manual'); save(); const { data, ...m } = a; return m; },
+      // archive complète à télécharger (non plafonnée) : consignée dans l'historique
+      archiveFull(by) { const u = user(by), d = archBuild(u); xlog(u, 'download', 'Archive complète', archCounts(d), JSON.stringify(d).length); save(); return d; },
+      archiveData(by, aid) { const a = archOf(by, aid); xlog(user(by), 'download', 'Archive du ' + new Date(a.at).toISOString().slice(0, 10), a.counts, a.size, a.id); save(); return a.data; },
+      archiveDelete(by, aid) { const a = archOf(by, aid); db.archives = db.archives.filter(x => x !== a); for (const l of db.archiveLog || []) if (l.snap === a.id) l.snap = null; save(); },
+      archivePreview(by, aid) { return planView(planImport(user(by), archOf(by, aid).data)); },
+      // restauration sélective : seuls les éléments cochés et manquants sont réécrits (rien n'est jamais supprimé ni écrasé hors profil)
+      archiveRestore(by, aid, keys) {
+        const u = user(by); guard(by); const a = archOf(by, aid); need(Array.isArray(keys) && keys.length, 'Sélectionnez au moins un élément à restaurer');
+        const r = runPlan(u, planImport(u, a.data), keys.map(String)); need(r.posts + r.follows + r.lists + r.bookmarks + r.messages + r.profile > 0, 'Rien à restaurer : ces éléments sont déjà présents');
+        xlog(u, 'restore', 'Archive du ' + new Date(a.at).toISOString().slice(0, 10), r, 0, a.id); save(); return r;
+      },
+      setArchiveCfg(by, o) {
+        const u = user(by); o = o || {}; need(Object.prototype.hasOwnProperty.call(ARCH_EVERY, o.every), 'Fréquence inconnue');
+        need(!o.email || u.email, 'Ajoutez et confirmez d’abord une adresse e-mail dans les réglages');
+        const cfg = db.archiveCfg = db.archiveCfg || {}, old = cfg[lc(u.name)] || {};
+        cfg[lc(u.name)] = { every: o.every, email: !!o.email && o.every !== 'off', next: o.every === 'off' ? 0 : (old.every === o.every && old.next) || now(), last: old.last || 0 };
+        save(); return cfg[lc(u.name)];
+      },
+      // travail d'archivage pour le serveur : crée les archives dues et renvoie les e-mails à envoyer [{ to, subject, text }]
+      archiveJobs(base, at) {
+        at = at || now(); const jobs = []; let dirty = false;
+        for (const [k, c] of Object.entries(db.archiveCfg || {})) {
+          const u = db.users[k]; if (!u || !c.every || c.next > at || u.deleteAt) continue;
+          c.next = at + ARCH_EVERY[c.every]; c.last = at; dirty = true;
+          const a = archSnap(u, 'auto');
+          if (c.email && u.email) {
+            const json = JSON.stringify(a.data), inline = json.length <= 150000;
+            xlog(u, 'email', 'Envoyée à ' + u.email.replace(/^(.).*(@.*)$/, '$1***$2'), a.counts, a.size, a.id);
+            jobs.push({ to: u.email, subject: `Agora : votre archive ${c.every === 'daily' ? 'quotidienne' : c.every === 'weekly' ? 'hebdomadaire' : 'mensuelle'} (${a.counts.posts} post${a.counts.posts > 1 ? 's' : ''})`, text: `Bonjour @${u.name},\n\nVotre archive automatique est prête : ${a.counts.posts} posts, ${a.counts.follows} abonnements, ${a.counts.lists} listes, ${a.counts.messages} messages.\n\n${inline ? 'Enregistrez le JSON ci-dessous dans un fichier archive.json ; vous pourrez l’importer ou le restaurer dans « Import et archives ».\n\n' + json : 'Elle est trop volumineuse pour être jointe : téléchargez-la depuis « Import et archives » (' + (base || '') + ').'}\n\nChanger la fréquence : page « Import et archives ».` });
+          }
+        }
+        if (dirty) save(); return jobs;
       },
       send(from, to, text, images, replyTo) {
         text = (text || '').trim(); const media = cleanMedia(images); images = cleanImages(images);
@@ -1764,6 +1966,7 @@ function Net(storage, now) {
       messages: db.messages.filter(m => m.from === me.name || m.to === me.name),
       notifs: db.notifs.filter(n => n.to === me.name),
       rooms: db.rooms.filter(r => r.members.includes(me.name)).map(r => ({ ...r, msgs: r.msgs.slice(-200) })),
+      archives: (db.archives || []).filter(a => a.owner === me.name).map(({ data, ...m }) => m), archiveLog: (db.archiveLog || []).filter(x => x.owner === me.name), archiveCfg: (db.archiveCfg || {})[lcm] || null,
       orgs: (db.orgs || []).map(g => { const mem = g.members.some(m => m.user === me.name); return mem || me.admin ? g : { ...g, log: [], invites: (g.invites || []).filter(i => i.user === me.name), transfer: g.transfer && g.transfer.to === me.name ? g.transfer : null }; }),
       orgPosts: (db.orgPosts || []).filter(p => p.status === 'published' || (db.orgs || []).some(g => g.id === p.org && g.members.some(m => m.user === me.name))),
       questions: (db.questions || []).filter(q => q.to === me.name || q.from === me.name).map(q => ({ ...qView(q, q.to === me.name), mine: q.from === me.name })),
@@ -1779,6 +1982,6 @@ function Net(storage, now) {
     };
   }
 
-  const exported = { MSG_EMOJIS, Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
+  const exported = { normImport, MSG_EMOJIS, Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
   if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);

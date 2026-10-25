@@ -168,3 +168,13 @@ kbd{border:1px solid var(--bd);border-bottom-width:2px;border-radius:5px;padding
 .mreplybar{padding:4px 8px;border-left:3px solid var(--acc);background:var(--bd);border-radius:6px;font-size:.9em}.msearch{margin:4px 0}.msearch input{flex:1;min-width:140px}mark{background:#ffe066;color:#000;border-radius:2px}
 @media (hover:none){.macts{display:inline-flex}}
 .qa-q{cursor:default;background:var(--card,transparent)}.qa-item textarea{width:100%;box-sizing:border-box}#qa-ask textarea{width:100%;box-sizing:border-box}
+
+/* assistant d'import et d'archivage */
+.mg-steps { display: flex; gap: .5rem; list-style: none; padding: 0; margin: 0 0 .75rem; flex-wrap: wrap; }
+.mg-steps li { padding: .25rem .75rem; border-radius: 999px; border: 1px solid currentColor; opacity: .6; }
+.mg-steps li.on { opacity: 1; font-weight: 700; }
+.mg-steps li.done { opacity: .85; }
+.mg-item { display: block; padding: .2rem 0; overflow-wrap: anywhere; }
+.mg-log { width: 100%; border-collapse: collapse; }
+.mg-log th, .mg-log td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid rgba(128, 128, 128, .3); vertical-align: top; }
+.badge.err { color: #c0392b; }
