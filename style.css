@@ -75,3 +75,4 @@ h2,h3{line-height:1.2}h2{font-size:var(--t2)}h3{font-size:var(--t1)}
 .badge{display:inline-block;min-width:1.4em;padding:0 .4em;border-radius:999px;background:var(--err);color:#fff;font-size:.75rem;text-align:center}
 .diag{list-style:none;padding:0}.diag li{padding:4px 0}.ok{color:var(--ok,#2a9d4a)}
 #offline{margin-left:8px}
+.tabs{display:flex;flex-wrap:wrap;gap:.4em}.tabs .on{font-weight:700;outline:2px solid #9146ff}

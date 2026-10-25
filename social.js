@@ -3,7 +3,7 @@
 (function (root) {
   const KEY = 'twitchgram.v1';
   const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], drafts: [], seq: 1, attempts: Object.create(null) });
-  const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_AHEAD_MS = 366 * 86400000;
+  const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000;
 
   const RESERVED = 'streamer';
   // signalements : motifs, sanctions de modération (durée de suspension en heures)
@@ -73,6 +73,8 @@
         for (const m of text.match(/@\w+/g) || []) { const t = db.users[m.slice(1).toLowerCase()]; if (t) notify(t.name, p.author, 'mention', p.id); }
       return p;
     };
+
+    const ownList = (by, listId) => { const l = (user(by).lists || []).find(x => x.id === +listId); need(l, 'Liste introuvable'); return l; };
 
     const api = {
       db: () => db,
@@ -161,7 +163,7 @@
         const n = u.name, gone = new Set(db.posts.filter(p => p.author === n).map(p => p.id));
         db.posts = db.posts.filter(p => !gone.has(p.id) && !gone.has(p.replyTo));
         for (const p of db.posts) p.likes = p.likes.filter(x => x !== n);
-        for (const x of Object.values(db.users)) x.following = x.following.filter(f => f !== n);
+        for (const x of Object.values(db.users)) { x.following = x.following.filter(f => f !== n); for (const l of x.lists || []) l.members = l.members.filter(f => f !== n); }
         db.messages = db.messages.filter(m => m.from !== n && m.to !== n); db.drafts = db.drafts.filter(d => d.author !== n);
         db.reposts = db.reposts.filter(r => r.by !== n && !gone.has(r.postId));
         db.reports = db.reports.filter(r => r.by !== n && r.target !== n);
@@ -249,6 +251,41 @@
       },
       isBookmarked: (by, postId) => !!(((db.users[(by || '').toLowerCase()] || {}).bookmarks || []).includes(postId)),
       bookmarks: by => (user(by).bookmarks || []).slice().reverse().map(i => db.posts.find(p => p.id === i)).filter(p => p && !hiddenFor(by, p.author)),
+      // ---- listes de comptes : nommées, privées (visibles par leur auteur seul) ou publiques ; chacune a son propre fil ----
+      createList(by, name, isPublic) {
+        const u = user(by); guard(by); name = String(name || '').trim().replace(/\s+/g, ' ');
+        need(name.length >= 1 && name.length <= 40, 'Nom de liste : 1 à 40 caractères');
+        const l = u.lists = u.lists || [];
+        need(l.length < MAX_LISTS, `${MAX_LISTS} listes maximum`);
+        need(!l.some(x => lc(x.name) === lc(name)), 'Vous avez déjà une liste de ce nom');
+        const x = { id: id(), name, public: !!isPublic, members: [], at: now() }; l.push(x); save(); return x;
+      },
+      updateList(by, listId, o) {
+        const l = ownList(by, listId); o = o || {};
+        if (o.name !== undefined) {
+          const name = String(o.name).trim().replace(/\s+/g, ' '); need(name.length >= 1 && name.length <= 40, 'Nom de liste : 1 à 40 caractères');
+          need(!user(by).lists.some(x => x !== l && lc(x.name) === lc(name)), 'Vous avez déjà une liste de ce nom'); l.name = name;
+        }
+        if (o.public !== undefined) l.public = !!o.public;
+        save(); return l;
+      },
+      deleteList(by, listId) { const l = ownList(by, listId), u = user(by); u.lists = u.lists.filter(x => x !== l); save(); },
+      // ajoute/retire un compte (pas besoin de le suivre) ; renvoie true s'il vient d'être ajouté
+      toggleListMember(by, listId, target) {
+        const l = ownList(by, listId), t = user(target); guard(by);
+        const i = l.members.findIndex(m => lc(m) === lc(t.name));
+        if (i >= 0) l.members.splice(i, 1); else { need(l.members.length < MAX_LIST_MEMBERS, `${MAX_LIST_MEMBERS} comptes maximum par liste`); l.members.push(t.name); }
+        save(); return i < 0;
+      },
+      // listes d'un compte vues par `by` : toutes les siennes, seulement les publiques pour les autres
+      lists: (owner, by) => { const o = db.users[lc(owner)]; return o ? (o.lists || []).filter(l => l.public || lc(o.name) === lc(by)) : []; },
+      list(owner, listId, by) { const l = api.lists(owner, by).find(x => x.id === listId); need(l, 'Liste introuvable'); return l; },
+      listsWith: (by, target) => (user(by).lists || []).filter(l => has(l.members, target)).map(l => l.id),
+      // fil dédié : posts racines des seuls comptes de la liste
+      listFeed(by, owner, listId) {
+        const l = api.list(owner, listId, by);
+        return db.posts.filter(p => !p.replyTo && has(l.members, p.author) && !hiddenFor(by, p.author)).sort((a, b) => b.id - a.id);
+      },
       // repartage sur son profil (posts racines des autres uniquement)
       toggleRepost(by, postId) {
         const me = user(by), p = db.posts.find(x => x.id === postId); need(p, 'Post introuvable');
@@ -389,7 +426,7 @@
       // pagination par curseur (id décroissant) : scope « feed » (abonnements) ou « explore » ; `after` compte les posts plus récents
       page(by, scope, o) {
         o = o || {};
-        const all = scope === 'feed' ? api.feed(by) : api.explore(by), limit = Math.min(50, Math.max(1, +o.limit || 10));
+        const all = scope === 'feed' ? api.feed(by) : scope === 'list' ? api.listFeed(by, o.owner, +o.list) : api.explore(by), limit = Math.min(50, Math.max(1, +o.limit || 10));
         if (o.after) return { count: all.filter(p => p.id > +o.after).length };
         const rest = o.before ? all.filter(p => p.id < +o.before) : all;
         return { posts: rest.slice(0, limit), more: rest.length > limit, total: all.length };
@@ -491,7 +528,8 @@
     if (!me) throw new Error('Utilisateur introuvable');
     const lcm = me.name.toLowerCase(), users = Object.create(null);
     for (const [k, u] of Object.entries(db.users)) {
-      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, email, emailPending, ...pub } = u;
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, email, emailPending, lists, ...pub } = u;
+      if (lists) pub.lists = k === lcm ? lists : lists.filter(l => l.public);
       if (k === lcm) Object.assign(pub, { blocked, muted, bookmarks, sanction, sanctions, dmRead, email, emailPending });
       else if (me.admin) Object.assign(pub, { sanction });
       users[k] = JSON.parse(JSON.stringify(pub));

@@ -206,3 +206,24 @@ console.log('ok');
   Notif.save(store, on); assert.deepStrictEqual(Notif.load(store), on);
   console.log('ok pwa et notifications');
 }
+(async () => {
+  const m = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
+  const n = Net(m); await n.signup('lia', 'pass1'); await n.signup('max', 'pass2'); await n.signup('zoe', 'pass3');
+  const priv = n.createList('lia', '  Amis  ', false), pub = n.createList('lia', 'Devs', true);
+  assert.throws(() => n.createList('lia', 'amis'), /déjà/); assert.throws(() => n.createList('lia', ''), /Nom/);
+  assert.strictEqual(n.toggleListMember('lia', priv.id, 'MAX'), true); n.toggleListMember('lia', pub.id, 'zoe');
+  n.post('max', 'hello de max'); n.post('zoe', 'salut de zoe'); n.post('lia', 'moi');
+  assert.deepStrictEqual(n.listFeed('lia', 'lia', priv.id).map(p => p.author), ['max']); // fil dédié, indépendant des abonnements
+  assert.strictEqual(n.feed('lia').length, 1);
+  assert.strictEqual(n.page('lia', 'list', { owner: 'lia', list: pub.id }).posts[0].author, 'zoe');
+  // confidentialité : liste privée invisible pour les autres, publique lisible
+  assert.deepStrictEqual(n.lists('lia', 'max').map(l => l.name), ['Devs']); assert.throws(() => n.listFeed('max', 'lia', priv.id), /introuvable/);
+  assert.deepStrictEqual(require('./social.js').snapshot(n.db(), 'max').users.lia.lists.map(l => l.name), ['Devs']);
+  assert.strictEqual(require('./social.js').snapshot(n.db(), 'lia').users.lia.lists.length, 2);
+  assert.throws(() => n.updateList('max', priv.id, { name: 'x' }), /introuvable/);
+  n.updateList('lia', priv.id, { public: true, name: 'Potes' }); assert.strictEqual(n.lists('lia', 'max').length, 2);
+  n.toggleListMember('lia', pub.id, 'zoe'); assert.strictEqual(n.listFeed('lia', 'lia', pub.id).length, 0);
+  await n.deleteAccount('max', 'pass2'); assert.strictEqual(n.list('lia', priv.id, 'lia').members.length, 0);
+  n.deleteList('lia', pub.id); assert.strictEqual(n.lists('lia', 'lia').length, 1);
+  console.log('ok listes de comptes');
+})().catch(e => { console.error(e); process.exit(1); });

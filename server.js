@@ -7,7 +7,7 @@ const Social = require('./social.js');
 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
-const ACTIONS = new Set(['post', 'deletePost', 'editPost', 'toggleBookmark', 'toggleRepost', 'toggleLike', 'toggleFollow', 'updateProfile', 'importUser', 'send', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'exportUser', 'markDmRead', 'saveDraft', 'deleteDraft', 'publishDraft']);
+const ACTIONS = new Set(['post', 'deletePost', 'editPost', 'toggleBookmark', 'toggleRepost', 'toggleLike', 'toggleFollow', 'updateProfile', 'importUser', 'send', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'exportUser', 'markDmRead', 'saveDraft', 'deleteDraft', 'publishDraft', 'createList', 'updateList', 'deleteList', 'toggleListMember']);
 const STATIC = new Set(['index.html', 'style.css', 'a11y.js', 'theme.js', 'social.js', 'sync.js', 'diag.js', 'app.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'notif.js']);
 const TYPES = { html: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', webmanifest: 'application/manifest+json; charset=utf-8', svg: 'image/svg+xml' };
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
@@ -146,8 +146,8 @@ function createServer(opts = {}) {
     }
     // pagination côté serveur du fil (scope=feed|explore) : ?limit=&before=<id> pour la suite, ?after=<id> pour compter les nouveaux posts
     if (route === 'GET /api/feed') {
-      const sc = url.searchParams.get('scope'); if (sc !== 'feed' && sc !== 'explore') throw new Http(400, 'Fil inconnu');
-      return send(res, 200, net.page(me.name, sc, { limit: url.searchParams.get('limit'), before: url.searchParams.get('before'), after: url.searchParams.get('after') }));
+      const sc = url.searchParams.get('scope'); if (sc !== 'feed' && sc !== 'explore' && sc !== 'list') throw new Http(400, 'Fil inconnu');
+      return send(res, 200, net.page(me.name, sc, { owner: url.searchParams.get('owner'), list: url.searchParams.get('list'), limit: url.searchParams.get('limit'), before: url.searchParams.get('before'), after: url.searchParams.get('after') }));
     }
     // « X est en train d'écrire » : éphémère, jamais stocké, transmis seulement au destinataire connecté
     if (route === 'POST /api/typing') {

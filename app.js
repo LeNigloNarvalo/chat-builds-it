@@ -38,14 +38,16 @@ const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 1 
 const go = (page, arg) => { view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
 // ---- fil paginé côté serveur (/api/feed) : pages de 10 posts, défilement infini, bandeau « N nouveaux posts » ----
 const PAGE = 10, fs = { scope: null, who: null, ids: [], more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: 0 };
-const feedScope = () => me && (view.page === 'feed' || view.page === 'explore') ? view.page : null;
+// clé du fil affiché : « feed », « explore » ou « list:<propriétaire>:<id> » (fil dédié d'une liste de comptes)
+const feedScope = () => !me ? null : view.page === 'feed' || view.page === 'explore' ? view.page : view.page === 'list' && view.arg ? 'list:' + view.arg.owner + ':' + view.arg.id : null;
+const feedQuery = sc => { const [k, o, i] = sc.split(':'); return k === 'list' ? `scope=list&owner=${encodeURIComponent(o)}&list=${i}` : 'scope=' + k; };
 async function feedLoad(reset) {
   const sc = feedScope(); if (!sc) return;
   if (reset || fs.scope !== sc || fs.who !== me) Object.assign(fs, { scope: sc, who: me, ids: [], more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: fs.gen + 1 });
   if (fs.busy) return;
   const gen = fs.gen; fs.busy = true;
   try {
-    const j = await sync.get(`/api/feed?scope=${sc}&limit=${PAGE}${fs.ids.length ? '&before=' + fs.ids[fs.ids.length - 1] : ''}`);
+    const j = await sync.get(`/api/feed?${feedQuery(sc)}&limit=${PAGE}${fs.ids.length ? '&before=' + fs.ids[fs.ids.length - 1] : ''}`);
     if (gen !== fs.gen) return;
     fs.ids.push(...j.posts.map(p => p.id).filter(i => !fs.ids.includes(i))); fs.more = j.more; fs.top = fs.top || fs.ids[0] || 0; fs.loaded = true; fs.busy = false;
   } catch (e) { if (gen === fs.gen) { err = e.message; fs.loaded = true; } }
@@ -54,7 +56,7 @@ async function feedLoad(reset) {
 // un changement est arrivé : combien de posts plus récents que le haut du fil affiché ?
 async function feedFresh() {
   const sc = feedScope(); if (!sc || sc !== fs.scope || !fs.loaded) return;
-  try { const j = await sync.get(`/api/feed?scope=${sc}&after=${fs.top || 0}`); if (sc === fs.scope && j.count !== fs.fresh) { fs.fresh = j.count; refresh(); } } catch (e) {}
+  try { const j = await sync.get(`/api/feed?${feedQuery(sc)}&after=${fs.top || 0}`); if (sc === fs.scope && j.count !== fs.fresh) { fs.fresh = j.count; refresh(); } } catch (e) {}
 }
 const more = new IntersectionObserver(es => { if (es.some(x => x.isIntersecting)) feedLoad(); }, { rootMargin: '300px' });
 // ---- messages privés : « écrit… » (éphémère, via le flux temps réel) ----
@@ -249,19 +251,23 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['drafts', `📝 Brouillons ${net.drafts(me).length || ''}`], ['dm', `✉️ Messages ${unreadDm.total || ''}`], ['profile', '👤 Profil'], ['theme', '🎨 Thème'], ['settings', '⚙️ Réglages'], ['blocks', '🚫 Bloqués'], ['security', '🔒 Sécurité'], ['diag', '✅ Vérification']].concat(net.isAdmin(me) ? [['mod', `🛡 Modération ${net.queue(me).length || ''}`]] : [])
+  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['lists', `🗂 Listes ${(net.lists(me, me) || []).length || ''}`], ['drafts', `📝 Brouillons ${net.drafts(me).length || ''}`], ['dm', `✉️ Messages ${unreadDm.total || ''}`], ['profile', '👤 Profil'], ['theme', '🎨 Thème'], ['settings', '⚙️ Réglages'], ['blocks', '🚫 Bloqués'], ['security', '🔒 Sécurité'], ['diag', '✅ Vérification']].concat(net.isAdmin(me) ? [['mod', `🛡 Modération ${net.queue(me).length || ''}`]] : [])
     .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
+  // onglets du fil : global + une entrée par liste (les siennes)
+  const tabs = () => { const ls = net.lists(me, me); return `<div class="card tabs" role="tablist" aria-label="Choix du fil"><button role="tab" aria-selected="${view.page === 'feed'}" class="${view.page === 'feed' ? 'on' : ''}" data-page="feed">🏠 Tout</button>${ls.map(l => `<button role="tab" aria-selected="${view.page === 'list' && view.arg.id === l.id}" class="${view.page === 'list' && view.arg.id === l.id && view.arg.owner === me ? 'on' : ''}" data-lopen="${esc(me)}:${l.id}">${l.public ? '🌐' : '🔒'} ${esc(l.name)}</button>`).join('')}<button data-page="lists">＋ Listes</button></div>`; };
   const mySanc = net.sanctionOf(me);
   const list = ps => ps.map(p => postHTML(p)).join('') || '<p class="mut">Rien ici pour l’instant.</p>';
   let h = '';
   const paged = () => {
-    if (fs.scope !== view.page || fs.who !== me || !fs.loaded) return '<p class="mut" role="status">Chargement du fil…</p>';
+    if (fs.scope !== feedScope() || fs.who !== me || !fs.loaded) return '<p class="mut" role="status">Chargement du fil…</p>';
     const ps = fs.ids.map(i => net.db().posts.find(p => p.id === i)).filter(Boolean);
     return (fs.fresh ? `<button class="card newbar" data-newposts>⬆ ${fs.fresh} nouveau${fs.fresh > 1 ? 'x' : ''} post${fs.fresh > 1 ? 's' : ''}</button>` : '') + list(ps)
       + (fs.more ? '<button class="card morebar" id="more" data-more>Chargement de la suite…</button>' : ps.length ? '<p class="mut" role="status">Vous avez tout vu 🥒</p>' : '');
   };
-  if (view.page === 'feed') h = composer('Quoi de neuf ?') + e + paged();
+  if (view.page === 'feed') h = composer('Quoi de neuf ?') + tabs() + e + paged();
+  else if (view.page === 'lists') h = listsPage(e);
+  else if (view.page === 'list') h = listPage(e, paged);
   else if (view.page === 'explore') {
     h = composer('Quoi de neuf ?') + e + `<div class="card"><b>Tendances</b> ${net.trending().map(([t, c]) => `<span class="tag" data-search="${t}">${t} (${c})</span>`).join(' ') || '<span class="mut">aucune</span>'}</div>` + paged();
   } else if (view.page === 'trends') {
@@ -287,7 +293,7 @@ function render() {
     h = `<div class="card prof"><div class="banner" style="background:${bannerCss(u.banner)}"></div><div class="pbody">${av(u.name, true)}<b class="pname">${esc(u.display || u.name)}</b> <span class="mut">@${esc(u.name)}</span>
       <p>${esc(u.bio) || '<span class="mut">Pas de bio</span>'}</p>${u.link ? `<p><a href="${esc(u.link)}" target="_blank" rel="noopener noreferrer nofollow">🔗 ${esc(u.link.replace(/^https?:\/\//, ''))}</a></p>` : ''}
       <p class="stats"><button data-sub="followers:${u.name}" class="${view.sub === 'followers' ? 'on' : ''}"><b>${fl.length}</b> abonnés</button> <button data-sub="following:${u.name}" class="${view.sub === 'following' ? 'on' : ''}"><b>${u.following.length}</b> abonnements</button></p>` +
-      (self ? `<button data-page="settings">⚙️ Modifier le profil</button>` : `<button data-follow="${u.name}">${fl.includes(me) ? 'Se désabonner' : 'Suivre'}</button> <button data-chat="${u.name}">Message</button>` + (u.admin ? '' : ` <button data-mute="${u.name}" aria-pressed="${net.isMuted(me, u.name)}">${net.isMuted(me, u.name) ? '🔊 Ne plus masquer' : '🔇 Masquer'}</button> <button data-block="${u.name}" aria-pressed="${net.isBlocked(me, u.name)}">${net.isBlocked(me, u.name) ? '✅ Débloquer' : '🚫 Bloquer'}</button>`)) + (net.sanctionOf(u.name) && net.isAdmin(me) ? ` <span class="err">${sancLabel(net.sanctionOf(u.name))}</span>` : '') + `</div></div>${e}` +
+      (self ? `<button data-page="settings">⚙️ Modifier le profil</button>` : `<button data-follow="${u.name}">${fl.includes(me) ? 'Se désabonner' : 'Suivre'}</button> <button data-chat="${u.name}">Message</button>` + (u.admin ? '' : ` <button data-mute="${u.name}" aria-pressed="${net.isMuted(me, u.name)}">${net.isMuted(me, u.name) ? '🔊 Ne plus masquer' : '🔇 Masquer'}</button> <button data-block="${u.name}" aria-pressed="${net.isBlocked(me, u.name)}">${net.isBlocked(me, u.name) ? '✅ Débloquer' : '🚫 Bloquer'}</button>`)) + (net.sanctionOf(u.name) && net.isAdmin(me) ? ` <span class="err">${sancLabel(net.sanctionOf(u.name))}</span>` : '') + `</div></div>${e}` + profileLists(u.name, self) +
       (view.sub ? `<div class="card"><b>${view.sub === 'followers' ? 'Abonnés' : 'Abonnements'}</b> <button data-sub="">✕</button></div>` + peopleList(view.sub === 'followers' ? fl : u.following) : (net.timeline(name, me).map(t => (t.by ? `<p class="mut rt">🔁 ${esc(shown(t.by))} a repartagé</p>` : '') + postHTML(t.post)).join('') || '<p class="mut">Rien ici pour l’instant.</p>'));
   } else if (view.page === 'mod' && net.isAdmin(me)) {
     h = modPage(e);
@@ -344,7 +350,32 @@ function render() {
   a11yPass();
   ensureLive();
   const m = $('#more'); if (m) more.observe(m);
-  if (feedScope() && (fs.scope !== view.page || fs.who !== me)) feedLoad(true);
+  if (feedScope() && (fs.scope !== feedScope() || fs.who !== me)) feedLoad(true);
+}
+// ---- listes de comptes ----
+function listsPage(e) {
+  const mine = net.lists(me, me);
+  const row = l => `<div class="card person"><b>${l.public ? '🌐' : '🔒'} ${esc(l.name)}</b> <span class="mut">${l.members.length} compte${l.members.length > 1 ? 's' : ''} · ${l.public ? 'publique' : 'privée'}</span> <button data-lopen="${esc(me)}:${l.id}">Ouvrir le fil</button></div>`;
+  return `<div class="card"><h2>🗂 Mes listes</h2><p class="mut">Regroupe des comptes dans des listes nommées et lis un fil dédié pour chacune. Une liste privée n’est visible que par toi ; une liste publique s’affiche sur ton profil.</p>
+    <input id="l-name" maxlength="40" placeholder="Nom de la liste (ex. Devs, Streamers…)" aria-label="Nom de la nouvelle liste"> <label><input type="checkbox" id="l-pub"> publique</label> <button data-lcreate>Créer la liste</button></div>${e}` + (mine.map(row).join('') || '<p class="mut">Aucune liste pour l’instant : crée la première ci-dessus.</p>');
+}
+function listPage(e, paged) {
+  const { owner, id } = view.arg; let l;
+  try { l = net.list(owner, id, me); } catch (x) { return `<div class="card"><p class="mut">Cette liste n’existe pas ou est privée.</p><button data-page="lists">Mes listes</button></div>`; }
+  const own = owner.toLowerCase() === me.toLowerCase(), who = shown(owner);
+  const members = l.members.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)}</span>${own ? ` <button data-lmem="${l.id}:${esc(n)}" aria-label="Retirer ${esc(n)} de la liste">Retirer</button>` : ''}</div>`).join('') || '<p class="mut">Cette liste est vide.</p>';
+  const head = `<div class="card"><h2>${l.public ? '🌐' : '🔒'} ${esc(l.name)}</h2><p class="mut">Liste ${l.public ? 'publique' : 'privée'} de <span class="who" data-user="${esc(owner)}">@${esc(owner)}</span> · ${l.members.length} compte${l.members.length > 1 ? 's' : ''}</p>` + (own
+    ? `<p><input id="l-ren" maxlength="40" value="${esc(l.name)}" aria-label="Nom de la liste"> <button data-lren="${l.id}">Renommer</button> <button data-lpub="${l.id}">${l.public ? '🔒 Rendre privée' : '🌐 Rendre publique'}</button> <button data-ldel="${l.id}">🗑 Supprimer</button></p>
+       <p><input id="l-add" placeholder="Ajouter un compte (pseudo)" aria-label="Pseudo à ajouter"> <button data-ladd="${l.id}">Ajouter</button></p>` : '') + `</div>`;
+  return (own ? tabsFor() : '') + head + e + `<div class="card"><b>Fil de la liste</b></div>` + (l.members.length ? paged() : '') + `<div class="card"><b>Comptes de la liste</b></div>` + members;
+}
+function tabsFor() { return `<p><button data-page="feed">← Mon fil</button> <button data-page="lists">🗂 Toutes mes listes</button></p>`; }
+// listes publiques d'un profil (et, sur le profil d'autrui, ajout à ses propres listes)
+function profileLists(name, self) {
+  const pub = net.lists(name, me).filter(l => self || l.public);
+  const mine = self ? [] : net.lists(me, me);
+  return (pub.length ? `<div class="card"><b>🗂 Listes${self ? '' : ' publiques'}</b> ${pub.map(l => `<button data-lopen="${esc(name)}:${l.id}">${l.public ? '🌐' : '🔒'} ${esc(l.name)} (${l.members.length})</button>`).join(' ')}</div>` : '')
+    + (!self ? `<div class="card"><b>Ajouter @${esc(name)} à une liste</b> ${mine.map(l => `<button data-lmem="${l.id}:${esc(name)}" aria-pressed="${l.members.some(m => m.toLowerCase() === name.toLowerCase())}">${l.members.some(m => m.toLowerCase() === name.toLowerCase()) ? '✔' : '＋'} ${esc(l.name)}</button>`).join(' ') || '<span class="mut">Crée d’abord une liste dans 🗂 Listes.</span>'}</div>` : '');
 }
 // accessibilité : éléments cliquables non-boutons focalisables, états ARIA, libellés
 function a11yPass() {
@@ -453,7 +484,7 @@ document.addEventListener('click', async ev => {
   } else if ('notiftest' in b.dataset) Notif.show({ id: 'test' + Date.now(), type: 'mention' }, 'Le bocal');
 });
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift]');
+  const d = ev.target.closest('*[data-page],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
   if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
@@ -539,6 +570,13 @@ document.addEventListener('click', ev => {
   else if ('sub' in D) { const [k, n] = D.sub.split(':'); view = { page: 'profile', arg: n, sub: k || null }; render(); }
   else if ('grad' in D) { $('#s-gradv').value = 'grad:' + D.grad; $('#s-banner').value = ''; $('#pvb').style.background = GRADS[+D.grad]; }
   else if ('saveprofile' in D) attempt(async () => { await net.updateProfile(me, { display: v('#s-display'), bio: v('#s-bio'), avatar: v('#s-avatar'), banner: v('#s-banner') || v('#s-gradv'), link: v('#s-link') }); if (!err) view = { page: 'profile' }; });
+  else if ('lopen' in D) { const [o, i] = D.lopen.split(':'); err = ''; go('list', { owner: o, id: +i }); }
+  else if ('lcreate' in D) attempt(async () => { const l = await net.createList(me, v('#l-name'), $('#l-pub').checked); go('list', { owner: me, id: l.id }); });
+  else if ('lpub' in D) attempt(() => net.updateList(me, +D.lpub, { public: !net.list(me, +D.lpub, me).public }));
+  else if ('lren' in D) attempt(() => net.updateList(me, +D.lren, { name: v('#l-ren') }));
+  else if ('ldel' in D) { if (confirm('Supprimer cette liste ?')) attempt(async () => { await net.deleteList(me, +D.ldel); go('lists'); }); }
+  else if ('ladd' in D) attempt(async () => { const n = (v('#l-add') || '').trim().replace(/^@/, ''); if (!n) throw new Error('Pseudo à ajouter ?'); const t = net.profile(n).name; if (!net.listsWith(me, t).includes(+D.ladd)) await net.toggleListMember(me, +D.ladd, t); });
+  else if ('lmem' in D) { const [i, n] = D.lmem.split(':'); attempt(() => net.toggleListMember(me, +i, n)); }
   else if ('user' in D) go('profile', D.user);
   else if ('follow' in D) attempt(() => net.toggleFollow(me, D.follow));
   else if ('chat' in D) go('dm', D.chat);
