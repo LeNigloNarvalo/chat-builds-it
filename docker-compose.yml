@@ -1,0 +1,26 @@
+# docker compose up -d --build  →  http://localhost:8080
+# Les données (base SQLite + sauvegardes) vivent dans le volume « cornichon-data » (/data dans le conteneur).
+services:
+  cornichon:
+    build: .
+    image: cornichon:latest
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    environment:
+      PORT: ${PORT:-8080}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      BACKUP_EVERY_HOURS: ${BACKUP_EVERY_HOURS:-24}
+      BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      WEBHOOK_ALLOW_PRIVATE: ${WEBHOOK_ALLOW_PRIVATE:-0}
+    volumes:
+      - cornichon-data:/data
+    stop_grace_period: 15s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  cornichon-data:

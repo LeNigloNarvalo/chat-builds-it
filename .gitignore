@@ -1,2 +1,6 @@
 data/
 node_modules/
+cornichon.db
+cornichon.db-shm
+cornichon.db-wal
+.env

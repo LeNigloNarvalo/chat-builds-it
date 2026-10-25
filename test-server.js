@@ -296,6 +296,13 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
     const call = async (p, tok, data) => { const r = await fetch(base + p, { method: data === undefined ? 'GET' : 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, tok ? { Authorization: 'Bearer ' + tok } : {}), body: data === undefined ? undefined : JSON.stringify(data) }); return Object.assign(await r.json(), { status: r.status }); };
     const open = async name => (await call('/api/signup', null, { name, password: 'secret1' })).token;
     const adm = await call('/api/stream-session', null, {}), user = { token: await open('bkuser') }, A = adm.token;
+    // supervision : sonde de santé publique, état réservé à l'admin (métriques, erreurs, sauvegardes planifiées)
+    const hl = await call('/api/health'); assert.strictEqual(hl.status, 200); assert.strictEqual(hl.ok, true); assert.strictEqual(hl.db, true); assert.strictEqual(hl.backups, 'ok'); assert.ok(!('users' in hl));
+    assert.strictEqual((await call('/api/admin/status', user.token)).status, 403); assert.strictEqual((await call('/api/admin/status')).status, 401);
+    bsrv.ops.error('test', new Error('boum'));
+    const sts = await call('/api/admin/status', A); assert.ok(sts.requests.total >= 3 && sts.requests.codes['2xx'] >= 1 && sts.requests.codes['4xx'] >= 1, 'compteurs de requêtes');
+    assert.strictEqual(sts.errors.recent[0].message, 'boum'); assert.ok(sts.uptime >= 0 && sts.memory.rss > 0 && sts.db.size > 0 && sts.backups.everyHours === 24 && sts.backups.last);
+    assert.ok(sts.routes.some(r => r.route === 'GET /api/health'));
     assert.strictEqual((await call('/api/admin/backups', user.token)).status, 403); assert.strictEqual((await call('/api/admin/backups')).status, 401);
     let st = await call('/api/admin/backups', A); assert.ok(st.backups.length >= 1 && st.backups[0].kind === 'auto', 'sauvegarde quotidienne au démarrage');
     const act = (tok, method, ...args) => call('/api/call', tok, { method, args });
@@ -350,6 +357,16 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
     r = await call('/api/sessions', pw.token); assert.strictEqual(r.log[0].kind, 'password_change'); assert.strictEqual(r.sessions.length, 1);
     assert.strictEqual((await call('/api/sessions', stranger.token)).log.length, 1, 'chacun ne voit que son journal');
     ssrv.close();
+  }
+  { // configuration par variables d'environnement : valeurs invalides → défauts ; intervalle de sauvegarde planifiée
+    const { config } = require('./ops.js'), cf = config({ PORT: '9000', BACKUP_KEEP: '500', BACKUP_EVERY_HOURS: 'abc', BACKUP_DIR: '/x', WEBHOOK_ALLOW_PRIVATE: '1' });
+    assert.deepStrictEqual([cf.port, cf.backupKeep, cf.backupEveryHours, cf.backupDir, cf.webhookPrivate], [9000, 90, 24, '/x', true]); assert.strictEqual(config({}).port, 8080);
+    const { Backups } = require('./backup.js'), { DatabaseSync } = require('node:sqlite'), bd = path.join(dir, 'sched'), sdb = new DatabaseSync(path.join(dir, 'sched.db'));
+    sdb.exec('CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)');
+    const bk = Backups(sdb, bd, { keep: 2, everyMs: 50 });
+    assert.ok(bk.daily(), 'première sauvegarde'); assert.strictEqual(bk.daily(), null, 'pas avant l\'intervalle');
+    await new Promise(ok => setTimeout(ok, 70)); assert.ok(bk.daily(), 'sauvegarde suivante après l\'intervalle');
+    await new Promise(ok => setTimeout(ok, 70)); bk.daily(); assert.strictEqual(bk.list().filter(b => b.kind === 'auto').length, 2, 'rotation'); sdb.close();
   }
   for (const x of [s3, srv, rcv]) x.close(); rcv.closeAllConnections && rcv.closeAllConnections();
   console.log('ok jetons, webhooks, double authentification, statistiques & sauvegardes'); process.exit(0);

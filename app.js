@@ -534,10 +534,31 @@ function modPage(e) {
   <div class="card"><b>Historique</b>${hist.map(r => `<div class="mut">#${r.postId} @${esc(r.target)} · ${esc(R[r.reason] || r.reason)} → ${({ dismiss: 'sans suite', hide: 'post masqué', delete: 'post supprimé', warn: 'avertissement', mute: 'mute', suspend: 'suspension', ban: 'bannissement' })[r.action]} (${ago(r.closedAt)})</div>`).join('') || '<p class="mut">Vide.</p>'}</div>`;
 }
 // ---- tableau de bord d'administration : vue d'ensemble, utilisateurs, signalements, journal d'audit ----
-const adm = { tab: 'overview', q: '', del: null, rest: null, bk: null, bkMsg: '' };
+const adm = { tab: STREAM ? 'status' : 'overview', q: '', del: null, rest: null, bk: null, bkMsg: '', st: null };
 async function bkLoad() { try { adm.bk = await sync.get('/api/admin/backups'); } catch (e) { adm.bk = { backups: [], keep: 7, min: 1, max: 90 }; err = e.message; } if (view.page === 'admin') refresh(); }
 const KINDS = { auto: '🕑 automatique', manual: '🖐 manuelle', pre: '🛟 avant restauration' };
 const fsize = n => n >= 1048576 ? (n / 1048576).toFixed(1).replace('.', ',') + ' Mo' : Math.max(1, Math.round(n / 1024)) + ' Ko';
+setInterval(() => { if (view.page === 'admin' && adm.tab === 'status' && !document.hidden && !adm.stBusy) { adm.stBusy = true; stLoad().finally(() => { adm.stBusy = false; }); } }, 5000);
+async function stLoad() { try { adm.st = await sync.get('/api/admin/status'); adm.stErr = ''; } catch (e) { adm.stErr = e.message; } adm.stAt = Date.now(); if (view.page === 'admin' && adm.tab === 'status') refresh(); }
+const dur = s => s >= 86400 ? Math.floor(s / 86400) + ' j ' + Math.floor(s % 86400 / 3600) + ' h' : s >= 3600 ? Math.floor(s / 3600) + ' h ' + Math.floor(s % 3600 / 60) + ' min' : s >= 60 ? Math.floor(s / 60) + ' min ' + s % 60 + ' s' : s + ' s';
+function statusPage(head) {
+  if (!adm.st || (Date.now() - (adm.stAt || 0) > 5000 && !adm.stBusy)) { adm.stBusy = true; stLoad().finally(() => { adm.stBusy = false; }); }
+  const S = adm.st; if (!S) return head + (adm.stErr ? `<p class="err" role="alert">${esc(adm.stErr)}</p>` : '<p class="mut" role="status">Chargement…</p>');
+  const R = S.requests, c = R.codes, bad = S.errors.count, B = S.backups, late = B && B.last && Date.now() - B.last > 2 * B.everyHours * 3600000 + 3600000;
+  const tile = (l, v, cls) => `<div class="card"><div class="mut">${l}</div><b class="${cls || ''}" style="font-size:1.4em">${v}</b></div>`;
+  return head + `<div class="card"><b>🩺 État du serveur</b> <span class="${bad ? 'err' : 'ok'}">${bad ? '⚠️ ' + bad + ' erreur(s) depuis le démarrage' : '✅ aucune erreur'}</span>
+    <p class="mut">Mise à jour automatique toutes les 5 s · Sonde Docker : <code>/api/health</code> · Node ${esc(S.node)} · processus ${S.pid}</p></div>
+    <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">
+    ${tile('⏱ En ligne depuis', dur(S.uptime))}${tile('📡 Requêtes', R.total)}${tile('⚡ Latence p50 / p95', R.p50 + ' / ' + R.p95 + ' ms')}
+    ${tile('✅ 2xx / 3xx', c['2xx'] + ' / ' + c['3xx'])}${tile('🙈 4xx', c['4xx'])}${tile('💥 5xx', c['5xx'], c['5xx'] ? 'err' : '')}
+    ${tile('🧠 Mémoire (RSS)', fsize(S.memory.rss))}${tile('🗄 Base SQLite', fsize(S.db.size))}${tile('🔴 Clients en direct', S.live)}${tile('👥 Comptes', S.users)}</div>
+    <div class="card"><b>💾 Sauvegardes planifiées</b>${B ? `<p>Toutes les ${B.everyHours} h · ${B.keep} automatique(s) conservée(s) · ${B.count} fichier(s) au total.</p>
+      <p class="${late ? 'err' : 'ok'}">${B.last ? (late ? '⚠️ En retard — dernière ' : '✅ Dernière : ') + ago(B.last) + ' · prochaine ' + (B.next > Date.now() ? 'dans ' + dur(Math.round((B.next - Date.now()) / 1000)) : 'au prochain contrôle') : 'Aucune sauvegarde automatique pour l’instant.'}</p>`
+      : '<p class="mut">Indisponibles avec une base en mémoire.</p>'}</div>
+    <div class="card"><b>🔥 Routes les plus sollicitées</b>${S.routes.length ? `<table><tr><th>Route</th><th>Appels</th><th>Moy.</th><th>Max</th></tr>${S.routes.map(r => `<tr><td><code>${esc(r.route)}</code></td><td>${r.n}</td><td>${r.avg} ms</td><td>${r.max} ms</td></tr>`).join('')}</table>` : '<p class="mut">Aucune requête d’API pour l’instant.</p>'}</div>
+    <div class="card"><b>🚨 Dernières erreurs</b>${S.errors.recent.length ? `<ul class="diag">${S.errors.recent.map(x => `<li>❌ <b>${esc(x.where)}</b> <span class="mut">· ${ago(x.at)} · ${esc(x.message)}</span></li>`).join('')}</ul>` : '<p class="ok">Aucune erreur enregistrée.</p>'}</div>
+    <div class="card"><b>⚙️ Configuration (variables d’environnement)</b><p class="mut">Port <code>${S.config.port}</code> · <code>PUBLIC_URL</code> ${S.config.publicUrl ? esc(S.config.publicUrl) : 'non définie'} · base <code>${esc(S.db.file)}</code> · webhooks privés ${S.config.webhookPrivate ? 'autorisés' : 'refusés'}</p></div>`;
+}
 function backupsPage(head) {
   if (!adm.bk) { bkLoad(); return head + '<p class="mut" role="status">Chargement…</p>'; }
   const B = adm.bk, newest = B.backups[0];
@@ -553,11 +574,12 @@ function backupsPage(head) {
 const AUDIT = { 'report-dismiss': '✅ signalement classé', 'report-delete': '🗑 post supprimé', 'report-hide': '🙈 post masqué', 'appeal-accept': '✅ appel accepté', 'appeal-reject': '❌ appel rejeté', 'report-warn': '⚠️ avertissement (signalement)', 'report-suspend': '⏸ suspension (signalement)', 'report-ban': '⛔ bannissement (signalement)', 'user-warn': '⚠️ avertissement', 'user-mute': '🔇 mute', 'report-mute': '🔇 mute (signalement)', 'user-suspend': '⏸ suspension', 'user-ban': '⛔ bannissement', 'user-delete': '🗑 compte supprimé', lift: '🔓 sanction levée' };
 function adminPage(e) {
   const S = net.adminStats(me), nq = net.queue(me).length + net.appeals(me).length;
-  const tabs = [['overview', '📊 Vue d’ensemble'], ['users', `👥 Utilisateurs (${S.users})`], ['reports', `🚩 Signalements${nq ? ' (' + nq + ')' : ''}`], ['audit', '📜 Journal d’audit'], ['backups', '💾 Sauvegardes']];
+  const tabs = [['overview', '📊 Vue d’ensemble'], ['users', `👥 Utilisateurs (${S.users})`], ['reports', `🚩 Signalements${nq ? ' (' + nq + ')' : ''}`], ['audit', '📜 Journal d’audit'], ['backups', '💾 Sauvegardes'], ['status', '🩺 État']];
   const head = `<div class="card"><h2>🛠 Tableau de bord d’administration</h2><p class="mut">Réservé aux administrateurs : toute action de modération est inscrite au journal d’audit.</p>
     <div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${adm.tab === k}" data-atab="${k}" class="${adm.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>${e}`;
   if (adm.tab === 'reports') return head + modPage('');
   if (adm.tab === 'backups') return backupsPage(head);
+  if (adm.tab === 'status') return statusPage(head);
   if (adm.tab === 'audit') {
     const log = net.auditLog(me, 200);
     return head + `<div class="card"><b>Journal d’audit</b> <span class="mut">· ${log.length} dernière${log.length > 1 ? 's' : ''} action${log.length > 1 ? 's' : ''}</span>` + (log.length ? `<div class="scroll"><table class="dvlog"><thead><tr><th>Quand</th><th>Admin</th><th>Action</th><th>Cible</th><th>Détail</th></tr></thead><tbody>${log.map(a => `<tr><td title="${esc(I.dateTime(a.at))}">${ago(a.at)}</td><td>@${esc(a.by)}</td><td>${AUDIT[a.type] || esc(a.type)}</td><td>${a.target ? '@' + esc(a.target) : ''}</td><td>${esc(a.detail)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="mut">Aucune action de modération pour l’instant.</p>') + '</div>';
@@ -1324,7 +1346,7 @@ document.addEventListener('click', ev => {
   else if ('unmute' in D) attempt(() => net.toggleMute(me, D.unmute));
   else if ('modhist' in D) { mc.who = D.modhist || null; render(); }
   else if ('lift' in D) attempt(() => net.liftSanction(me, D.lift));
-  else if ('atab' in D) { adm.tab = D.atab; adm.del = null; adm.rest = null; adm.bkMsg = ''; if (D.atab === 'backups') adm.bk = null; err = ''; render(); }
+  else if ('atab' in D) { adm.tab = D.atab; adm.del = null; adm.rest = null; adm.bkMsg = ''; if (D.atab === 'backups') adm.bk = null; if (D.atab === 'status') adm.st = null; err = ''; render(); }
   else if ('bkcreate' in D) attempt(async () => { adm.bk = await sync.send('/api/admin/backups/create', {}); adm.bkMsg = 'Sauvegarde créée ✔'; });
   else if ('bkkeep' in D) attempt(async () => { adm.bk = await sync.send('/api/admin/backups/keep', { keep: +v('#bk-keep') }); adm.bkMsg = 'Rotation : ' + adm.bk.keep + ' sauvegarde(s) automatique(s) conservée(s) ✔'; });
   else if ('bkask' in D) { adm.rest = D.bkask; adm.bkMsg = ''; render(); }

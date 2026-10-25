@@ -14,6 +14,7 @@ function Backups(db, dir, opts = {}) {
   const clampKeep = n => Math.min(MAX_KEEP, Math.max(MIN_KEEP, Math.floor(+n) || 7));
   let keep = clampKeep(opts.keep || 7);
   try { keep = clampKeep(JSON.parse(fs.readFileSync(cfgFile, 'utf8')).keep); } catch (e) {}
+  const every = Math.max(1, +opts.everyMs || DAY);
   let last = 0; // garantit des noms de fichiers uniques même dans la même milliseconde
 
   const list = () => fs.readdirSync(dir).filter(f => NAME.test(f)).map(f => {
@@ -36,10 +37,10 @@ function Backups(db, dir, opts = {}) {
     if (kind === 'auto') rotate();
     return list().find(b => b.id === id);
   }
-  // sauvegarde quotidienne : crée la sauvegarde du jour si aucune sauvegarde automatique n'a moins de 24 h
+  // sauvegarde planifiée (24 h par défaut, BACKUP_EVERY_HOURS) : crée une sauvegarde si aucune sauvegarde automatique n'est plus récente que l'intervalle
   function daily() {
     const a = list().find(b => b.kind === 'auto');
-    if (a && Date.now() - a.at < DAY) return null;
+    if (a && Date.now() - a.at < every) return null;
     return create('auto');
   }
   function check(f) { // un fichier abîmé ne doit jamais remplacer la base vivante
@@ -73,7 +74,7 @@ function Backups(db, dir, opts = {}) {
     keep = clampKeep(n); fs.writeFileSync(cfgFile, JSON.stringify({ keep }), { mode: 0o600 });
     return rotate();
   }
-  return { list, create, daily, rotate, restore, remove, file, setKeep, keep: () => keep, MIN_KEEP, MAX_KEEP };
+  return { list, create, daily, rotate, restore, remove, file, setKeep, keep: () => keep, every: () => every, MIN_KEEP, MAX_KEEP };
 }
 
 module.exports = { Backups, NAME };

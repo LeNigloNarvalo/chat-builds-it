@@ -124,3 +124,4 @@ header #me{white-space:nowrap;min-width:0}.phi{white-space:nowrap;flex:none}
 /* longs fils : le navigateur ne calcule ni ne peint les éléments hors écran */
 #app .post,#app .rank{content-visibility:auto;contain-intrinsic-size:auto 140px}
 #app .msg{content-visibility:auto;contain-intrinsic-size:auto 36px}
+table{width:100%;border-collapse:collapse;font-size:.9em}th,td{text-align:left;padding:3px 6px;border-bottom:1px solid var(--line,#8884)}

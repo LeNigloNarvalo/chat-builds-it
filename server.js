@@ -3,7 +3,7 @@
 // et envoient leurs actions à /api/call, authentifiées par une session aléatoire (seul son hachage SHA-256 est stocké).
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
-const { Store } = require('./store.js'), Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp, deviceLabel } = require('./totp.js'), { Backups } = require('./backup.js'), { Public } = require('./public.js');
+const { Store } = require('./store.js'), Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp, deviceLabel } = require('./totp.js'), { Backups } = require('./backup.js'), { Public } = require('./public.js'), { config, Ops } = require('./ops.js');
 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
@@ -14,7 +14,8 @@ const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 
 function createServer(opts = {}) {
   const dir = opts.dir || __dirname;
-  const dbFile = opts.db || process.env.CORNICHON_DB || path.join(__dirname, 'data', 'cornichon.db');
+  const cfg = config(), ops = Ops(), fail = (what, e) => { ops.error(what, e); console.error(what + ' :', e); };
+  const dbFile = opts.db || cfg.db || path.join(__dirname, 'data', 'cornichon.db');
   if (dbFile !== ':memory:') fs.mkdirSync(path.dirname(dbFile), { recursive: true });
   const db = new DatabaseSync(dbFile);
   db.exec(`PRAGMA journal_mode=WAL;
@@ -26,14 +27,14 @@ function createServer(opts = {}) {
     CREATE TABLE IF NOT EXISTS security_log (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, kind TEXT NOT NULL, label TEXT NOT NULL, at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS security_log_name ON security_log (name, at);`);
   for (const col of ['label TEXT', 'last_seen INTEGER', 'place TEXT']) { try { db.exec('ALTER TABLE sessions ADD COLUMN ' + col); } catch (e) { /* colonne déjà présente */ } }
-  const store = Store(db, Social.KEY, () => { announce(); setImmediate(() => { try { dev.scan(); } catch (e) { console.error('Webhooks :', e); } }); });
+  const store = Store(db, Social.KEY, () => { announce(); setImmediate(() => { try { dev.scan(); } catch (e) { fail('Webhooks', e); } }); });
   if (store.migrated) console.log('Stockage : données migrées vers les tables SQLite indexées.');
   const storage = store.storage, version = store.version;
   const net = Social.Net(storage);
   const tfa = Totp(db);
   // ---- sauvegardes : une par jour (et au démarrage si la dernière date de plus de 24 h), rotation automatique ----
-  const backups = dbFile === ':memory:' ? null : Backups(db, opts.backupDir || path.join(path.dirname(dbFile), 'backups'), { keep: opts.backupKeep });
-  const dailyBackup = () => { try { backups.daily(); } catch (e) { console.error('Sauvegarde automatique :', e); } };
+  const backups = dbFile === ':memory:' ? null : Backups(db, opts.backupDir || cfg.backupDir || path.join(path.dirname(dbFile), 'backups'), { keep: opts.backupKeep || cfg.backupKeep, everyMs: opts.backupEveryMs || cfg.backupEveryHours * 3600000 });
+  const dailyBackup = () => { try { backups.daily(); } catch (e) { fail('Sauvegarde automatique', e); } };
   const backupTimer = backups && setInterval(dailyBackup, opts.backupCheckMs || 3600000); if (backupTimer) { backupTimer.unref(); dailyBackup(); }
   const pub = Public(net, { publicUrl: process.env.PUBLIC_URL || opts.publicUrl });
   const dev = Dev(db, net, { allowPrivate: opts.webhookPrivate || process.env.WEBHOOK_ALLOW_PRIVATE === '1' });
@@ -50,13 +51,13 @@ function createServer(opts = {}) {
   const beat = setInterval(() => { for (const c of live) { try { c.res.write(': ♥\n\n'); } catch (e) { live.delete(c); } } }, 25000); beat.unref();
 
   // ---- publication planifiée : l'horloge du serveur publie les brouillons dont la date est arrivée ----
-  const tick = () => { try { net.publishDue(); } catch (e) { console.error('Publication planifiée :', e); } };
+  const tick = () => { try { net.publishDue(); } catch (e) { fail('Publication planifiée', e); } };
   const sched = setInterval(tick, 5000); sched.unref(); tick();
   // suppressions de compte dont le délai de grâce est écoulé (lancé après l'initialisation complète, jamais au démarrage)
   const reap = () => {
     try {
       for (const n of net.dueDeletions()) if (net.finalizeDeletion(n)) { delV.run(n.toLowerCase(), n.toLowerCase()); delUser.run(n); db.prepare('DELETE FROM security_log WHERE name = ?').run(n); tfa.forget(n); dev.forget(n); }
-    } catch (e) { console.error('Suppression de compte :', e); }
+    } catch (e) { fail('Suppression de compte', e); }
   };
   const reaper = setInterval(reap, 5000); reaper.unref();
 
@@ -134,11 +135,11 @@ function createServer(opts = {}) {
     mail(u.email, 'Cornichon : connexion suspecte sur votre compte', `Bonjour @${u.name},\n\n${why}\nAppareil : ${deviceLabel(req.headers['user-agent'])}${placeOf(req) ? ' · ' + placeOf(req) : ''}\n\nSi c'était vous, ignorez ce message.\nSinon, sécurisez votre compte (déconnecte tous les appareils et envoie un lien pour changer de mot de passe ; valable 7 jours) :\n${origin()}/?secure=${makeToken('alert', u.name, u.email)}`);
   };
   const checkNewDevice = (name, req) => { // à appeler AVANT d'ouvrir la session
-    try { if (anyL.get(name) && !seenL.get(name, deviceLabel(req.headers['user-agent']), placeOf(req))) alertMail(name, 'Une connexion depuis un appareil ou un lieu inhabituel vient d\'avoir lieu.', req); } catch (e) { console.error('Alerte de connexion :', e); }
+    try { if (anyL.get(name) && !seenL.get(name, deviceLabel(req.headers['user-agent']), placeOf(req))) alertMail(name, 'Une connexion depuis un appareil ou un lieu inhabituel vient d\'avoir lieu.', req); } catch (e) { fail('Alerte de connexion', e); }
   };
-  const checkBurst = (name, req) => { try { if (failL.get(name, Date.now() - 600000).n >= 5) alertMail(name, 'Plusieurs tentatives de connexion échouées ont visé votre compte ces dernières minutes.', req); } catch (e) { console.error('Alerte de connexion :', e); } };
+  const checkBurst = (name, req) => { try { if (failL.get(name, Date.now() - 600000).n >= 5) alertMail(name, 'Plusieurs tentatives de connexion échouées ont visé votre compte ces dernières minutes.', req); } catch (e) { fail('Alerte de connexion', e); } };
   // e-mails de notification (immédiats hors heures calmes) et résumés quotidiens, selon les préférences de chaque compte
-  const mailTick = () => { try { for (const j of net.mailJobs(origin())) mail(j.to, j.subject, j.text); } catch (e) { console.error('E-mails de notification :', e); } };
+  const mailTick = () => { try { for (const j of net.mailJobs(origin())) mail(j.to, j.subject, j.text); } catch (e) { fail('E-mails de notification', e); } };
   const mailer = setInterval(mailTick, opts.mailCheckMs || 5000); mailer.unref();
 
   // ---- limite de débit par IP sur les routes d'authentification ----
@@ -164,7 +165,11 @@ function createServer(opts = {}) {
 
   async function api(req, res, url) {
     const route = req.method + ' ' + url.pathname;
-    if (route === 'GET /api/health') return send(res, 200, { ok: true });
+    if (route === 'GET /api/health') { // public et sans donnée sensible : sert aux sondes Docker / load balancer
+      let dbOk = true; try { db.prepare('SELECT 1').get(); } catch (e) { dbOk = false; fail('Santé', e); }
+      const last = backups && backups.list().find(b => b.kind === 'auto'), late = !!backups && !!last && Date.now() - last.at > 2 * backups.every() + 3600000;
+      return send(res, dbOk ? 200 : 503, { ok: dbOk, db: dbOk, backups: backups ? (late ? 'late' : 'ok') : 'off', uptime: ops.metrics().uptime });
+    }
     if (/^POST \/api\/(signup|login|stream-session|forgot|reset|verify-email|secure-account)$/.test(route) && limited(req)) throw new Http(429, 'Trop de requêtes : réessayez dans une minute');
     if (route === 'POST /api/signup') { const b = await body(req); const name = await net.signup(b.name, b.password, b.bio); return send(res, 200, openSession(name, req, 'signup')); }
     if (route === 'POST /api/login') {
@@ -245,6 +250,18 @@ function createServer(opts = {}) {
         if (dv === '/redeliver') return send(res, 200, await dev.redeliver(me.name, b.id));
       }
       throw new Http(404, 'Route inconnue');
+    }
+    // ---- état du serveur (métriques, erreurs, configuration utile) : réservé aux administrateurs ----
+    if (route === 'GET /api/admin/status') {
+      if (!net.isAdmin(me.name)) throw new Http(403, 'Réservé à l\'administrateur');
+      let dbSize = 0; if (dbFile !== ':memory:') try { dbSize = fs.statSync(dbFile).size + (fs.existsSync(dbFile + '-wal') ? fs.statSync(dbFile + '-wal').size : 0); } catch (e) {}
+      const list = backups ? backups.list() : [], auto = list.find(b => b.kind === 'auto');
+      return send(res, 200, Object.assign(ops.metrics(), {
+        db: { file: dbFile === ':memory:' ? 'mémoire' : path.basename(dbFile), size: dbSize, version: version() },
+        live: live.size, users: net.adminStats(me.name).users,
+        backups: backups ? { count: list.length, last: auto ? auto.at : null, everyHours: Math.round(backups.every() / 3600000), keep: backups.keep(), next: auto ? auto.at + backups.every() : Date.now() } : null,
+        config: { port: server.address() ? server.address().port : cfg.port, publicUrl: process.env.PUBLIC_URL || opts.publicUrl || '', webhookPrivate: !!(opts.webhookPrivate || cfg.webhookPrivate) },
+      }));
     }
     // ---- sauvegardes et restauration : réservées aux administrateurs ----
     if (url.pathname.startsWith('/api/admin/backups')) {
@@ -348,6 +365,8 @@ function createServer(opts = {}) {
   }
 
   const server = http.createServer(async (req, res) => {
+    const t0 = process.hrtime.bigint(), path0 = (req.url || '').split('?')[0];
+    res.on('finish', () => ops.request(req.method, path0, res.statusCode, Number(process.hrtime.bigint() - t0) / 1e6));
     try {
       const url = new URL(req.url, 'http://x');
       if (url.pathname.startsWith('/api/')) return await api(req, res, url);
@@ -361,21 +380,24 @@ function createServer(opts = {}) {
       res.end(fs.readFileSync(path.join(dir, file)));
     } catch (e) {
       if (res.headersSent) return res.end();
-      if (e.code === undefined && e.constructor !== Error) console.error('Erreur interne :', e);
+      if (e.code === undefined && e.constructor !== Error) fail('Erreur interne', e);
       // messages de l'application (Error simples) renvoyés tels quels ; erreurs internes jamais détaillées
       send(res, e.code >= 400 ? e.code : e.constructor === Error ? 400 : 500, { error: e.code >= 400 || e.constructor === Error ? e.message : 'Erreur interne du serveur : réessayez dans un instant' });
     }
   });
   server.on('close', () => { clearInterval(beat); clearInterval(sched); clearInterval(reaper); clearInterval(mailer); if (backupTimer) clearInterval(backupTimer); for (const c of live) c.res.end(); live.clear(); db.close(); });
+  server.ops = ops;
   return server;
 }
 
 module.exports = { createServer };
 if (require.main === module) {
-  fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true });
-  // une erreur inattendue ne doit pas faire tomber tout le serveur (sinon : « Erreur du serveur » partout)
-  process.on('uncaughtException', e => console.error('Exception non gérée :', e));
-  process.on('unhandledRejection', e => console.error('Promesse rejetée :', e));
-  const port = +process.env.PORT || 8080;
-  createServer().listen(port, process.env.HOST || '0.0.0.0', () => console.log(`🥒 Cornichon sur http://localhost:${port}`));
+  const cfg = config();
+  const server = createServer();
+  // une erreur inattendue ne doit pas faire tomber tout le serveur (sinon : « Erreur du serveur » partout) ; elle est gardée pour la page d'état
+  process.on('uncaughtException', e => { server.ops.error('Exception non gérée', e); console.error('Exception non gérée :', e); });
+  process.on('unhandledRejection', e => { server.ops.error('Promesse rejetée', e); console.error('Promesse rejetée :', e); });
+  // arrêt propre (docker stop) : on ferme le serveur, ce qui vide le WAL et ferme la base
+  for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { console.log('Arrêt demandé (' + sig + ')'); server.close(() => process.exit(0)); server.closeAllConnections(); });
+  server.listen(cfg.port, cfg.host, () => console.log(`🥒 Cornichon sur http://localhost:${cfg.port}`));
 }
