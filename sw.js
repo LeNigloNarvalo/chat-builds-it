@@ -1,4 +1,4 @@
-// Service worker Cornichon : coque de l'appli en cache, fil et état servis hors-ligne (réseau d'abord), notifications.
+// Service worker Agora : coque de l'appli en cache, fil et état servis hors-ligne (réseau d'abord), notifications.
 const SHELL = 'cornichon-shell-v8', DATA = 'cornichon-data-v1';
 const FILES = ['/', '/style.css', '/a11y.js', '/i18n.js', '/theme.js', '/states.js', '/help.js', '/social.js', '/sync.js', '/qrcode.js', '/stats.js', '/calls.js', '/diag.js', '/app.js', '/manifest.webmanifest', '/icon.svg'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(SHELL).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });

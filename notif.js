@@ -18,7 +18,7 @@
   const supported = () => typeof Notification !== 'undefined' && typeof navigator !== 'undefined' && 'serviceWorker' in navigator;
   async function show(n, name) {
     const o = { body: n.type === 'event' ? `📅 ${n.title} — ${TEXT.event[n.what] || 'événement'}` : n.type === 'group' ? `${name} ${TEXT.group[n.what] || 'communauté'}` : n.type === 'poll' ? TEXT.poll + ' : voir les résultats' : n.type === 'search' ? `🔎 « ${n.name} » : ${n.count} nouveau${n.count > 1 ? 'x' : ''} résultat${n.count > 1 ? 's' : ''}` : `${name} ${TEXT[n.type]}`, icon: 'icon.svg', badge: 'icon.svg', tag: 'cornichon-' + n.id, data: { id: n.id } };
-    try { const reg = await navigator.serviceWorker.ready; return await reg.showNotification('🥒 Cornichon', o); } catch (e) { new Notification('🥒 Cornichon', o); }
+    try { const reg = await navigator.serviceWorker.ready; return await reg.showNotification('🥒 Agora', o); } catch (e) { new Notification('🥒 Agora', o); }
   }
   const api = { KEY, TYPES, TEXT, load, save, pick, seenGet, seenSet, supported, show, allowed };
   if (typeof module !== 'undefined') module.exports = api; else root.Notif = api;

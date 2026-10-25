@@ -37,7 +37,7 @@
     ['← / →', 'Image précédente / suivante dans la visionneuse'], ['Entrée / Espace', 'Activer un élément cliquable (profil, hashtag…)'],
   ];
   const TOUR = [
-    ['👋 Bienvenue sur Cornichon', 'Une courte visite (6 étapes) pour tout repérer. Vous pouvez la quitter à tout moment avec Échap.', null],
+    ['👋 Bienvenue sur Agora', 'Une courte visite (6 étapes) pour tout repérer. Vous pouvez la quitter à tout moment avec Échap.', null],
     ['🧭 La navigation', 'La barre du haut donne accès au fil, à l’exploration, aux messages et à « ⋯ Plus » pour le reste.', '#nav'],
     ['🌓 Sombre ou clair', 'Ce bouton bascule le thème de CET appareil : automatique, sombre ou clair.', '[data-themebtn]'],
     ['⌨️ Palette de commandes', 'Appuyez sur Ctrl+K (ou ⌘+K) pour aller n’importe où ou lancer une action en tapant quelques lettres.', null],

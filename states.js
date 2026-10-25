@@ -27,7 +27,7 @@
     // page d'erreur autonome servie par le serveur pour une navigation (404/500), sans dépendre de l'appli
     page: (code, lang) => {
       const T = { 404: ['Page introuvable', 'Cette page n’existe pas ou a été supprimée.', '🧭'], 500: ['Erreur du serveur', 'Quelque chose s’est mal passé de notre côté. Réessayez dans un instant.', '💥'] }[code] || ['Erreur', 'Une erreur est survenue.', '⚠️'];
-      return `<!doctype html><html lang="${lang || 'fr'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${code} — Cornichon</title><link rel="stylesheet" href="/style.css"></head><body><main><div class="card state error" role="alert"><div class="sicon" aria-hidden="true">${T[2]}</div><h2>${code} · ${T[0]}</h2><p class="mut">${T[1]}</p><div class="row"><a href="/"><button>🏠 Retour à l’accueil</button></a>${code === 500 ? '<a href=""><button>🔄 Réessayer</button></a>' : ''}</div></div></main></body></html>`;
+      return `<!doctype html><html lang="${lang || 'fr'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${code} — Agora</title><link rel="stylesheet" href="/style.css"></head><body><main><div class="card state error" role="alert"><div class="sicon" aria-hidden="true">${T[2]}</div><h2>${code} · ${T[0]}</h2><p class="mut">${T[1]}</p><div class="row"><a href="/"><button>🏠 Retour à l’accueil</button></a>${code === 500 ? '<a href=""><button>🔄 Réessayer</button></a>' : ''}</div></div></main></body></html>`;
     },
   };
   if (typeof module !== 'undefined') module.exports = api; else root.States = api;

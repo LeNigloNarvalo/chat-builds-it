@@ -1,4 +1,4 @@
-# Cornichon : aucune dépendance npm, Node 22 suffit (SQLite intégré via node:sqlite).
+# Agora : aucune dépendance npm, Node 22 suffit (SQLite intégré via node:sqlite).
 FROM node:22-alpine
 ENV NODE_ENV=production PORT=8080 CORNICHON_DB=/data/cornichon.db BACKUP_DIR=/data/backups
 WORKDIR /app

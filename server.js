@@ -1,4 +1,4 @@
-// Serveur Cornichon : petite API Node + SQLite (node:sqlite, aucune dépendance).
+// Serveur Agora : petite API Node + SQLite (node:sqlite, aucune dépendance).
 // Le moteur social.js tourne ICI ; les navigateurs ne reçoivent qu'une vue filtrée de leur compte (jamais de mots de passe)
 // et envoient leurs actions à /api/call, authentifiées par une session aléatoire (seul son hachage SHA-256 est stocké).
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
@@ -136,7 +136,7 @@ function createServer(opts = {}) {
     const u = net.findRecoverable(name); if (!u) return;
     const now = Date.now(); if (alertedL.get(name, now - 30 * 60000)) return; // au plus une alerte par demi-heure
     secLog(name, 'suspicious_alert', req);
-    mail(u.email, 'Cornichon : connexion suspecte sur votre compte', `Bonjour @${u.name},\n\n${why}\nAppareil : ${deviceLabel(req.headers['user-agent'])}${placeOf(req) ? ' · ' + placeOf(req) : ''}\n\nSi c'était vous, ignorez ce message.\nSinon, sécurisez votre compte (déconnecte tous les appareils et envoie un lien pour changer de mot de passe ; valable 7 jours) :\n${origin()}/?secure=${makeToken('alert', u.name, u.email)}`);
+    mail(u.email, 'Agora : connexion suspecte sur votre compte', `Bonjour @${u.name},\n\n${why}\nAppareil : ${deviceLabel(req.headers['user-agent'])}${placeOf(req) ? ' · ' + placeOf(req) : ''}\n\nSi c'était vous, ignorez ce message.\nSinon, sécurisez votre compte (déconnecte tous les appareils et envoie un lien pour changer de mot de passe ; valable 7 jours) :\n${origin()}/?secure=${makeToken('alert', u.name, u.email)}`);
   };
   const checkNewDevice = (name, req) => { // à appeler AVANT d'ouvrir la session
     try { if (anyL.get(name) && !seenL.get(name, deviceLabel(req.headers['user-agent']), placeOf(req))) alertMail(name, 'Une connexion depuis un appareil ou un lieu inhabituel vient d\'avoir lieu.', req); } catch (e) { fail('Alerte de connexion', e); }
@@ -215,7 +215,7 @@ function createServer(opts = {}) {
     // récupération de compte (sans session) : réponse identique que le compte existe ou non
     if (route === 'POST /api/forgot') {
       const b = await body(req), u = net.findRecoverable(b.id);
-      if (u) mail(u.email, 'Cornichon : réinitialisation du mot de passe', `Bonjour @${u.name},\n\nPour choisir un nouveau mot de passe (lien à usage unique, valable 30 minutes) :\n${origin()}/?reset=${makeToken('reset', u.name, u.email)}\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez ce message.`);
+      if (u) mail(u.email, 'Agora : réinitialisation du mot de passe', `Bonjour @${u.name},\n\nPour choisir un nouveau mot de passe (lien à usage unique, valable 30 minutes) :\n${origin()}/?reset=${makeToken('reset', u.name, u.email)}\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez ce message.`);
       return send(res, 200, { ok: true });
     }
     if (route === 'POST /api/reset') {
@@ -235,7 +235,7 @@ function createServer(opts = {}) {
       const b = await body(req), t = takeToken('alert', b.token), u = net.findRecoverable(t.name);
       if (!u || u.email !== t.email) throw new Http(400, 'Lien invalide : l\'adresse du compte a changé');
       secLog(t.name, 'logout_all', req); net.logoutAll(t.name); tfa.revokeDevices(t.name); delUser.run(t.name); dev.revokeAll(t.name);
-      mail(u.email, 'Cornichon : choisissez un nouveau mot de passe', `Bonjour @${u.name},\n\nTous vos appareils ont été déconnectés. Pour choisir un nouveau mot de passe (lien à usage unique, valable 30 minutes) :\n${origin()}/?reset=${makeToken('reset', u.name, u.email)}`);
+      mail(u.email, 'Agora : choisissez un nouveau mot de passe', `Bonjour @${u.name},\n\nTous vos appareils ont été déconnectés. Pour choisir un nouveau mot de passe (lien à usage unique, valable 30 minutes) :\n${origin()}/?reset=${makeToken('reset', u.name, u.email)}`);
       return send(res, 200, { ok: true, name: t.name });
     }
     const me = auth(req); if (!me) throw new Http(401, 'Session expirée : reconnectez-vous');
@@ -405,7 +405,7 @@ function createServer(opts = {}) {
     if (route === 'POST /api/email') {
       const b = await body(req); if (limited(req)) throw new Http(429, 'Trop de requêtes : réessayez dans une minute');
       const r = net.setEmail(me.name, b.email);
-      if (!r.verified) mail(r.email, 'Cornichon : confirmez votre adresse e-mail', `Bonjour @${me.name},\n\nConfirmez cette adresse (lien valable 24 h) :\n${origin()}/?verify=${makeToken('verify', me.name, r.email)}\n\nSi ce n'est pas vous, ignorez ce message.`);
+      if (!r.verified) mail(r.email, 'Agora : confirmez votre adresse e-mail', `Bonjour @${me.name},\n\nConfirmez cette adresse (lien valable 24 h) :\n${origin()}/?verify=${makeToken('verify', me.name, r.email)}\n\nSi ce n'est pas vous, ignorez ce message.`);
       return send(res, 200, r);
     }
     if (route === 'POST /api/email-remove') { net.removeEmail(me.name); delTUser.run(me.name, 'verify'); delTUser.run(me.name, 'reset'); return send(res, 200, { ok: true }); }
@@ -508,5 +508,5 @@ if (require.main === module) {
   process.on('unhandledRejection', e => { server.ops.error('Promesse rejetée', e); console.error('Promesse rejetée :', e); });
   // arrêt propre (docker stop) : on ferme le serveur, ce qui vide le WAL et ferme la base
   for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { console.log('Arrêt demandé (' + sig + ')'); server.close(() => process.exit(0)); server.closeAllConnections(); });
-  server.listen(cfg.port, cfg.host, () => console.log(`🥒 Cornichon sur http://localhost:${cfg.port}`));
+  server.listen(cfg.port, cfg.host, () => console.log(`🥒 Agora sur http://localhost:${cfg.port}`));
 }

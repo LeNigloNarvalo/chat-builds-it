@@ -1,4 +1,4 @@
-// Stockage SQLite indexé de Cornichon : remplace le gros blob JSON de la table kv par des tables (users, posts, meta).
+// Stockage SQLite indexé de Agora : remplace le gros blob JSON de la table kv par des tables (users, posts, meta).
 // Le moteur social.js continue de parler à un « storage » (getItem/setItem) : cet adaptateur découpe l'état en lignes,
 // n'écrit que les lignes modifiées, le tout dans UNE transaction, et migre automatiquement l'ancien blob au premier démarrage.
 const Store = (db, key, onWrite) => {

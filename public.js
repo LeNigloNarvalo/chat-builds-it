@@ -28,9 +28,9 @@ header a{color:var(--ac);font-weight:700;text-decoration:none}.card{background:v
     const alt = (feeds || []).map(f => `<link rel="alternate" type="${f.type}" title="${esc(f.title)}" href="${esc(base + f.href)}">`).join('');
     return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title><meta name="description" content="${esc(desc)}"><link rel="canonical" href="${esc(url)}">${noindex ? '<meta name="robots" content="noindex">' : ''}
-<meta property="og:site_name" content="Cornichon"><meta property="og:type" content="${type || 'website'}"><meta property="og:title" content="${esc(title)}"><meta property="og:description" content="${esc(desc)}"><meta property="og:url" content="${esc(url)}"><meta property="og:image" content="${esc(image || base + '/icon.svg')}">
+<meta property="og:site_name" content="Agora"><meta property="og:type" content="${type || 'website'}"><meta property="og:title" content="${esc(title)}"><meta property="og:description" content="${esc(desc)}"><meta property="og:url" content="${esc(url)}"><meta property="og:image" content="${esc(image || base + '/icon.svg')}">
 <meta name="twitter:card" content="summary"><meta name="twitter:title" content="${esc(title)}"><meta name="twitter:description" content="${esc(desc)}">${alt}
-<link rel="icon" href="/icon.svg" type="image/svg+xml"><style>${CSS}</style></head><body><header><a href="/">🥒 Cornichon</a> · <a href="/public">Pages publiques</a></header><main>${body}</main></body></html>`;
+<link rel="icon" href="/icon.svg" type="image/svg+xml"><style>${CSS}</style></head><body><header><a href="/">🥒 Agora</a> · <a href="/public">Pages publiques</a></header><main>${body}</main></body></html>`;
   }
   const feedLinks = (prefix, label) => [{ type: 'application/rss+xml', title: 'RSS — ' + label, href: prefix + '/feed.xml' }, { type: 'application/atom+xml', title: 'Atom — ' + label, href: prefix + '/atom.xml' }];
   const feedBar = (prefix) => `<p class="feeds mut">📡 <a href="${prefix}/feed.xml">RSS</a><a href="${prefix}/atom.xml">Atom</a></p>`;
@@ -57,28 +57,28 @@ ${posts.map(p => `<entry><title>${esc(shown(d, p.author) + ' : ' + clip(p.text, 
     const m = /^\/(u|tag|p)\/([^/]+)(?:\/(feed\.xml|atom\.xml))?$/.exec(url.pathname), d = net.db();
     const base = origin(req);
     const feed = (file, ctx) => ({ status: 200, type: file === 'feed.xml' ? 'application/rss+xml; charset=utf-8' : 'application/atom+xml; charset=utf-8', body: (file === 'feed.xml' ? rss : atom)(req, ctx) });
-    const miss = (what) => ({ status: 404, type: 'text/html; charset=utf-8', body: page(req, { title: 'Introuvable — Cornichon', desc: what + ' introuvable.', path: url.pathname, noindex: true, body: `<div class="card"><h1>🫙 ${esc(what)} introuvable</h1><p><a href="/public">Voir les pages publiques</a></p></div>` }) });
+    const miss = (what) => ({ status: 404, type: 'text/html; charset=utf-8', body: page(req, { title: 'Introuvable — Agora', desc: what + ' introuvable.', path: url.pathname, noindex: true, body: `<div class="card"><h1>🫙 ${esc(what)} introuvable</h1><p><a href="/public">Voir les pages publiques</a></p></div>` }) });
     if (url.pathname === '/public') {
       const posts = recent(d, p => !p.replyTo).slice(0, 30);
-      return { status: 200, type: 'text/html; charset=utf-8', body: page(req, { title: 'Pages publiques — Cornichon', desc: 'Les derniers posts publics du bocal, lisibles sans compte.', path: '/public', feeds: feedLinks('/public', 'Tout Cornichon'), body: `<h1>🌍 Pages publiques</h1>${feedBar('/public')}${posts.map(p => postCard(d, p)).join('') || '<p class="mut">Rien de publié pour l’instant.</p>'}` }) };
+      return { status: 200, type: 'text/html; charset=utf-8', body: page(req, { title: 'Pages publiques — Agora', desc: 'Les derniers posts publics du bocal, lisibles sans compte.', path: '/public', feeds: feedLinks('/public', 'Tout Agora'), body: `<h1>🌍 Pages publiques</h1>${feedBar('/public')}${posts.map(p => postCard(d, p)).join('') || '<p class="mut">Rien de publié pour l’instant.</p>'}` }) };
     }
     const pf = /^\/public\/(feed\.xml|atom\.xml)$/.exec(url.pathname);
     let kind, key, file;
     if (pf) { kind = 'all'; file = pf[1]; } else if (m) { [, kind, key, file] = m; try { key = decodeURIComponent(key); } catch (e) { return miss('Page'); } } else return null;
-    if (kind === 'all') { const ctx = { title: 'Cornichon — posts publics', desc: 'Tous les posts publics de Cornichon.', path: url.pathname, posts: recent(d, p => !p.replyTo).slice(0, FEED_MAX), d }; return feed(file, ctx); }
+    if (kind === 'all') { const ctx = { title: 'Agora — posts publics', desc: 'Tous les posts publics de Agora.', path: url.pathname, posts: recent(d, p => !p.replyTo).slice(0, FEED_MAX), d }; return feed(file, ctx); }
     if (kind === 'u') {
       const u = d.users[lc(key)]; if (!u || banned(d, u.name) || closed(d, u.name, 'profile')) return miss('Profil');
       const all = recent(d, p => lc(p.author) === lc(u.name)), top = all.filter(p => !p.replyTo), name = u.display || u.name, prefix = '/u/' + encodeURIComponent(u.name);
-      const desc = clip(u.bio || `Posts publics de @${u.name} sur Cornichon.`, 200);
-      if (file) return feed(file, { title: `${name} (@${u.name}) — Cornichon`, desc, path: url.pathname, posts: top.slice(0, FEED_MAX), d });
-      return { status: 200, type: 'text/html; charset=utf-8', body: page(req, { title: `${name} (@${u.name}) — Cornichon`, desc, path: prefix, type: 'profile', feeds: feedLinks(prefix, '@' + u.name),
+      const desc = clip(u.bio || `Posts publics de @${u.name} sur Agora.`, 200);
+      if (file) return feed(file, { title: `${name} (@${u.name}) — Agora`, desc, path: url.pathname, posts: top.slice(0, FEED_MAX), d });
+      return { status: 200, type: 'text/html; charset=utf-8', body: page(req, { title: `${name} (@${u.name}) — Agora`, desc, path: prefix, type: 'profile', feeds: feedLinks(prefix, '@' + u.name),
         body: `<div class="card"><h1>${esc(name)} <span class="mut">@${esc(u.name)}</span></h1><p>${esc(u.bio || '')}</p>${u.link && /^https?:\/\//.test(u.link) ? `<p><a href="${esc(u.link)}" rel="noopener noreferrer nofollow">🔗 ${esc(u.link.replace(/^https?:\/\//, ''))}</a></p>` : ''}<p class="mut">${top.length} post${top.length > 1 ? 's' : ''} public${top.length > 1 ? 's' : ''}</p></div>${feedBar(prefix)}${top.slice(0, 50).map(p => postCard(d, p)).join('') || '<p class="mut">Rien de publié pour l’instant.</p>'}` }) };
     }
     if (kind === 'tag') {
       const tag = lc(key); if (!/^[\p{L}\p{N}_]+$/u.test(tag)) return miss('Hashtag');
       const posts = recent(d, p => !p.replyTo && tagsOf(p.text).has(tag)), prefix = '/tag/' + encodeURIComponent(tag);
-      if (file) return feed(file, { title: `#${tag} — Cornichon`, desc: `Posts publics avec #${tag}.`, path: url.pathname, posts: posts.slice(0, FEED_MAX), d });
-      return { status: 200, type: 'text/html; charset=utf-8', body: page(req, { title: `#${tag} — Cornichon`, desc: `${posts.length} post${posts.length > 1 ? 's' : ''} public${posts.length > 1 ? 's' : ''} avec #${tag}.`, path: prefix, feeds: feedLinks(prefix, '#' + tag),
+      if (file) return feed(file, { title: `#${tag} — Agora`, desc: `Posts publics avec #${tag}.`, path: url.pathname, posts: posts.slice(0, FEED_MAX), d });
+      return { status: 200, type: 'text/html; charset=utf-8', body: page(req, { title: `#${tag} — Agora`, desc: `${posts.length} post${posts.length > 1 ? 's' : ''} public${posts.length > 1 ? 's' : ''} avec #${tag}.`, path: prefix, feeds: feedLinks(prefix, '#' + tag),
         body: `<h1>#${esc(tag)}</h1>${feedBar(prefix)}${posts.slice(0, 50).map(p => postCard(d, p)).join('') || '<p class="mut">Aucun post public avec ce hashtag.</p>'}` }) };
     }
     // post
@@ -86,7 +86,7 @@ ${posts.map(p => `<entry><title>${esc(shown(d, p.author) + ' : ' + clip(p.text, 
     if (!p || file || !isPublic(d, p)) return miss('Post');
     const parent = p.replyTo && d.posts.find(x => x.id === p.replyTo), replies = recent(d, r => r.replyTo === p.id).reverse();
     const name = shown(d, p.author), text = p.text || (p.images && p.images.length ? '📷 Image' : '');
-    return { status: 200, type: 'text/html; charset=utf-8', body: page(req, { title: `${name} (@${p.author}) sur Cornichon : « ${clip(text, 70)} »`, desc: clip(text, 200), path: '/p/' + p.id, type: 'article', image: imageOf(p, base),
+    return { status: 200, type: 'text/html; charset=utf-8', body: page(req, { title: `${name} (@${p.author}) sur Agora : « ${clip(text, 70)} »`, desc: clip(text, 200), path: '/p/' + p.id, type: 'article', image: imageOf(p, base),
       feeds: feedLinks('/u/' + encodeURIComponent(p.author), '@' + p.author),
       body: `${parent && isPublic(d, parent) ? `<p class="mut">En réponse à <a href="/p/${parent.id}">@${esc(parent.author)}</a></p>` : ''}${postCard(d, p)}${replies.length ? `<h2>💬 Réponses</h2>${replies.map(r => postCard(d, r)).join('')}` : ''}<p class="mut">Flux de l’auteur : <a href="/u/${encodeURIComponent(p.author)}/feed.xml">RSS</a> · <a href="/u/${encodeURIComponent(p.author)}/atom.xml">Atom</a></p>` }) };
   }

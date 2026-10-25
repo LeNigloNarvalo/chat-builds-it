@@ -1,4 +1,4 @@
-// Moteur de Cornichon : les données sont PARTAGÉES via un « storage » injecté (localStorage).
+// Moteur de Agora : les données sont PARTAGÉES via un « storage » injecté (localStorage).
 // Chaque appel relit le storage (lecture-modification-écriture) : aucune copie ancienne n'est conservée en mémoire.
 (function (root) {
   const KEY = 'twitchgram.v1';
@@ -12,7 +12,7 @@
   const fold = line => { const out = []; let cur = ''; for (const ch of line) { if (byteLen(cur + ch) > (out.length ? 74 : 75)) { out.push(cur); cur = ch; } else cur += ch; } out.push(cur); return out.join('\r\n '); };
   const byteLen = s => new TextEncoder().encode(s).length;
   function ics(list, by) {
-    const L = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Cornichon//Agenda//FR', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:Agenda Cornichon'];
+    const L = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Agora//Agenda//FR', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:Agenda Agora'];
     for (const e of list) {
       const a = e.rsvps[String(by || '').toLowerCase()];
       L.push('BEGIN:VEVENT', `UID:event-${e.id}@cornichon`, `DTSTAMP:${icsDate(e.at)}`, `DTSTART:${icsDate(e.start)}`, `DTEND:${icsDate(e.start + 3600000)}`, `SUMMARY:${icsEsc(e.title)}`);
@@ -747,7 +747,7 @@ function Net(storage, now) {
           const live = p.since ? mine.filter(n => NP_TYPES.includes(n.type) && p.types[n.type].email && n.at >= p.since) : [];
           if (live.length && !inQuiet(p, at)) {
             live.forEach(n => (n.mailed = true)); dirty = true;
-            jobs.push({ to: u.email, subject: `Cornichon : ${live.length} nouvelle${live.length > 1 ? 's' : ''} notification${live.length > 1 ? 's' : ''}`, text: `Bonjour @${u.name},\n\n${live.map(line).join('\n')}\n\nOuvrir Cornichon : ${link}\n\nVos préférences : onglet « Alertes » de l'appli.` });
+            jobs.push({ to: u.email, subject: `Agora : ${live.length} nouvelle${live.length > 1 ? 's' : ''} notification${live.length > 1 ? 's' : ''}`, text: `Bonjour @${u.name},\n\n${live.map(line).join('\n')}\n\nOuvrir Agora : ${link}\n\nVos préférences : onglet « Alertes » de l'appli.` });
           }
           if (p.digest.on) {
             const today = Math.floor((at / 60000 - p.tz) / 1440), lastDay = p.last ? Math.floor((p.last / 60000 - p.tz) / 1440) : -1;
@@ -757,7 +757,7 @@ function Net(storage, now) {
               if (missed.length) {
                 missed.forEach(n => (n.mailed = true));
                 const by = {}; for (const n of missed) by[n.type] = (by[n.type] || 0) + (n.count || 1);
-                jobs.push({ to: u.email, subject: `Cornichon : votre résumé du jour (${missed.length} activité${missed.length > 1 ? 's' : ''} manquée${missed.length > 1 ? 's' : ''})`, text: `Bonjour @${u.name},\n\nVoici ce que vous avez manqué :\n${Object.entries(by).map(([t, c]) => `• ${c} × ${NP_LABEL[t] || t}`).join('\n')}\n\nDétail :\n${missed.slice(-15).map(line).join('\n')}\n\nOuvrir Cornichon : ${link}` });
+                jobs.push({ to: u.email, subject: `Agora : votre résumé du jour (${missed.length} activité${missed.length > 1 ? 's' : ''} manquée${missed.length > 1 ? 's' : ''})`, text: `Bonjour @${u.name},\n\nVoici ce que vous avez manqué :\n${Object.entries(by).map(([t, c]) => `• ${c} × ${NP_LABEL[t] || t}`).join('\n')}\n\nDétail :\n${missed.slice(-15).map(line).join('\n')}\n\nOuvrir Agora : ${link}` });
               }
             }
           }
@@ -896,7 +896,7 @@ function Net(storage, now) {
       // export JSON des données de l'utilisateur (jamais le mot de passe)
       exportUser(by) {
         const u = user(by);
-        return { format: 'cornichon-export', version: 1, exportedAt: now(),
+        return { format: 'agora-export', version: 1, exportedAt: now(),
           profile: { name: u.name, display: u.display || '', bio: u.bio || '', avatar: u.avatar || '', banner: u.banner || '', link: u.link || '', following: u.following.slice() },
           privacy: normPrivacy(u.privacy), deleteAt: u.deleteAt || null, blocked: (u.blocked || []).slice(), muted: (u.muted || []).slice(), bookmarks: (u.bookmarks || []).slice(), lists: JSON.parse(JSON.stringify(u.lists || [])),
           likes: db.posts.filter(p => p.likes.includes(u.name)).map(p => p.id), notifPrefs: u.notifPrefs || null,
@@ -906,7 +906,7 @@ function Net(storage, now) {
       // import : fusionne profil, abonnements, posts et messages (sans doublons) dans le compte courant
       importUser(by, data) {
         if (typeof data === 'string') { try { data = JSON.parse(data); } catch (e) { throw new Error('Fichier JSON invalide'); } }
-        need(data && (data.format === 'cornichon-export' || data.format === 'twitchgram-export') && data.profile && Array.isArray(data.posts), 'Ce fichier n’est pas un export Cornichon');
+        need(data && (['agora-export', 'cornichon-export'].includes(data.format) || data.format === 'twitchgram-export') && data.profile && Array.isArray(data.posts), 'Ce fichier n’est pas un export Agora');
         const pr = data.profile, r = { posts: 0, messages: 0, following: 0 };
         api.updateProfile(user(by).name, pr); // relit le storage : on reprend l'objet utilisateur après
         const u = user(by);

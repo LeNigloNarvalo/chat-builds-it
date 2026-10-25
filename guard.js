@@ -1,4 +1,4 @@
-// Anti-spam de Cornichon : plafonds par IP et par compte (inscription, connexion, posts, messages), ralentissement progressif,
+// Anti-spam de Agora : plafonds par IP et par compte (inscription, connexion, posts, messages), ralentissement progressif,
 // blocages temporaires de plus en plus longs, défi anti-robot à l'inscription et période probatoire des nouveaux comptes.
 // Tout est gardé en mémoire (fenêtres glissantes bornées) : seules des adresses réseau et des pseudos y transitent, rien de personnel n'est stocké.
 const crypto = require('crypto');

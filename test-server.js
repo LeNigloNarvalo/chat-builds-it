@@ -65,7 +65,7 @@ const outbox = [], server = createServer({ spam: false, db: dbFile, authPerMin: 
   assert.strictEqual((await call('/api/state', c.token)).status, 401);
   // fichiers : seule la liste blanche est servie (jamais la base ni le serveur)
   for (const f of ['/server.js', '/data/cornichon.db', '/test.js', '/../package.json']) assert.strictEqual((await fetch(base + f)).status, 404);
-  assert.strictEqual((await fetch(base + '/sync.js')).status, 200); assert.ok((await (await fetch(base + '/')).text()).includes('Cornichon'));
+  assert.strictEqual((await fetch(base + '/sync.js')).status, 200); assert.ok((await (await fetch(base + '/')).text()).includes('Agora'));
   // temps réel (SSE) : annonce des changements + « écrit… », sans interrogation
   const evs = [], ac = new AbortController();
   const sr = await fetch(base + '/api/stream', { headers: { Authorization: 'Bearer ' + b.token }, signal: ac.signal }); assert.strictEqual(sr.status, 200);
@@ -293,7 +293,7 @@ const outbox = [], server = createServer({ spam: false, db: dbFile, authPerMin: 
     const T = require('./totp.js'), tc = (p, tok, d, h) => fetch(base + p, { method: d === undefined ? 'GET' : 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, tok ? { Authorization: 'Bearer ' + tok } : {}, h || {}), body: d === undefined ? undefined : JSON.stringify(d) }).then(async r => Object.assign(await r.json(), { status: r.status }));
     assert.strictEqual(T.code('GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', 59000), '287082', 'vecteur RFC 6238'); // secret "12345678901234567890", t=59 s
     const u = await tc('/api/signup', null, { name: 'totpy', password: 'secret1' }), tk = u.token;
-    const su = await tc('/api/2fa/setup', tk, {}); assert.ok(/^[A-Z2-7]{32}$/.test(su.secret) && su.uri.startsWith('otpauth://totp/Cornichon:totpy?secret=' + su.secret));
+    const su = await tc('/api/2fa/setup', tk, {}); assert.ok(/^[A-Z2-7]{32}$/.test(su.secret) && su.uri.startsWith('otpauth://totp/Agora:totpy?secret=' + su.secret));
     assert.strictEqual((await tc('/api/2fa/enable', tk, { code: '000000' })).status, 400);
     assert.strictEqual((await tc('/api/login', null, { name: 'totpy', password: 'secret1' })).token.length, 64, 'sans 2FA : connexion directe');
     const en = await tc('/api/2fa/enable', tk, { code: T.code(su.secret), trust: true }); assert.strictEqual(en.codes.length, 10); assert.ok(en.trusted);

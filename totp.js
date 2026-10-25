@@ -22,7 +22,7 @@ const match = (secret, input, at = Date.now()) => {
   for (let d = -DRIFT; d <= DRIFT; d++) { const t = at + d * STEP * 1000, c = code(secret, t); if (crypto.timingSafeEqual(Buffer.from(c), Buffer.from(s))) hit = Math.floor(t / 1000 / STEP); }
   return hit;
 };
-const uri = (name, secret) => `otpauth://totp/Cornichon:${encodeURIComponent(name)}?secret=${secret}&issuer=Cornichon&algorithm=SHA1&digits=${DIGITS}&period=${STEP}`;
+const uri = (name, secret) => `otpauth://totp/Agora:${encodeURIComponent(name)}?secret=${secret}&issuer=Agora&algorithm=SHA1&digits=${DIGITS}&period=${STEP}`;
 const makeBackups = () => Array.from({ length: BACKUPS }, () => { const r = crypto.randomBytes(5).toString('hex'); return r.slice(0, 5) + '-' + r.slice(5); });
 const normBackup = s => String(s || '').toLowerCase().replace(/[^0-9a-f]/g, '');
 const deviceLabel = ua => {

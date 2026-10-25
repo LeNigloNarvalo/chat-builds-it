@@ -76,7 +76,7 @@ function Passkeys(db, opts = {}) {
     registerOptions(name, rp) {
       if (api.count(name) >= MAX_KEYS) throw new Error(`Maximum ${MAX_KEYS} clés d'accès : révoquez-en une d'abord`);
       return {
-        challenge: newChallenge('create', name), rp: { id: rp.id, name: 'Cornichon' }, user: { id: b64u(sha('cornichon:' + name.toLowerCase())), name, displayName: name },
+        challenge: newChallenge('create', name), rp: { id: rp.id, name: 'Agora' }, user: { id: b64u(sha('cornichon:' + name.toLowerCase())), name, displayName: name },
         pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }], timeout: 120000, attestation: 'none',
         authenticatorSelection: { residentKey: 'required', requireResidentKey: true, userVerification: 'required' },
         excludeCredentials: idsK.all(name).map(k => ({ type: 'public-key', id: k.id }))

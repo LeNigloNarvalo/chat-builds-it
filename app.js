@@ -295,7 +295,7 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('message', ev => { if (ev.data && ev.data.openNotifs && me) go('notifs'); });
 }
 window.addEventListener('beforeinstallprompt', ev => { ev.preventDefault(); installEv = ev; if (view.page === 'settings') refresh(); });
-window.addEventListener('appinstalled', () => { installEv = null; notice = 'Cornichon est installé ✔'; if (view.page === 'settings') refresh(); });
+window.addEventListener('appinstalled', () => { installEv = null; notice = 'Agora est installé ✔'; if (view.page === 'settings') refresh(); });
 // détection de coupure réseau : événements du navigateur + échec réel d'une requête (sync.online())
 let netShown = '', backT = 0;
 function netState(s) {
@@ -476,7 +476,7 @@ document.addEventListener('click', ev => {
   else if (a === 'rmall') attempt(async () => { await sync.send('/api/2fa/devices-revoke', {}); tfa.msg = 'Appareils retirés ✔'; await tfaLoad(); });
   else if (a === 'ack') { tfa.codes = null; render(); }
   else if (a === 'copy') { try { navigator.clipboard.writeText(tfa.codes.join('\n')); tfa.msg = 'Codes copiés ✔'; } catch (x) { tfa.msg = 'Sélectionnez les codes pour les copier'; } render(); }
-  else if (a === 'download') download(`cornichon-${me}-codes-de-secours.txt`, `Codes de secours Cornichon (@${me}) — chacun ne sert qu'une fois\n\n${tfa.codes.join('\n')}\n`);
+  else if (a === 'download') download(`cornichon-${me}-codes-de-secours.txt`, `Codes de secours Agora (@${me}) — chacun ne sert qu'une fois\n\n${tfa.codes.join('\n')}\n`);
 });
 // ---- clés d'accès (passkeys, WebAuthn) : empreinte / Face ID à la place du mot de passe ; complète le TOTP ----
 const pkBuf = s => Uint8Array.from(atob(String(s).replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)).buffer;
@@ -548,7 +548,7 @@ async function savePrefs() {
 function notifCard() {
   const np = Notif.load(store), ok = Notif.supported(), on = np.enabled && perm === 'granted';
   return `<div class="card" role="group" aria-labelledby="h-app"><h2 id="h-app">📲 Application et notifications</h2>
-    <p class="mut">${standalone() ? '✅ Cornichon est installé sur cet appareil.' : 'Installe Cornichon comme une vraie appli : icône, plein écran, fil disponible hors-ligne.'}</p>
+    <p class="mut">${standalone() ? '✅ Agora est installé sur cet appareil.' : 'Installe Agora comme une vraie appli : icône, plein écran, fil disponible hors-ligne.'}</p>
     ${!standalone() && installEv ? '<button data-install>📲 Installer l’application</button>' : ''}
     <b>🔔 Notifications</b>
     ${!ok ? '<p class="mut">Ce navigateur ne gère pas les notifications.</p>' : perm === 'denied' ? '<p class="err">Notifications bloquées dans le navigateur : autorise-les dans les réglages du site.</p>'
@@ -1066,7 +1066,7 @@ function renderPage() {
     return;
   }
   if (!me && linkMsg) {
-    nav.innerHTML = ''; app.innerHTML = `<div class="card"><h2>Cornichon</h2><p role="status" class="${/✔/.test(linkMsg) ? 'ok' : 'err'}">${esc(linkMsg)}</p><button data-endlink>Aller à la connexion</button></div>`;
+    nav.innerHTML = ''; app.innerHTML = `<div class="card"><h2>Agora</h2><p role="status" class="${/✔/.test(linkMsg) ? 'ok' : 'err'}">${esc(linkMsg)}</p><button data-endlink>Aller à la connexion</button></div>`;
     return;
   }
   if (!me && authMode === 'forgot') {
@@ -1228,7 +1228,7 @@ function renderPage() {
       ${pkCard()}
       <div class="card" role="group" aria-labelledby="h-data"><h2 id="h-data">📦 Mes données</h2><p class="mut">Exporte ton profil, tes posts et tes messages en JSON (sans mot de passe), ou importe un export pour les fusionner dans ton compte.</p>
       <div class="row"><button data-export>⬇️ Exporter en JSON</button><label class="mut">Importer un fichier <input id="imp-file" type="file" accept="application/json,.json"></label></div>
-      <label for="imp-txt">Ou colle le JSON ici</label><textarea id="imp-txt" class="json" placeholder='{"format":"cornichon-export",…}'></textarea><button data-import>⬆️ Importer</button>
+      <label for="imp-txt">Ou colle le JSON ici</label><textarea id="imp-txt" class="json" placeholder='{"format":"agora-export",…}'></textarea><button data-import>⬆️ Importer</button>
       <p class="ok" role="status">${esc(notice)}</p></div>`;
   } else if (view.page === 'privacy') {
     h = privacyPage() + e;
