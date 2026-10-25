@@ -105,6 +105,7 @@ function Net(storage, now) {
     };
 
     const lc = n => String(n || '').toLowerCase();
+    const radm = (r, n) => !!r && (lc(r.owner) === lc(n) || has(r.admins || [], n)); // pas via api.* : api recharge db à chaque appel
     const has = (list, n) => (list || []).some(x => lc(x) === lc(n));
     // masqué pour `by` : compte bloqué ou masqué par lui (ses posts, réponses et DM disparaissent)
     const hiddenFor = (by, author) => { const u = db.users[lc(by)]; return !!(u && author && lc(author) !== lc(by) && (has(u.blocked, author) || has(u.muted, author))); };
@@ -932,7 +933,7 @@ function Net(storage, now) {
         r.msgs.push(m); if (r.msgs.length > 500) r.msgs = r.msgs.slice(-500);
         r.read[lc(me.name)] = m.id;
         for (const n of r.members) {
-          const t = db.users[lc(n)]; if (!t || t.name === me.name || blockedBy(me.name, t.name) || hiddenFor(t.name, me.name)) continue;
+          const t = db.users[lc(n)]; if (!t || t.name === me.name || has(r.muted || [], t.name) || blockedBy(me.name, t.name) || hiddenFor(t.name, me.name)) continue;
           const open = db.notifs.find(x => x.type === 'dm' && x.to === t.name && x.room === r.id && !x.read);
           if (open) { open.count = (open.count || 1) + 1; open.at = m.at; open.from = me.name; } else db.notifs.push({ id: id(), to: t.name, from: me.name, type: 'dm', room: r.id, postId: null, at: m.at, read: false, count: 1 });
         }
@@ -956,16 +957,43 @@ function Net(storage, now) {
         const r = api.room(by, rid), m = r.msgs.find(x => x.id === msgId); if (!m) return [];
         return r.members.filter(n => n !== m.from && !hiddenFor(by, n) && (r.read[lc(n)] || 0) >= msgId);
       },
+      // rôles : le créateur (owner) est toujours admin ; il peut nommer ou retirer d'autres admins
+      isRoomAdmin: (by, rid) => radm(db.rooms.find(x => x.id === +rid), by),
       addToRoom(by, rid, who) {
         const me = user(by), r = api.room(by, rid), t = user(who); guard(by, true);
-        need(r.owner === me.name, 'Réservé au créateur du groupe'); need(!has(r.members, t.name), 'Déjà membre');
+        need(radm(r, me.name), 'Réservé aux admins du groupe'); need(!has(r.members, t.name), 'Déjà membre');
         need(r.members.length < ROOM_MAX, `Un groupe est limité à ${ROOM_MAX} membres`); roomOk(me, t);
         r.members.push(t.name); save();
+      },
+      renameRoom(by, rid, name) {
+        const me = user(by), r = api.room(by, rid); guard(by, true); need(radm(r, me.name), 'Réservé aux admins du groupe');
+        name = String(name || '').trim(); need(name && name.length <= 40, 'Nom du groupe : 1 à 40 caractères'); r.name = name; save();
+      },
+      // retire un membre : un admin retire les membres simples, seul le créateur retire un admin
+      removeFromRoom(by, rid, who) {
+        const me = user(by), r = api.room(by, rid), t = user(who); guard(by, true);
+        need(radm(r, me.name), 'Réservé aux admins du groupe'); need(has(r.members, t.name), 'Ce compte n’est pas membre');
+        need(t.name !== me.name, 'Utilisez « Quitter » pour partir vous-même'); need(t.name !== r.owner, 'Le créateur ne peut pas être retiré');
+        need(r.owner === me.name || !radm(r, t.name), 'Seul le créateur peut retirer un admin');
+        r.members = r.members.filter(n => n !== t.name); r.admins = (r.admins || []).filter(n => n !== t.name); r.muted = (r.muted || []).filter(n => n !== t.name);
+        delete r.read[lc(t.name)]; db.notifs = db.notifs.filter(n => !(n.room === r.id && n.to === t.name));
+        if (r.members.length < 2) db.rooms = db.rooms.filter(x => x !== r); save();
+      },
+      setRoomAdmin(by, rid, who, on) {
+        const me = user(by), r = api.room(by, rid), t = user(who); guard(by, true);
+        need(r.owner === me.name, 'Réservé au créateur du groupe'); need(has(r.members, t.name), 'Ce compte n’est pas membre'); need(t.name !== r.owner, 'Le créateur est déjà admin');
+        r.admins = (r.admins || []).filter(n => n !== t.name); if (on) r.admins.push(t.name); save();
+      },
+      // notifications propres à cette conversation : en sourdine, les messages restent « non lus » mais n'alertent plus
+      setRoomMute(by, rid, on) {
+        const me = user(by), r = api.room(by, rid); r.muted = (r.muted || []).filter(n => n !== me.name); if (on) r.muted.push(me.name);
+        if (on) db.notifs = db.notifs.filter(n => !(n.type === 'dm' && n.room === r.id && n.to === me.name && !n.read)); save();
       },
       leaveRoom(by, rid) {
         const me = user(by), r = api.room(by, rid);
         r.members = r.members.filter(n => n !== me.name); delete r.read[lc(me.name)];
-        if (r.owner === me.name) r.owner = r.members[0];
+        r.admins = (r.admins || []).filter(n => n !== me.name); r.muted = (r.muted || []).filter(n => n !== me.name);
+        if (r.owner === me.name) { r.owner = r.admins[0] || r.members[0]; r.admins = r.admins.filter(n => n !== r.owner); }
         if (r.members.length < 2) db.rooms = db.rooms.filter(x => x !== r);
         db.notifs = db.notifs.filter(n => !(n.room === r.id && n.to === me.name)); save();
       },

@@ -528,7 +528,18 @@ console.log('ok');
     // 1-à-1 : « Vu »
     q.send('max', 'mbx', 'coucou'); assert.strictEqual(q.peerRead('max', 'mbx'), 0);
     q.markDmRead('mbx', 'max'); assert.ok(q.peerRead('max', 'mbx') > 0);
-    q.leaveRoom('mdx', rid); q.leaveRoom('mbx', rid); assert.strictEqual(q.rooms('max').length, 0);
+    // rôles, renommage, retrait de membres, sourdine par conversation
+    q.renameRoom('max', rid, 'Les copains'); assert.strictEqual(q.room('max', rid).name, 'Les copains');
+    assert.throws(() => q.renameRoom('mbx', rid, 'x'), /admins/); assert.throws(() => q.setRoomAdmin('mbx', rid, 'mdx', true), /créateur/);
+    q.setRoomAdmin('max', rid, 'mbx', true); assert.ok(q.isRoomAdmin('mbx', rid)); q.renameRoom('mbx', rid, 'Admins'); 
+    assert.throws(() => q.removeFromRoom('mbx', rid, 'max'), /créateur/); assert.throws(() => q.removeFromRoom('mdx', rid, 'mbx'), /admins/);
+    q.setRoomMute('mdx', rid, true); q.sendRoom('max', rid, 'chut');
+    assert.ok(!q.db().notifs.some(n => n.to === 'mdx' && n.room === rid && !n.read)); assert.strictEqual(q.unreadDm('mdx').rooms[rid], 2);
+    q.setRoomMute('mdx', rid, false); q.sendRoom('max', rid, 'bruit'); assert.ok(q.db().notifs.some(n => n.to === 'mdx' && n.room === rid && !n.read));
+    q.removeFromRoom('max', rid, 'mdx'); assert.throws(() => q.room('mdx', rid), /introuvable/); assert.deepStrictEqual(q.room('max', rid).members, ['max', 'mbx']);
+    q.addToRoom('max', rid, 'mdx'); q.leaveRoom('max', rid); assert.strictEqual(q.room('mbx', rid).owner, 'mbx'); assert.ok(q.isRoomAdmin('mbx', rid)); assert.ok(!q.isRoomAdmin('mdx', rid));
+    console.log('ok groupes : rôles, retrait, sourdine');
+    q.leaveRoom('mbx', rid); assert.strictEqual(q.rooms('max').length, 0);
     console.log('ok messagerie privée');
   }
   {
