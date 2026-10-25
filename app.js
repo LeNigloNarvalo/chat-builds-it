@@ -1,9 +1,11 @@
-// Vraie application partagée : les données (clé de stockage historique twitchgram.v1, conservée pour ne pas perdre les données) sont communes à tous les visiteurs et au stream ;
-// seule la session (app.session) reste propre à chaque visiteur. Vue stream (?stream=1) : session du vrai compte « Streamer ».
+// Vraie application client/serveur : les données vivent dans la base SQLite du serveur (server.js), communes à tous les appareils et au stream ;
+// seules la session (app.session) et les préférences d'affichage restent propres à chaque appareil. Vue stream (?stream=1) : session du vrai compte « Streamer ».
 const STREAM = new URLSearchParams(location.search).get('stream') === '1';
 const SESSION = 'app.session', A11Y_KEY = A11y.KEY;
 const store = localStorage;
-const net = Social.Net(store);
+const sync = Sync(store, SESSION);
+const net = sync.net;
+let booting = sync.hasSession(); // première synchro avec le serveur en cours
 const sysDark = matchMedia('(prefers-color-scheme: dark)');
 let prefs = A11y.load(store);
 const applyPrefs = () => A11y.apply(prefs, document, sysDark.matches);
@@ -13,13 +15,9 @@ let th = Theme.load(store);
 const applyTheme = () => Theme.apply(th, document);
 applyTheme();
 let notice = '';
-// session : « pseudo|époque » (époque changée = « déconnecté partout »)
+// l'utilisateur connecté est celui que le serveur reconnaît pour la session de cet appareil
 let me = null;
-const checkSession = () => {
-  const [n, ep] = (store.getItem(SESSION) || '').split('|');
-  try { net.profile(n); if (+(ep || 0) !== net.epoch(n)) throw 0; me = net.profile(n).name; } catch (e) { me = null; store.removeItem(SESSION); }
-};
-checkSession();
+const checkSession = () => { me = sync.me(); };
 let view = { page: 'feed' };
 const $ = s => document.querySelector(s);
 const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -76,9 +74,11 @@ function refresh() {
   for (const [id, val] of keep) { const x = document.getElementById(id); if (x && !x.value) x.value = val; }
   if (a && a.id && document.getElementById(a.id)) document.getElementById(a.id).focus();
 }
-window.addEventListener('storage', ev => { if (ev.key === Theme.KEY) { th = Theme.load(store); applyTheme(); if (view.page === 'theme' && me) refresh(); }
-  if (ev.key === A11Y_KEY) { prefs = A11y.load(store); applyPrefs(); } if (ev.key === null || ev.key === Social.KEY) refresh(); });
-const openSession = name => { me = name; store.setItem(SESSION, me + '|' + net.epoch(me)); };
+sync.onChange(() => refresh());
+window.addEventListener('storage', ev => { if (ev.key === SESSION) sync.pull(true).then(() => refresh(), () => refresh());  // connexion/déconnexion dans un autre onglet
+  if (ev.key === Theme.KEY) { th = Theme.load(store); applyTheme(); if (view.page === 'theme' && me) refresh(); }
+  if (ev.key === A11Y_KEY) { prefs = A11y.load(store); applyPrefs(); } if (ev.key === null) refresh(); });
+const openSession = name => { me = name; };
 
 function postHTML(p, thread) {
   const liked = me && p.likes.includes(me), n = net.replies(p.id, me).length, editing = view.editing === p.id && net.canEdit(me, p.id);
@@ -113,6 +113,8 @@ const composer = (ph, reply) => `<div class="card"><textarea id="txt" maxlength=
 function render() {
   const nav = $('#nav'), app = $('#app');
   $('#me').innerHTML = me ? `${STREAM ? '<b>🔴 STREAM</b> ' : ''}@${esc(me)}${net.isAdmin(me) ? ' 👑 admin' : ''} <button data-logout>Quitter</button>` : '';
+  if (booting) { nav.innerHTML = ''; app.innerHTML = '<p class="mut" role="status">Connexion au serveur…</p>'; return; }
+  if (me && !sync.online()) $('#me').innerHTML += ' <span class="err" role="status">⚠ hors ligne</span>';
   if (!me) {
     nav.innerHTML = '';
     app.innerHTML = `<div class="card"><h2>Bienvenue dans le bocal Cornichon</h2><input id="u" placeholder="Pseudo"><input id="pw" type="password" placeholder="Mot de passe"><input id="bio" placeholder="Bio (inscription)">
@@ -293,22 +295,22 @@ document.addEventListener('click', ev => {
   if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
   else if ('login' in D) attempt(async () => openSession(await net.login(v('#u'), v('#pw'))));
   else if ('signup' in D) attempt(async () => openSession(await net.signup(v('#u'), v('#pw'), v('#bio'))));
-  else if ('logout' in D) { me = null; store.removeItem(SESSION); if (STREAM) attempt(async () => openSession(await net.ensureStreamer())); go('feed'); }
+  else if ('logout' in D) { me = null; sync.logout(); if (STREAM) attempt(async () => openSession(await net.ensureStreamer())); go('feed'); }
   else if ('chpw' in D) attempt(async () => {
     if (v('#sec-new') !== v('#sec-new2')) throw new Error('La confirmation ne correspond pas');
-    await net.changePassword(me, v('#sec-old'), v('#sec-new')); openSession(me); view = { page: 'security', ok: 'Mot de passe modifié ✔ (autres appareils déconnectés)' };
+    await net.changePassword(me, v('#sec-old'), v('#sec-new')); view = { page: 'security', ok: 'Mot de passe modifié ✔ (autres appareils déconnectés)' };
   });
-  else if ('logoutall' in D) { net.logoutAll(me); me = null; store.removeItem(SESSION); err = ''; go('feed'); }
+  else if ('logoutall' in D) attempt(async () => { await net.logoutAll(me); me = null; view = { page: 'feed' }; });
   else if ('delacc' in D) attempt(async () => {
     if (!confirm('Supprimer définitivement votre compte et tous vos posts ?')) return;
-    await net.deleteAccount(me, v('#sec-del')); me = null; store.removeItem(SESSION); view = { page: 'feed' };
+    await net.deleteAccount(me, v('#sec-del')); me = null; view = { page: 'feed' };
   });
   else if ('theme' in D) { prefs = A11y.save(store, { theme: D.theme }); applyPrefs(); render(); }
   else if ('size' in D) { const i = A11y.SIZES.indexOf(prefs.size), j = D.size === '0' ? A11y.SIZES.indexOf(100) : Math.max(0, Math.min(A11y.SIZES.length - 1, i + +D.size)); prefs = A11y.save(store, { size: A11y.SIZES[j] }); applyPrefs(); render(); }
-  else if ('export' in D) { download(`cornichon-${me}.json`, JSON.stringify(net.exportUser(me), null, 2)); notice = 'Export téléchargé ✔'; render(); }
+  else if ('export' in D) attempt(async () => { download(`cornichon-${me}.json`, JSON.stringify(await net.exportUser(me), null, 2)); notice = 'Export téléchargé ✔'; });
   else if ('import' in D) attempt(async () => {
     const f = ($('#imp-file') || {}).files && $('#imp-file').files[0], txt = f ? await f.text() : v('#imp-txt');
-    const r = net.importUser(me, txt); notice = `Import réussi ✔ : ${r.posts} post(s), ${r.messages} message(s), ${r.following} abonnement(s)`;
+    const r = await net.importUser(me, txt); notice = `Import réussi ✔ : ${r.posts} post(s), ${r.messages} message(s), ${r.following} abonnement(s)`;
   });
   else if ('gal' in D) {
     const [k, i, j] = D.gal.split(':'), it = k === 'p' ? net.db().posts.find(x => x.id === +i) : net.db().messages.find(x => x.id === +i);
@@ -318,32 +320,32 @@ document.addEventListener('click', ev => {
   else if ('lbclose' in D) closeLb();
   else if ('lbnav' in D) { lb.i = (lb.i + +D.lbnav + lb.images.length) % lb.images.length; lightbox(); }
   else if ('page' in D) { err = ''; notice = ''; go(D.page); $('#app').focus(); }
-  else if ('send' in D) attempt(() => { net.post(me, v('#txt'), D.send ? +D.send : null, pend.post); pend.post = []; });
+  else if ('send' in D) attempt(async () => { await net.post(me, v('#txt'), D.send ? +D.send : null, pend.post); pend.post = []; });
   else if ('like' in D) attempt(() => net.toggleLike(me, +D.like));
   else if ('bm' in D) attempt(() => net.toggleBookmark(me, +D.bm));
   else if ('repost' in D) attempt(() => net.toggleRepost(me, +D.repost));
   else if ('edit' in D) { view.editing = +D.edit; render(); const t = $('#edit-txt'); if (t) t.focus(); }
   else if ('canceledit' in D) { view.editing = null; render(); }
-  else if ('saveedit' in D) attempt(() => { net.editPost(me, +D.saveedit, v('#edit-txt')); view.editing = null; });
+  else if ('saveedit' in D) attempt(async () => { await net.editPost(me, +D.saveedit, v('#edit-txt')); view.editing = null; });
   else if ('hist' in D) { view.hist = view.hist === +D.hist ? null : +D.hist; render(); }
   else if ('report' in D) { view.reporting = +D.report; err = ''; render(); const x = $('#rp-reason'); if (x) x.focus(); }
   else if ('cancelreport' in D) { view.reporting = null; render(); }
-  else if ('sendreport' in D) attempt(() => { net.report(me, +D.sendreport, v('#rp-reason'), v('#rp-note')); view.reporting = null; notice = ''; });
+  else if ('sendreport' in D) attempt(async () => { await net.report(me, +D.sendreport, v('#rp-reason'), v('#rp-note')); view.reporting = null; notice = ''; });
   else if ('block' in D) attempt(() => net.toggleBlock(me, D.block));
   else if ('unblock' in D) attempt(() => net.toggleBlock(me, D.unblock));
   else if ('mute' in D) attempt(() => net.toggleMute(me, D.mute));
   else if ('unmute' in D) attempt(() => net.toggleMute(me, D.unmute));
   else if ('lift' in D) attempt(() => net.liftSanction(me, D.lift));
-  else if ('mod' in D) attempt(() => { const [pid, act] = D.mod.split(':'); net.moderate(me, +pid, act, { hours: v('#mh-' + pid) }); });
+  else if ('mod' in D) attempt(async () => { const [pid, act] = D.mod.split(':'); await net.moderate(me, +pid, act, { hours: v('#mh-' + pid) }); });
   else if ('del' in D) attempt(() => net.deletePost(me, +D.del));
   else if ('open' in D) go('thread', +D.open);
   else if ('sub' in D) { const [k, n] = D.sub.split(':'); view = { page: 'profile', arg: n, sub: k || null }; render(); }
   else if ('grad' in D) { $('#s-gradv').value = 'grad:' + D.grad; $('#s-banner').value = ''; $('#pvb').style.background = GRADS[+D.grad]; }
-  else if ('saveprofile' in D) attempt(() => { net.updateProfile(me, { display: v('#s-display'), bio: v('#s-bio'), avatar: v('#s-avatar'), banner: v('#s-banner') || v('#s-gradv'), link: v('#s-link') }); if (!err) view = { page: 'profile' }; });
+  else if ('saveprofile' in D) attempt(async () => { await net.updateProfile(me, { display: v('#s-display'), bio: v('#s-bio'), avatar: v('#s-avatar'), banner: v('#s-banner') || v('#s-gradv'), link: v('#s-link') }); if (!err) view = { page: 'profile' }; });
   else if ('user' in D) go('profile', D.user);
   else if ('follow' in D) attempt(() => net.toggleFollow(me, D.follow));
   else if ('chat' in D) go('dm', D.chat);
-  else if ('dm' in D) attempt(() => { net.send(me, view.arg, v('#dm'), pend.dm); pend.dm = []; });
+  else if ('dm' in D) attempt(async () => { await net.send(me, view.arg, v('#dm'), pend.dm); pend.dm = []; });
   else if ('search' in D) go('search', D.search);
   else if ('dosearch' in D) go('search', v('#q'));
 });
@@ -367,6 +369,13 @@ document.addEventListener('keydown', ev => {
   else if (ev.key === 'Tab') { const b = [...document.querySelectorAll('#lb button')], i = b.indexOf(document.activeElement); ev.preventDefault(); b[(i + (ev.shiftKey ? -1 : 1) + b.length) % b.length].focus(); }
 });
 render();
-// « live » : la page Tendances se rafraîchit seule (les données viennent du stockage partagé)
+// démarrage : première synchro avec le serveur, puis interrogation régulière (les changements des autres appareils arrivent seuls)
+(async () => {
+  try { await sync.pull(true); } catch (e) { err = e.message; }
+  booting = false; checkSession();
+  if (STREAM) await attempt(async () => { if (me !== 'Streamer') openSession(await net.ensureStreamer()); view = { page: 'theme' }; }); else render();
+  setInterval(sync.poll, 2000);
+  window.addEventListener('focus', sync.poll);
+})();
+// la page Tendances se rafraîchit seule (le score dépend de l'heure)
 setInterval(() => { if (me && view.page === 'trends') refresh(); }, 3000);
-if (STREAM) attempt(async () => { openSession(await net.ensureStreamer()); view = { page: 'theme' }; });

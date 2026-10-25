@@ -155,5 +155,8 @@ T.apply(T.clean(), tdoc); assert.ok(!tdoc.documentElement.style.p['--bg-img'] &&
 assert.deepStrictEqual(T.importText(T.exportText(t1)), t1);
 assert.throws(() => T.importText('{x'), /invalide/); assert.throws(() => T.importText('{"a":1}'), /thème/);
 for (const n in T.PRESETS) assert.ok(T.ratio(T.PRESETS[n].fg, T.mix(T.PRESETS[n].bg)) >= 3, 'contraste ' + n);
+// noms piégés : aucun accès au prototype
+await n.signup('constructor', 'pass9'); assert.throws(() => n.profile('valueOf')); assert.strictEqual(n.profile('constructor').name, 'constructor');
+const snap = require('./social.js').snapshot(n.db(), 'carol'); assert.ok(!JSON.stringify(snap).includes('"pass"'));
 console.log('ok');
 })().catch(e => { console.error(e); process.exit(1); });

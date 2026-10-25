@@ -2,7 +2,7 @@
 // Chaque appel relit le storage (lecture-modification-écriture) : aucune copie ancienne n'est conservée en mémoire.
 (function (root) {
   const KEY = 'twitchgram.v1';
-  const empty = () => ({ users: {}, posts: [], messages: [], notifs: [], reposts: [], reports: [], seq: 1, attempts: {} });
+  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], seq: 1, attempts: Object.create(null) });
   const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000;
 
   const RESERVED = 'streamer';
@@ -34,6 +34,8 @@
     let db;
     const load = () => {
       try { db = Object.assign(empty(), JSON.parse(storage.getItem(KEY))); } catch (e) { db = empty(); }
+      // dictionnaires sans prototype : un pseudo comme « constructor » ou « __proto__ » reste une simple clé
+      db.users = Object.assign(Object.create(null), db.users); db.attempts = Object.assign(Object.create(null), db.attempts);
       return db;
     };
     const save = () => storage.setItem(KEY, JSON.stringify(db));
@@ -61,7 +63,7 @@
     const api = {
       db: () => db,
       async signup(name, password, bio) {
-        name = (name || '').trim();
+        name = String(name || '').trim();
         need(/^[a-zA-Z0-9_]{3,20}$/.test(name), 'Pseudo : 3-20 caractères (lettres, chiffres, _)');
         need(name.toLowerCase() !== RESERVED, 'Pseudo réservé');
         need((password || '').length >= 4, 'Mot de passe trop court (4 min)');
@@ -387,6 +389,26 @@
     return api;
   }
 
-  const exported = { Net, KEY, MAX_IMAGES, cleanImages, REASONS };
+  // Vue d'un compte sur les données (envoyée par le serveur) : jamais de mot de passe, d'époque de session,
+  // de messages ou notifications d'autrui, ni de listes privées (favoris, blocages, sanctions) des autres comptes.
+  function snapshot(db, by) {
+    const me = db.users[String(by || '').toLowerCase()];
+    if (!me) throw new Error('Utilisateur introuvable');
+    const lcm = me.name.toLowerCase(), users = Object.create(null);
+    for (const [k, u] of Object.entries(db.users)) {
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, ...pub } = u;
+      if (k === lcm) Object.assign(pub, { blocked, muted, bookmarks, sanction, sanctions });
+      else if (me.admin) Object.assign(pub, { sanction });
+      users[k] = JSON.parse(JSON.stringify(pub));
+    }
+    return {
+      users, posts: db.posts, reposts: db.reposts, seq: db.seq, attempts: {},
+      messages: db.messages.filter(m => m.from === me.name || m.to === me.name),
+      notifs: db.notifs.filter(n => n.to === me.name),
+      reports: me.admin ? db.reports : db.reports.filter(r => r.by === me.name).map(r => ({ id: r.id, postId: r.postId, by: r.by, status: r.status })),
+    };
+  }
+
+  const exported = { Net, snapshot, KEY, MAX_IMAGES, cleanImages, REASONS };
   if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);
