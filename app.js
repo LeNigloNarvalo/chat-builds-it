@@ -29,6 +29,11 @@ let notice = '';
 // liens reçus par e-mail (?verify=… / ?reset=…) : lus puis retirés de l'URL pour ne pas rester dans l'historique
 let LINK = (() => { const q = new URLSearchParams(location.search), k = q.get('reset') ? 'reset' : q.get('verify') ? 'verify' : q.get('secure') ? 'secure' : null;
   if (!k) return null; const token = q.get(k); q.delete('reset'); q.delete('verify'); q.delete('secure'); history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q : '')); return { kind: k, token }; })();
+// retour d'une connexion Google / GitHub (?oauth=billet, ?oauth_error=…, ?oauth_linked=…) : lu puis retiré de l'URL
+const OA_URL = (() => { const q = new URLSearchParams(location.search), o = { ticket: q.get('oauth'), error: q.get('oauth_error'), linked: q.get('oauth_linked') };
+  if (!o.ticket && !o.error && !o.linked) return null; ['oauth', 'oauth_error', 'oauth_linked'].forEach(k => q.delete(k)); history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q : '')); return o; })();
+const OA_NAMES = { google: 'Google', github: 'GitHub' }, OA_ICON = { google: '🔵', github: '⚫' };
+const oa = { provs: null, ticket: null, mfa: false, pending: null, mode: 'create', loaded: false, data: null, msg: '' };
 let authMode = 'login'; // 'login' | 'forgot'
 let mfa = null; // connexion en attente du code de double authentification : { name, password } (gardé en mémoire seulement, jamais stocké)
 let linkMsg = ''; // résultat du lien ouvert (confirmation / réinitialisation)
@@ -53,7 +58,7 @@ const bannerCss = b => !b ? GRADS[0] : b.startsWith('grad:') ? GRADS[+b.slice(5)
 const tbadges = n => net.badgesOf(n).map(k => { const b = Social.BADGES[k]; return `<span class="tbadge ${k}" title="${b.label}" role="img" aria-label="${b.label}">${b.icon}</span>`; }).join('');
 const peopleList = names => names.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b>${tbadges(n)} <span class="mut">@${esc(n)} · ${esc(prof(n).bio || '')}</span></div>`).join('') || '<p class="mut">Personne pour l’instant.</p>';
 const ago = I18n.ago;
-const go = (page, arg) => { if (page === 'security' || page === 'privacy') { ses.loaded = false; ses.msg = ''; } if (page === 'settings') { tfa.loaded = false; tfa.setup = null; tfa.codes = null; } if (page === 'stats') st.loaded = false; if (page === 'dev') { dev.loaded = false; dev.fresh = null; dev.detail = null; } if (view.page !== page) for (const k in pagers) pagers[k].key = null; view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
+const go = (page, arg) => { if (page === 'security') { oa.loaded = false; oa.msg = ''; } if (page === 'security' || page === 'privacy') { ses.loaded = false; ses.msg = ''; } if (page === 'settings') { tfa.loaded = false; tfa.setup = null; tfa.codes = null; } if (page === 'stats') st.loaded = false; if (page === 'dev') { dev.loaded = false; dev.fresh = null; dev.detail = null; } if (view.page !== page) for (const k in pagers) pagers[k].key = null; view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
 // ---- fil paginé côté serveur (/api/feed) : pages de 10 posts, défilement infini, bandeau « N nouveaux posts » ----
 const PAGE = 10, fs = { scope: null, who: null, ids: [], more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: 0 };
 // clé du fil affiché : « feed », « explore » ou « list:<propriétaire>:<id> » (fil dédié d'une liste de comptes)
@@ -287,6 +292,38 @@ function lightbox() {
   document.body.appendChild(d); d.querySelector('[data-lbclose]').focus();
 }
 const closeLb = () => { const from = lb && lb.from; lb = null; lightbox(); if (from) { const b = document.querySelector(`[data-gal="${from}"]`); if (b) b.focus(); } };
+// ---- connexion avec Google / GitHub et identités liées ----
+function oaButtons() {
+  return (oa.provs || Object.keys(OA_NAMES).map(id => ({ id, name: OA_NAMES[id], enabled: false }))).map(p => `<button data-oalogin="${p.id}" ${p.enabled ? '' : 'disabled title="Non configuré par l’hébergeur du site (identifiants OAuth manquants)"'}>${OA_ICON[p.id]} Continuer avec ${esc(p.name)}</button>`).join(' ');
+}
+const oaDone = r => { if (r.mfa) { oa.mfa = true; return; } if (r.pending) { oa.pending = r; oa.mfa = false; return; } oa.ticket = null; oa.pending = null; oa.mfa = false; openSession(r.name); };
+async function oaLoad() {
+  try { oa.data = await sync.get('/api/oauth/methods'); } catch (e) { err = e.message; }
+  oa.loaded = true; if (view.page === 'security') refresh();
+}
+function oaCard() {
+  if (!oa.loaded) { oaLoad(); return `<div class="card"><h2>🔗 Comptes liés</h2>${States.loading('Chargement…')}</div>`; }
+  const d = oa.data; if (!d) return '';
+  const linked = new Map(d.identities.map(i => [i.provider, i]));
+  return `<div class="card" role="group" aria-labelledby="h-oa"><h2 id="h-oa">🔗 Comptes liés (Google, GitHub)</h2>
+    <p class="mut">Connectez-vous avec Google ou GitHub en plus du mot de passe et des clés d’accès. Vous avez <b>${d.methods}</b> moyen${d.methods > 1 ? 's' : ''} de connexion : ${d.hasPassword ? 'mot de passe' : '<span class="err">pas de mot de passe</span>'}, ${d.passkeys} clé${d.passkeys > 1 ? 's' : ''} d’accès, ${d.identities.length} compte${d.identities.length > 1 ? 's' : ''} lié${d.identities.length > 1 ? 's' : ''}. Le dernier ne peut pas être retiré, pour ne jamais vous verrouiller dehors.</p>
+    ${d.providers.map(p => { const i = linked.get(p.id); return `<div class="card"><b>${OA_ICON[p.id]} ${esc(p.name)}</b> ${i ? `<span class="ok">lié</span> · ${esc(i.label)} <span class="mut">depuis ${dt(i.created)}${i.last_used ? ' · utilisé ' + dt(i.last_used) : ''}</span> <button data-oaunlink="${p.id}" aria-label="Délier ${esc(p.name)}">✂️ Délier</button>` : `<span class="mut">non lié</span> <button data-oalinkto="${p.id}" ${p.enabled ? '' : 'disabled title="Non configuré par l’hébergeur du site"'}>➕ Lier ${esc(p.name)}</button>`}</div>`; }).join('')}
+    ${d.hasPassword ? '' : `<div class="card"><b>🔑 Définir un mot de passe</b><p class="mut">Ce compte a été créé via un fournisseur et n’a pas de mot de passe. En définir un ajoute un moyen de connexion de secours.</p><input id="oa-newpw" type="password" placeholder="Mot de passe (4 min)" autocomplete="new-password" aria-label="Nouveau mot de passe"> <button data-oasetpw>Définir le mot de passe</button></div>`}
+    ${oa.msg ? `<p class="ok" role="status">${esc(oa.msg)}</p>` : ''}${err ? `<p class="err" role="alert">${esc(err)}</p>` : ''}</div>`;
+}
+document.addEventListener('click', ev => {
+  const b = ev.target.closest('[data-oalogin],[data-oalinkto],[data-oaunlink],[data-oasetpw],[data-oamfa],[data-oacreate],[data-oalink],[data-oamode],[data-oacancel]'); if (!b) return;
+  const D = b.dataset, v = id => ($(id) || {}).value;
+  if (D.oalogin) attempt(async () => { location.href = (await net.oauthStart(D.oalogin)).url; });
+  else if (D.oalinkto) attempt(async () => { location.href = (await sync.send('/api/oauth/link', { provider: D.oalinkto })).url; });
+  else if (D.oaunlink) { if (confirm('Délier ce compte ? Il ne permettra plus de se connecter.')) attempt(async () => { oa.data = await sync.send('/api/oauth/unlink', { provider: D.oaunlink }); oa.msg = 'Compte délié ✔'; }); }
+  else if ('oasetpw' in D) attempt(async () => { const r = await sync.send('/api/oauth/set-password', { password: v('#oa-newpw') }); await net.oauthSession(r); oa.data = r.state; oa.msg = 'Mot de passe défini ✔'; });
+  else if ('oamfa' in D) attempt(async () => { oaDone(await net.oauthFinish(oa.ticket, v('#oa-code'))); });
+  else if ('oacreate' in D) attempt(async () => { oaDone(await net.oauthComplete({ ticket: oa.ticket, action: 'create', name: v('#oa-name') })); });
+  else if ('oalink' in D) attempt(async () => { oaDone(await net.oauthComplete({ ticket: oa.ticket, action: 'link', name: v('#oa-name'), password: v('#oa-pw'), code: (document.getElementById('oa-code') || {}).value })); });
+  else if (D.oamode) { oa.mode = D.oamode; err = ''; render(); }
+  else if ('oacancel' in D) { oa.ticket = null; oa.pending = null; oa.mfa = false; err = ''; render(); }
+});
 // en cas d'échec la saisie du formulaire est conservée et l'action peut être rejouée avec « Réessayer »
 let lastAction = null;
 const attempt = async f => {
@@ -383,7 +420,7 @@ async function tfaLoad() {
 }
 // sessions actives et journal de sécurité (données du serveur, propres au compte)
 const ses = { data: null, loaded: false, msg: '' };
-const SEC_EVENTS = { login: '🔓 Connexion', login_fail: '⚠️ Échec de connexion', mfa_fail: '⚠️ Mauvais code de double authentification', signup: '🎉 Création du compte', logout: '🚪 Déconnexion', logout_all: '🚪 Déconnexion de tous les appareils', password_change: '🔑 Mot de passe changé', password_reset: '🔑 Mot de passe réinitialisé par e-mail', suspicious_alert: '🚨 Alerte de connexion suspecte envoyée par e-mail', passkey_login: '🔑 Connexion par clé d’accès', passkey_added: '🔑 Clé d’accès ajoutée', passkey_removed: '🔑 Clé d’accès révoquée', session_revoked: '🛑 Appareil révoqué', sessions_revoked: '🛑 Autres appareils révoqués' };
+const SEC_EVENTS = { login: '🔓 Connexion', login_fail: '⚠️ Échec de connexion', mfa_fail: '⚠️ Mauvais code de double authentification', signup: '🎉 Création du compte', logout: '🚪 Déconnexion', logout_all: '🚪 Déconnexion de tous les appareils', password_change: '🔑 Mot de passe changé', password_reset: '🔑 Mot de passe réinitialisé par e-mail', suspicious_alert: '🚨 Alerte de connexion suspecte envoyée par e-mail', passkey_login: '🔑 Connexion par clé d’accès', passkey_added: '🔑 Clé d’accès ajoutée', oauth_login: '🔗 Connexion via Google / GitHub', oauth_linked: '🔗 Compte Google / GitHub lié', oauth_unlinked: '✂️ Compte Google / GitHub délié', passkey_removed: '🔑 Clé d’accès révoquée', session_revoked: '🛑 Appareil révoqué', sessions_revoked: '🛑 Autres appareils révoqués' };
 async function sesLoad() {
   try { ses.data = await sync.get('/api/sessions'); } catch (e) { err = e.message; }
   ses.loaded = true; if (view.page === 'security' || view.page === 'privacy') refresh();
@@ -1117,6 +1154,17 @@ function renderPage() {
       <button data-doreset>Changer le mot de passe</button><p class="err" role="alert">${esc(err)}</p></div>`;
     return;
   }
+  if (!me && oa.ticket && (oa.mfa || oa.pending)) {
+    nav.innerHTML = ''; const p = oa.pending;
+    if (oa.mfa) app.innerHTML = `<div class="card"><h2>${t('mfa.title')}</h2><p class="mut">Ce compte est protégé par la double authentification : saisissez le code à 6 chiffres de votre appli, ou un code de secours.</p>
+      <input id="oa-code" autocomplete="one-time-code" placeholder="123 456 ou code de secours" aria-label="Code de double authentification" autofocus> <button data-oamfa>${t('mfa.ok')}</button> <button data-oacancel>${t('mfa.cancel')}</button><p class="err" role="alert">${esc(err)}</p></div>`;
+    else app.innerHTML = `<div class="card"><h2>${OA_ICON[p.provider]} ${OA_NAMES[p.provider]} reconnu</h2><p class="mut">Identité <b>${esc(p.label)}</b> : aucun compte Agora n’y est encore lié. Créez un compte, ou fusionnez-la avec un compte existant.</p>
+      <div class="row" role="group" aria-label="Choix"><button data-oamode="create" aria-pressed="${oa.mode === 'create'}" class="${oa.mode === 'create' ? 'on' : ''}">🆕 Créer un compte</button><button data-oamode="link" aria-pressed="${oa.mode === 'link'}" class="${oa.mode === 'link' ? 'on' : ''}">🔗 Lier à un compte existant</button></div>
+      ${oa.mode === 'create' ? `<label>Pseudo<input id="oa-name" maxlength="20" value="${esc(p.suggested)}" autocomplete="username"></label><p class="mut">Aucun mot de passe : vous pourrez en définir un plus tard dans Sécurité.</p><button data-oacreate>Créer mon compte</button>`
+      : `<label>Pseudo du compte<input id="oa-name" autocomplete="username"></label><label>Mot de passe<input id="oa-pw" type="password" autocomplete="current-password"></label><p class="mut">Le mot de passe prouve que ce compte est bien le vôtre ; ensuite ${OA_NAMES[p.provider]} suffira pour vous connecter.</p><button data-oalink>Lier et se connecter</button>`}
+      <button data-oacancel>${t('mfa.cancel')}</button><p class="err" role="alert">${esc(err)}</p></div>`;
+    return;
+  }
   if (!me && linkMsg) {
     nav.innerHTML = ''; app.innerHTML = `<div class="card"><h2>Agora</h2><p role="status" class="${/✔/.test(linkMsg) ? 'ok' : 'err'}">${esc(linkMsg)}</p><button data-endlink>Aller à la connexion</button></div>`;
     return;
@@ -1141,7 +1189,7 @@ function renderPage() {
     nav.innerHTML = ''; if (!cap && !capBusy && !STREAM) loadCaptcha();
     app.innerHTML = `<div class="card"><h2>${t('auth.welcome')}</h2><input id="u" placeholder="${t('auth.user')}"><input id="pw" type="password" placeholder="${t('auth.password')}"><input id="bio" placeholder="${t('auth.bio')}">
     <div class="captcha" role="group" aria-labelledby="cap-q"><b>🤖 Défi anti-robot (inscription)</b><p id="cap-q">${esc(cap ? cap.question : 'Chargement du défi…')}</p><input id="cap-a" inputmode="numeric" autocomplete="off" placeholder="Ta réponse" aria-label="Réponse au défi anti-robot"><input id="cap-w" name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0"> <button class="lnk" type="button" data-capnew>↻ Autre question</button></div>
-    <button data-login>${t('auth.login')}</button> <button data-signup>${t('auth.signup')}</button> <button class="lnk" data-forgot>${t('auth.forgot')}</button><br><button data-pklogin ${window.PublicKeyCredential ? '' : 'disabled title="Clés d’accès non prises en charge par ce navigateur"'}>🔑 Se connecter avec une clé d’accès</button><p class="err">${esc(err)}</p>${linkMsg ? `<p class="ok" role="status">${esc(linkMsg)}</p>` : ''}</div>`;
+    <button data-login>${t('auth.login')}</button> <button data-signup>${t('auth.signup')}</button> <button class="lnk" data-forgot>${t('auth.forgot')}</button><br><button data-pklogin ${window.PublicKeyCredential ? '' : 'disabled title="Clés d’accès non prises en charge par ce navigateur"'}>🔑 Se connecter avec une clé d’accès</button><br>${oaButtons()}<p class="err">${esc(err)}</p>${linkMsg ? `<p class="ok" role="status">${esc(linkMsg)}</p>` : ''}</div>`;
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
@@ -1303,6 +1351,7 @@ function renderPage() {
       <div class="card"><b>Changer le mot de passe</b>
       <input id="sec-old" type="password" placeholder="Mot de passe actuel" autocomplete="current-password"><input id="sec-new" type="password" placeholder="Nouveau mot de passe (4 min)" autocomplete="new-password"><input id="sec-new2" type="password" placeholder="Confirmer le nouveau mot de passe" autocomplete="new-password">
       <button data-chpw>Changer le mot de passe</button> <p class="mut">Les autres appareils seront déconnectés. Après 5 connexions ratées, le pseudo est bloqué 60 s.</p></div>
+      ${oaCard()}
       ${sessionsCard()}
       <div class="card"><b>Se déconnecter partout</b><p class="mut">Ferme toutes les sessions ouvertes, y compris celle-ci.</p><button data-logoutall>🚪 Déconnecter tous mes appareils</button></div>
       <div class="card"><b>Supprimer mon compte</b><p class="mut">La suppression se programme depuis la page Confidentialité, avec un délai de grâce de 7 jours pour changer d’avis.</p><button data-page="privacy">🛡️ Aller à la page Confidentialité</button></div>${e}${view.ok ? `<p class="ok">${esc(view.ok)}</p>` : ''}`;
@@ -2314,6 +2363,10 @@ render();
   if (LINK && LINK.kind === 'verify') { try { const r = await net.verifyEmail(LINK.token); linkMsg = `Adresse ${r.email} vérifiée pour @${r.name} ✔`; } catch (e) { linkMsg = e.message; } }
   if (LINK && LINK.kind === 'secure') { try { await net.secureAccount(LINK.token); linkMsg = 'Compte sécurisé ✔ Tous les appareils sont déconnectés ; un lien pour changer de mot de passe vient de vous être envoyé par e-mail.'; } catch (e) { linkMsg = e.message; } }
   booting = false; checkSession();
+  if (OA_URL && OA_URL.error) err = OA_URL.error;
+  if (OA_URL && OA_URL.ticket && !me) { oa.ticket = OA_URL.ticket; try { oaDone(await net.oauthFinish(oa.ticket)); } catch (e) { err = e.message; oa.ticket = null; } }
+  if (OA_URL && OA_URL.linked && me) { oa.msg = OA_NAMES[OA_URL.linked] + ' lié ✔'; view = { page: 'security' }; }
+  if (!me) net.oauthProviders().then(r => { oa.provs = r.providers; if (!me) render(); }, () => {});
   if (me && Notif.supported() && Notif.seenGet(store, me) === null) Notif.seenSet(store, me, net.notifications(me).reduce((m, n) => Math.max(m, n.id), 0));
   if (new URLSearchParams(location.search).get('notif') && me) view = { page: 'notifs' };
   if (SHARED && me) { const s = SHARED; SHARED = null; await attempt(async () => { const r = await net.saveSharedList(me, s.owner, s.id, s.token); view = { page: 'list', arg: { owner: r.owner, id: r.id } }; }); }

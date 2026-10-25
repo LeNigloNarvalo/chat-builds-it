@@ -56,6 +56,13 @@
     // connexion par clé d'accès : le navigateur signe un défi du serveur (empreinte / Face ID), aucun mot de passe n'est envoyé
     net.passkeyOptions = () => req('/api/passkey-login-options', 'POST', {});
     net.passkeyLogin = async credential => open(await req('/api/passkey-login', 'POST', { credential }));
+    // connexion avec un fournisseur OAuth : redirection, puis billet à usage unique échangé contre la session
+    net.oauthProviders = () => req('/api/oauth-providers', 'GET');
+    net.oauthStart = provider => req('/api/oauth-start', 'POST', { provider });
+    const oauthOpen = async j => (j.mfa || j.pending) ? j : { name: await open(j) };
+    net.oauthSession = j => open(j);
+    net.oauthFinish = async (ticket, code) => oauthOpen(await req('/api/oauth-finish', 'POST', { ticket, code }));
+    net.oauthComplete = async data => oauthOpen(await req('/api/oauth-complete', 'POST', data));
     net.trustDevice = (name, t) => trustedSet(name, t);
     net.ensureStreamer = async () => open(await req('/api/stream-session', 'POST', {}));
     net.changePassword = async (by, oldPw, newPw) => { await open(await req('/api/password', 'POST', { oldPw, newPw })); };

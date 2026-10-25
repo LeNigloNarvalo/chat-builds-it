@@ -3,7 +3,7 @@
 // et envoient leurs actions à /api/call, authentifiées par une session aléatoire (seul son hachage SHA-256 est stocké).
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
-const { Guard, clientIp, PROBATION_MS } = require('./guard.js'), { Store } = require('./store.js'), Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp, deviceLabel } = require('./totp.js'), { Passkeys } = require('./passkeys.js'), { Backups } = require('./backup.js'), { Public } = require('./public.js'), { config, Ops } = require('./ops.js');
+const { Guard, clientIp, PROBATION_MS } = require('./guard.js'), { Store } = require('./store.js'), Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp, deviceLabel } = require('./totp.js'), { Passkeys } = require('./passkeys.js'), { OAuth } = require('./oauth.js'), { Backups } = require('./backup.js'), { Public } = require('./public.js'), { config, Ops } = require('./ops.js');
 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
@@ -32,7 +32,10 @@ function createServer(opts = {}) {
   if (store.migrated) console.log('Stockage : données migrées vers les tables SQLite indexées.');
   const storage = store.storage, version = store.version;
   const net = Social.Net(storage);
-  const tfa = Totp(db), passkeys = Passkeys(db);
+  const tfa = Totp(db), passkeys = Passkeys(db), oauth = OAuth(db, { providers: opts.oauth });
+  const redirectOf = req => { const pu = process.env.PUBLIC_URL || opts.publicUrl; return (pu ? new URL(pu).origin : 'http://' + req.headers.host) + '/oauth/callback'; };
+  // moyens de connexion restants (mot de passe, clés d'accès, identités) : on n'en retire jamais le dernier
+  const methodsOf = n => oauth.methods(n, passkeys.list(n).length);
   // domaine (rpId) et origine attendus pour WebAuthn : l'adresse publique configurée, sinon l'en-tête Host de la requête
   const rpOf = req => { const pu = process.env.PUBLIC_URL || opts.publicUrl; if (pu) { const u = new URL(pu); return { id: u.hostname, origin: u.origin }; } return { id: String(req.headers.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '') }; };
   // ---- sauvegardes : une par jour (et au démarrage si la dernière date de plus de 24 h), rotation automatique ----
@@ -60,7 +63,7 @@ function createServer(opts = {}) {
   // suppressions de compte dont le délai de grâce est écoulé (lancé après l'initialisation complète, jamais au démarrage)
   const reap = () => {
     try {
-      for (const n of net.dueDeletions()) if (net.finalizeDeletion(n)) { delV.run(n.toLowerCase(), n.toLowerCase()); delUser.run(n); db.prepare('DELETE FROM security_log WHERE name = ?').run(n); tfa.forget(n); passkeys.forget(n); dev.forget(n); }
+      for (const n of net.dueDeletions()) if (net.finalizeDeletion(n)) { delV.run(n.toLowerCase(), n.toLowerCase()); delUser.run(n); db.prepare('DELETE FROM security_log WHERE name = ?').run(n); tfa.forget(n); passkeys.forget(n); oauth.forget(n); dev.forget(n); }
     } catch (e) { fail('Suppression de compte', e); }
   };
   const reaper = setInterval(reap, 5000); reaper.unref();
@@ -130,7 +133,7 @@ function createServer(opts = {}) {
   });
   const origin = () => process.env.PUBLIC_URL || opts.publicUrl || 'http://localhost:' + (server.address() ? server.address().port : 8080);
   // alerte de connexion suspecte : navigateur/système/lieu jamais vus sur ce compte, ou rafale d'échecs ; envoyée à l'adresse VÉRIFIÉE avec un lien « ce n'était pas moi »
-  const seenL = db.prepare("SELECT 1 FROM security_log WHERE name = ? AND kind IN ('login', 'signup') AND label = ? AND COALESCE(place, '') = ? LIMIT 1"), anyL = db.prepare("SELECT 1 FROM security_log WHERE name = ? AND kind IN ('login', 'signup') LIMIT 1"),
+  const seenL = db.prepare("SELECT 1 FROM security_log WHERE name = ? AND kind IN ('login', 'signup', 'oauth_login') AND label = ? AND COALESCE(place, '') = ? LIMIT 1"), anyL = db.prepare("SELECT 1 FROM security_log WHERE name = ? AND kind IN ('login', 'signup', 'oauth_login') LIMIT 1"),
     failL = db.prepare("SELECT COUNT(*) n FROM security_log WHERE name = ? AND kind IN ('login_fail', 'mfa_fail') AND at > ?"), alertedL = db.prepare("SELECT 1 FROM security_log WHERE name = ? AND kind = 'suspicious_alert' AND at > ? LIMIT 1");
   const alertMail = (name, why, req) => {
     const u = net.findRecoverable(name); if (!u) return;
@@ -183,7 +186,7 @@ function createServer(opts = {}) {
       const last = backups && backups.list().find(b => b.kind === 'auto'), late = !!backups && !!last && Date.now() - last.at > 2 * backups.every() + 3600000;
       return send(res, dbOk ? 200 : 503, { ok: dbOk, db: dbOk, backups: backups ? (late ? 'late' : 'ok') : 'off', uptime: ops.metrics().uptime });
     }
-    if (/^POST \/api\/(signup|login|stream-session|forgot|reset|verify-email|secure-account|passkey-login-options|passkey-login)$/.test(route) && limited(req)) throw new Http(429, 'Trop de requêtes : réessayez dans une minute');
+    if (/^POST \/api\/(signup|login|stream-session|forgot|reset|verify-email|secure-account|passkey-login-options|passkey-login|oauth-start|oauth-finish|oauth-complete)$/.test(route) && limited(req)) throw new Http(429, 'Trop de requêtes : réessayez dans une minute');
     if (route === 'GET /api/captcha') { await spam('captcha', req); return send(res, 200, guard.challenge()); }
     if (route === 'POST /api/signup') { const b = await body(req); await spam('signup', req); guard.verify(b.captcha); const name = await net.signup(b.name, b.password, b.bio); return send(res, 200, openSession(name, req, 'signup')); }
     if (route === 'POST /api/login') {
@@ -207,6 +210,45 @@ function createServer(opts = {}) {
       try { name = passkeys.login(b.credential, rpOf(req)); } catch (e) { throw new Http(400, e.message); }
       checkNewDevice(name, req); return send(res, 200, openSession(name, req, 'passkey_login'));
     }
+    // ---- connexion avec Google / GitHub : redirection, retour (/oauth/callback), puis billet à usage unique échangé contre une session ----
+    if (route === 'GET /api/oauth-providers') return send(res, 200, { providers: oauth.providers() });
+    if (route === 'POST /api/oauth-start') { const b = await body(req); return send(res, 200, { url: oauth.start(String(b.provider), 'login', null, redirectOf(req)) }); }
+    const mfaOk = (name, b) => { // double authentification éventuelle ; renvoie false quand le code manque
+      if (!tfa.enabled(name) || tfa.isTrusted(name, b.trusted)) return true;
+      if (!b.code) return false;
+      if (!tfa.verify(name, b.code)) { secLog(name, 'mfa_fail', req); checkBurst(name, req); throw new Http(400, 'Code incorrect'); }
+      return true;
+    };
+    if (route === 'POST /api/oauth-finish') {
+      const b = await body(req), t = oauth.peek(b.ticket);
+      if (t.kind === 'new') return send(res, 200, { pending: true, provider: t.id, label: t.label, suggested: oauth.suggest(t.label) });
+      if (!mfaOk(t.name, b)) return send(res, 200, { mfa: true, name: t.name });
+      oauth.take(b.ticket); oauth.touch(t.id, t.subject); checkNewDevice(t.name, req);
+      return send(res, 200, Object.assign(openSession(t.name, req, 'oauth_login'), b.trust && tfa.enabled(t.name) ? { trusted: tfa.trust(t.name, req.headers['user-agent']) } : {}));
+    }
+    // identité inconnue : créer un nouveau compte, ou la fusionner avec un compte existant (prouvé par son mot de passe)
+    if (route === 'POST /api/oauth-complete') {
+      const b = await body(req), t = oauth.peek(b.ticket); let name;
+      if (t.kind !== 'new') throw new Http(400, 'Billet invalide');
+      if (b.action === 'create') {
+        await spam('signup', req);
+        name = await net.signup(b.name, crypto.randomBytes(24).toString('hex'), '');
+        oauth.markNoPassword(name); oauth.link(name, t.id, t.subject, t.label); oauth.take(b.ticket);
+        return send(res, 200, openSession(name, req, 'signup'));
+      }
+      if (b.action === 'link') {
+        await spam('login', req, String(b.name || '').slice(0, 40));
+        try { name = await net.login(String(b.name || ''), String(b.password || '')); } catch (e) {
+          try { const n = net.profile(String(b.name || '')).name; secLog(n, 'login_fail', req); checkBurst(n, req); } catch (x) { /* compte inconnu */ }
+          throw e;
+        }
+        if (!mfaOk(name, b)) return send(res, 200, { mfa: true, name });
+        try { oauth.link(name, t.id, t.subject, t.label); } catch (e) { throw new Http(400, e.message); }
+        oauth.take(b.ticket); secLog(name, 'oauth_linked', req); checkNewDevice(name, req);
+        return send(res, 200, openSession(name, req, 'oauth_login'));
+      }
+      throw new Http(400, 'Action inconnue');
+    }
     // vue du stream : ouvre le vrai compte « Streamer » SANS mot de passe, uniquement depuis la machine du serveur
     if (route === 'POST /api/stream-session') {
       if (!loopback(req)) throw new Http(403, 'Réservé à la machine du stream');
@@ -223,7 +265,7 @@ function createServer(opts = {}) {
       if (pw.length < 4) throw new Http(400, 'Nouveau mot de passe trop court (4 min)');
       const t = takeToken('reset', b.token), u = net.findRecoverable(t.name);
       if (!u || u.email !== t.email) throw new Http(400, 'Lien invalide : l\'adresse du compte a changé');
-      await net.resetPassword(t.name, pw); tfa.revokeDevices(t.name); delUser.run(t.name); delTUser.run(t.name, 'reset'); secLog(t.name, 'password_reset', req); // toutes les sessions actives sont révoquées
+      await net.resetPassword(t.name, pw); oauth.setHasPassword(t.name); tfa.revokeDevices(t.name); delUser.run(t.name); delTUser.run(t.name, 'reset'); secLog(t.name, 'password_reset', req); // toutes les sessions actives sont révoquées
       return send(res, 200, { ok: true, name: t.name });
     }
     if (route === 'POST /api/verify-email') {
@@ -425,6 +467,24 @@ function createServer(opts = {}) {
       }
       throw new Http(404, 'Route inconnue');
     }
+    // ---- identités liées (Google, GitHub) : voir, lier, délier ; jamais le dernier moyen de connexion ----
+    if (url.pathname.startsWith('/api/oauth/')) {
+      const sub = url.pathname.slice(11), state = () => ({ providers: oauth.providers(), identities: oauth.list(me.name), hasPassword: oauth.hasPassword(me.name), passkeys: passkeys.list(me.name).length, methods: methodsOf(me.name) });
+      if (route === 'GET /api/oauth/methods') return send(res, 200, state());
+      if (req.method === 'POST') {
+        const b = await body(req);
+        try {
+          if (sub === 'link') return send(res, 200, { url: oauth.start(String(b.provider), 'link', me.name, redirectOf(req)) });
+          if (sub === 'unlink') { oauth.unlink(me.name, String(b.provider), passkeys.list(me.name).length); secLog(me.name, 'oauth_unlinked', req); return send(res, 200, state()); }
+          if (sub === 'set-password') { // comptes créés via un fournisseur : choisir un premier mot de passe
+            if (oauth.hasPassword(me.name)) throw new Error('Ce compte a déjà un mot de passe : utilisez « Changer le mot de passe »');
+            await net.resetPassword(me.name, String(b.password || '')); oauth.setHasPassword(me.name); secLog(me.name, 'password_change', req);
+            delUser.run(me.name); return send(res, 200, Object.assign(openSession(me.name, req), { state: state() }));
+          }
+        } catch (e) { throw e instanceof Http ? e : new Http(400, e.message); }
+      }
+      throw new Http(404, 'Route inconnue');
+    }
     // ---- clés d'accès (passkeys) : enregistrer, nommer, révoquer ----
     if (url.pathname.startsWith('/api/passkeys')) {
       const sub = url.pathname.slice(13);
@@ -436,7 +496,7 @@ function createServer(opts = {}) {
           if (sub === '/options') return send(res, 200, passkeys.registerOptions(me.name, rpOf(req)));
           if (sub === '/register') { const k = passkeys.register(me.name, b.credential, b.label, rpOf(req)); secLog(me.name, 'passkey_added', req); return send(res, 200, { key: k, keys: passkeys.list(me.name) }); }
           if (sub === '/rename') { passkeys.rename(me.name, b.id, b.label); return send(res, 200, { keys: passkeys.list(me.name) }); }
-          if (sub === '/revoke') { passkeys.revoke(me.name, b.id); secLog(me.name, 'passkey_removed', req); return send(res, 200, { keys: passkeys.list(me.name) }); }
+          if (sub === '/revoke') { if (methodsOf(me.name) <= 1) throw new Http(400, 'Impossible : ce serait votre dernier moyen de connexion. Définissez d\'abord un mot de passe ou liez un compte Google / GitHub.'); passkeys.revoke(me.name, b.id); secLog(me.name, 'passkey_removed', req); return send(res, 200, { keys: passkeys.list(me.name) }); }
         } catch (e) { throw e instanceof Http ? e : new Http(400, e.message); }
       }
       throw new Http(404, 'Route inconnue');
@@ -454,7 +514,7 @@ function createServer(opts = {}) {
       const b = await body(req); await net.changePassword(me.name, String(b.oldPw || ''), String(b.newPw || ''));
       delUser.run(me.name); tfa.revokeDevices(me.name); return send(res, 200, openSession(me.name, req, 'password_change')); // les autres appareils sont déconnectés
     }
-    if (route === 'POST /api/delete-account') { const b = await body(req); await net.deleteAccount(me.name, String(b.password || '')); delV.run(me.name.toLowerCase(), me.name.toLowerCase()); delUser.run(me.name); db.prepare('DELETE FROM security_log WHERE name = ?').run(me.name); tfa.forget(me.name); passkeys.forget(me.name); dev.forget(me.name); return send(res, 200, { ok: true }); }
+    if (route === 'POST /api/delete-account') { const b = await body(req); await net.deleteAccount(me.name, String(b.password || '')); delV.run(me.name.toLowerCase(), me.name.toLowerCase()); delUser.run(me.name); db.prepare('DELETE FROM security_log WHERE name = ?').run(me.name); tfa.forget(me.name); passkeys.forget(me.name); oauth.forget(me.name); dev.forget(me.name); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/read-notifications') { net.notifications(me.name, true); return send(res, 200, { ok: true }); }
     if (route === 'GET /api/media') { // image d'origine (compressée) d'un média de la médiathèque, réservée à son propriétaire
       const m = /^data:(image\/[a-z]+);base64,(.+)$/.exec(net.mediaSrc(me.name, url.searchParams.get('id')));
@@ -475,6 +535,11 @@ function createServer(opts = {}) {
     res.on('finish', () => ops.request(req.method, path0, res.statusCode, Number(process.hrtime.bigint() - t0) / 1e6));
     try {
       const url = new URL(req.url, 'http://x');
+      if (url.pathname === '/oauth/callback' && req.method === 'GET') { // retour du fournisseur : jamais de JSON, on renvoie toujours vers l'application
+        const q = Object.fromEntries(url.searchParams); let to;
+        try { const r = await oauth.callback(q); to = r.mode === 'link' ? '/?oauth_linked=' + r.provider : '/?oauth=' + r.ticket; } catch (e) { to = '/?oauth_error=' + encodeURIComponent(e.message); }
+        res.writeHead(302, Object.assign({ Location: to, 'Cache-Control': 'no-store' }, HEAD)); return res.end();
+      }
       if (url.pathname.startsWith('/api/')) return await api(req, res, url);
       if (req.method === 'GET' || req.method === 'HEAD') {
         const r = pub.handle(req, url);
