@@ -121,4 +121,3 @@ header #me{white-space:nowrap;min-width:0}.phi{white-space:nowrap;flex:none}
 .newpill{margin-left:4px;font-size:.7em;padding:1px 6px;border-radius:999px;background:#e5484d;color:#fff;animation:livepulse 1.4s 3}
 @keyframes livepulse{50%{opacity:.45}}
 @media (prefers-reduced-motion:reduce){.livepill,.newpill{animation:none!important}}
-.pie{text-align:center}.piesteps{text-align:left;max-width:30em;margin:1em auto;line-height:1.6}
