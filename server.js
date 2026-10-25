@@ -3,7 +3,7 @@
 // et envoient leurs actions à /api/call, authentifiées par une session aléatoire (seul son hachage SHA-256 est stocké).
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
-const Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp } = require('./totp.js');
+const Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp } = require('./totp.js'), { Backups } = require('./backup.js');
 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
@@ -29,6 +29,10 @@ function createServer(opts = {}) {
   const version = () => (getRow.get(Social.KEY) || { version: 0 }).version;
   const net = Social.Net(storage);
   const tfa = Totp(db);
+  // ---- sauvegardes : une par jour (et au démarrage si la dernière date de plus de 24 h), rotation automatique ----
+  const backups = dbFile === ':memory:' ? null : Backups(db, opts.backupDir || path.join(path.dirname(dbFile), 'backups'), { keep: opts.backupKeep });
+  const dailyBackup = () => { try { backups.daily(); } catch (e) { console.error('Sauvegarde automatique :', e); } };
+  const backupTimer = backups && setInterval(dailyBackup, opts.backupCheckMs || 3600000); if (backupTimer) { backupTimer.unref(); dailyBackup(); }
   const dev = Dev(db, net, { allowPrivate: opts.webhookPrivate || process.env.WEBHOOK_ALLOW_PRIVATE === '1' });
 
   // ---- temps réel (SSE) : chaque changement des données est annoncé aux clients connectés, qui rapatrient alors leur vue ----
@@ -192,6 +196,32 @@ function createServer(opts = {}) {
       }
       throw new Http(404, 'Route inconnue');
     }
+    // ---- sauvegardes et restauration : réservées aux administrateurs ----
+    if (url.pathname.startsWith('/api/admin/backups')) {
+      if (!net.isAdmin(me.name)) throw new Http(403, 'Réservé à l\'administrateur');
+      if (!backups) throw new Http(400, 'Sauvegardes indisponibles avec une base en mémoire');
+      const sub = url.pathname.slice('/api/admin/backups'.length), state = () => ({ backups: backups.list(), keep: backups.keep(), min: backups.MIN_KEEP, max: backups.MAX_KEEP });
+      if (route === 'GET /api/admin/backups') return send(res, 200, state());
+      const dl = /^\/([^/]+)\/download$/.exec(sub);
+      if (dl && req.method === 'GET') {
+        const f = backups.file(decodeURIComponent(dl[1]));
+        res.writeHead(200, Object.assign({ 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="${path.basename(f)}"`, 'Cache-Control': 'no-store' }, HEAD));
+        return res.end(fs.readFileSync(f));
+      }
+      if (req.method === 'POST') {
+        const b = await body(req);
+        if (sub === '/create') { backups.create('manual'); return send(res, 200, state()); }
+        if (sub === '/keep') { backups.setKeep(b.keep); return send(res, 200, state()); }
+        if (sub === '/delete') { backups.remove(String(b.id || '')); return send(res, 200, state()); }
+        if (sub === '/restore') {
+          if (b.confirm !== true) throw new Http(400, 'Confirmation requise');
+          const before = version(), r = backups.restore(String(b.id || ''));
+          db.prepare('UPDATE kv SET version = ? WHERE k = ?').run(before + 1, Social.KEY); // les clients doivent rapatrier la vue restaurée, même si elle est plus ancienne
+          announce(); return send(res, 200, Object.assign(r, state()));
+        }
+      }
+      throw new Http(404, 'Route inconnue');
+    }
     if (route === 'POST /api/view') { const b = await body(req); return send(res, 200, { n: Array.isArray(b.ids) ? recordViews(me.name, b.ids) : 0 }); }
     if (route === 'GET /api/stats') {
       const days = Math.min(Stats.MAX_DAYS, Math.max(1, +url.searchParams.get('days') || 14));
@@ -275,7 +305,7 @@ function createServer(opts = {}) {
       send(res, e.code >= 400 ? e.code : e.constructor === Error ? 400 : 500, { error: e.code >= 400 || e.constructor === Error ? e.message : 'Erreur interne du serveur : réessayez dans un instant' });
     }
   });
-  server.on('close', () => { clearInterval(beat); clearInterval(sched); for (const c of live) c.res.end(); live.clear(); db.close(); });
+  server.on('close', () => { clearInterval(beat); clearInterval(sched); if (backupTimer) clearInterval(backupTimer); for (const c of live) c.res.end(); live.clear(); db.close(); });
   return server;
 }
 

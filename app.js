@@ -286,14 +286,30 @@ function modPage(e) {
   <div class="card"><b>Historique</b>${hist.map(r => `<div class="mut">#${r.postId} @${esc(r.target)} · ${esc(R[r.reason] || r.reason)} → ${({ dismiss: 'sans suite', delete: 'post supprimé', warn: 'avertissement', suspend: 'suspension', ban: 'bannissement' })[r.action]} (${ago(r.closedAt)})</div>`).join('') || '<p class="mut">Vide.</p>'}</div>`;
 }
 // ---- tableau de bord d'administration : vue d'ensemble, utilisateurs, signalements, journal d'audit ----
-const adm = { tab: 'overview', q: '', del: null };
+const adm = { tab: 'overview', q: '', del: null, rest: null, bk: null, bkMsg: '' };
+async function bkLoad() { try { adm.bk = await sync.get('/api/admin/backups'); } catch (e) { adm.bk = { backups: [], keep: 7, min: 1, max: 90 }; err = e.message; } if (view.page === 'admin') refresh(); }
+const KINDS = { auto: '🕑 automatique', manual: '🖐 manuelle', pre: '🛟 avant restauration' };
+const fsize = n => n >= 1048576 ? (n / 1048576).toFixed(1).replace('.', ',') + ' Mo' : Math.max(1, Math.round(n / 1024)) + ' Ko';
+function backupsPage(head) {
+  if (!adm.bk) { bkLoad(); return head + '<p class="mut" role="status">Chargement…</p>'; }
+  const B = adm.bk, newest = B.backups[0];
+  return head + `<div class="card"><b>💾 Sauvegardes du serveur</b>
+    <p class="mut">Une copie complète de la base est faite automatiquement chaque jour. ${newest ? 'Dernière : ' + ago(newest.at) + '.' : 'Aucune sauvegarde pour l’instant.'} Restaurer remplace toutes les données actuelles (une sauvegarde de sécurité est créée juste avant).</p>
+    <div class="row"><button data-bkcreate>➕ Sauvegarder maintenant</button>
+    <label class="inl">Sauvegardes automatiques conservées <input id="bk-keep" type="number" min="${B.min}" max="${B.max}" value="${B.keep}" style="width:5em"></label><button data-bkkeep>Appliquer</button></div>
+    ${adm.bkMsg ? `<p class="ok" role="status">${esc(adm.bkMsg)}</p>` : ''}</div>` +
+    (B.backups.map(b => `<div class="card"><div><b>${esc(I.dateTime(b.at))}</b> <span class="mut">· ${ago(b.at)} · ${KINDS[b.kind]} · ${fsize(b.size)}</span></div>
+      ${adm.rest === b.id ? `<div class="row" role="alert"><b>Remplacer toutes les données actuelles par cette version du ${esc(I.dateTime(b.at))} ?</b><button data-bkrestore="${esc(b.id)}">Oui, restaurer</button><button data-bkno>Annuler</button></div>`
+      : `<div class="row"><button data-bkask="${esc(b.id)}">♻️ Restaurer</button><button data-bkdl="${esc(b.id)}">⬇️ Télécharger</button><button data-bkdel="${esc(b.id)}">🗑 Supprimer</button></div>`}</div>`).join('') || '<p class="mut">Aucune version disponible.</p>');
+}
 const AUDIT = { 'report-dismiss': '✅ signalement classé', 'report-delete': '🗑 post supprimé', 'report-warn': '⚠️ avertissement (signalement)', 'report-suspend': '⏸ suspension (signalement)', 'report-ban': '⛔ bannissement (signalement)', 'user-warn': '⚠️ avertissement', 'user-suspend': '⏸ suspension', 'user-ban': '⛔ bannissement', 'user-delete': '🗑 compte supprimé', lift: '🔓 sanction levée' };
 function adminPage(e) {
   const S = net.adminStats(me), nq = net.queue(me).length;
-  const tabs = [['overview', '📊 Vue d’ensemble'], ['users', `👥 Utilisateurs (${S.users})`], ['reports', `🚩 Signalements${nq ? ' (' + nq + ')' : ''}`], ['audit', '📜 Journal d’audit']];
+  const tabs = [['overview', '📊 Vue d’ensemble'], ['users', `👥 Utilisateurs (${S.users})`], ['reports', `🚩 Signalements${nq ? ' (' + nq + ')' : ''}`], ['audit', '📜 Journal d’audit'], ['backups', '💾 Sauvegardes']];
   const head = `<div class="card"><h2>🛠 Tableau de bord d’administration</h2><p class="mut">Réservé aux administrateurs : toute action de modération est inscrite au journal d’audit.</p>
     <div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${adm.tab === k}" data-atab="${k}" class="${adm.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>${e}`;
   if (adm.tab === 'reports') return head + modPage('');
+  if (adm.tab === 'backups') return backupsPage(head);
   if (adm.tab === 'audit') {
     const log = net.auditLog(me, 200);
     return head + `<div class="card"><b>Journal d’audit</b> <span class="mut">· ${log.length} dernière${log.length > 1 ? 's' : ''} action${log.length > 1 ? 's' : ''}</span>` + (log.length ? `<div class="scroll"><table class="dvlog"><thead><tr><th>Quand</th><th>Admin</th><th>Action</th><th>Cible</th><th>Détail</th></tr></thead><tbody>${log.map(a => `<tr><td title="${esc(I.dateTime(a.at))}">${ago(a.at)}</td><td>@${esc(a.by)}</td><td>${AUDIT[a.type] || esc(a.type)}</td><td>${a.target ? '@' + esc(a.target) : ''}</td><td>${esc(a.detail)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="mut">Aucune action de modération pour l’instant.</p>') + '</div>';
@@ -786,7 +802,7 @@ document.addEventListener('click', async ev => {
   } else if ('notiftest' in b.dataset) Notif.show({ id: 'test' + Date.now(), type: 'mention' }, 'Le bocal');
 });
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-atab],*[data-asanc],*[data-adelask],*[data-adelno],*[data-adel],*[data-tr],*[data-trclose],*[data-lang],*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-mfago],*[data-mfaback],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
+  const d = ev.target.closest('*[data-atab],*[data-bkcreate],*[data-bkkeep],*[data-bkask],*[data-bkno],*[data-bkrestore],*[data-bkdl],*[data-bkdel],*[data-asanc],*[data-adelask],*[data-adelno],*[data-adel],*[data-tr],*[data-trclose],*[data-lang],*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-mfago],*[data-mfaback],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
   if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
@@ -886,7 +902,14 @@ document.addEventListener('click', ev => {
   else if ('mute' in D) attempt(() => net.toggleMute(me, D.mute));
   else if ('unmute' in D) attempt(() => net.toggleMute(me, D.unmute));
   else if ('lift' in D) attempt(() => net.liftSanction(me, D.lift));
-  else if ('atab' in D) { adm.tab = D.atab; adm.del = null; err = ''; render(); }
+  else if ('atab' in D) { adm.tab = D.atab; adm.del = null; adm.rest = null; adm.bkMsg = ''; if (D.atab === 'backups') adm.bk = null; err = ''; render(); }
+  else if ('bkcreate' in D) attempt(async () => { adm.bk = await sync.send('/api/admin/backups/create', {}); adm.bkMsg = 'Sauvegarde créée ✔'; });
+  else if ('bkkeep' in D) attempt(async () => { adm.bk = await sync.send('/api/admin/backups/keep', { keep: +v('#bk-keep') }); adm.bkMsg = 'Rotation : ' + adm.bk.keep + ' sauvegarde(s) automatique(s) conservée(s) ✔'; });
+  else if ('bkask' in D) { adm.rest = D.bkask; adm.bkMsg = ''; render(); }
+  else if ('bkno' in D) { adm.rest = null; render(); }
+  else if ('bkrestore' in D) attempt(async () => { const r = await sync.send('/api/admin/backups/restore', { id: D.bkrestore, confirm: true }); adm.bk = r; adm.rest = null; adm.bkMsg = 'Données restaurées ✔ (copie de sécurité : ' + r.safety + ')'; await sync.pull(true); });
+  else if ('bkdl' in D) attempt(async () => { const blob = await sync.blob('/api/admin/backups/' + encodeURIComponent(D.bkdl) + '/download'), a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = D.bkdl; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); });
+  else if ('bkdel' in D) { if (confirm('Supprimer définitivement cette sauvegarde ?')) attempt(async () => { adm.bk = await sync.send('/api/admin/backups/delete', { id: D.bkdel }); adm.bkMsg = 'Sauvegarde supprimée'; }); }
   else if ('asanc' in D) attempt(async () => { const i = D.asanc.lastIndexOf(':'); await net.adminSanction(me, D.asanc.slice(0, i), D.asanc.slice(i + 1), v('#adm-h'), v('#adm-r')); });
   else if ('adelask' in D) { adm.del = D.adelask; render(); }
   else if ('adelno' in D) { adm.del = null; render(); }

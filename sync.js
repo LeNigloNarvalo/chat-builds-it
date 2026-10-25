@@ -92,7 +92,7 @@
     let connected = false;
     const typing = to => req('/api/typing', 'POST', { to }).catch(() => {});
     const logout = () => { req('/api/logout', 'POST', {}).catch(() => {}); forget(); };
-    return { net, pull, poll, logout, live, typing, get: p => req(p, 'GET'), send: (p, data) => req(p, 'POST', data), connected: () => connected, stopLive: () => { stopLive = true; }, hasSession: () => !!session(), me: () => me, online: () => online, onChange: f => { onChange = f; } };
+    return { net, pull, poll, logout, live, typing, get: p => req(p, 'GET'), blob: async p => { const s = session(), r = await fetch(p, { headers: s ? { Authorization: 'Bearer ' + s.token } : {} }); if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || failure(r.status)); return r.blob(); }, send: (p, data) => req(p, 'POST', data), connected: () => connected, stopLive: () => { stopLive = true; }, hasSession: () => !!session(), me: () => me, online: () => online, onChange: f => { onChange = f; } };
   }
   const exported = { Sync, WRITES };
   if (typeof module !== 'undefined') module.exports = exported; else root.Sync = Sync;

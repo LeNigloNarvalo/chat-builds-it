@@ -236,6 +236,40 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
     assert.strictEqual((await call('/api/stats?days=7', sb.token)).totals.views, 0, 'chacun ne voit que ses statistiques');
     assert.strictEqual((await call('/api/stats')).status, 401);
   }
+  // sauvegardes : réservées à l'admin, restauration fidèle (même vers une version plus ancienne), rotation
+  {
+    const bsrv = createServer({ db: path.join(dir, 'bk.db'), authPerMin: 1000 }); await new Promise(ok => bsrv.listen(0, '127.0.0.1', ok));
+    const base = 'http://127.0.0.1:' + bsrv.address().port;
+    const call = async (p, tok, data) => { const r = await fetch(base + p, { method: data === undefined ? 'GET' : 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, tok ? { Authorization: 'Bearer ' + tok } : {}), body: data === undefined ? undefined : JSON.stringify(data) }); return Object.assign(await r.json(), { status: r.status }); };
+    const open = async name => (await call('/api/signup', null, { name, password: 'secret1' })).token;
+    const adm = await call('/api/stream-session', null, {}), user = { token: await open('bkuser') }, A = adm.token;
+    assert.strictEqual((await call('/api/admin/backups', user.token)).status, 403); assert.strictEqual((await call('/api/admin/backups')).status, 401);
+    let st = await call('/api/admin/backups', A); assert.ok(st.backups.length >= 1 && st.backups[0].kind === 'auto', 'sauvegarde quotidienne au démarrage');
+    const act = (tok, method, ...args) => call('/api/call', tok, { method, args });
+    await act(user.token, 'post', 'avant la sauvegarde');
+    st = await call('/api/admin/backups/create', A, {}); const snap = st.backups.find(b => b.kind === 'manual'); assert.ok(snap);
+    await act(user.token, 'post', 'après la sauvegarde');
+    assert.strictEqual((await call('/api/state?v=-1', user.token)).state.posts.filter(p => /sauvegarde/.test(p.text)).length, 2);
+    assert.strictEqual((await call('/api/admin/backups/restore', A, { id: snap.id })).status, 400, 'confirmation requise');
+    assert.strictEqual((await call('/api/admin/backups/restore', A, { id: '../x.db', confirm: true })).status, 400);
+    const v0 = (await call('/api/state?v=-1', user.token)).version;
+    const rs = await call('/api/admin/backups/restore', A, { id: snap.id, confirm: true }); assert.ok(rs.safety && rs.backups.some(b => b.kind === 'pre'));
+    const after = await call('/api/state?v=' + v0, user.token); assert.ok(!after.unchanged && after.version > v0, 'les clients rapatrient la vue restaurée');
+    assert.deepStrictEqual(after.state.posts.filter(p => /sauvegarde/.test(p.text)).map(p => p.text), ['avant la sauvegarde']);
+    assert.strictEqual((await call('/api/state?v=-1', user.token)).me, 'bkuser', 'les sessions survivent à la restauration');
+    const dl = await fetch(base + '/api/admin/backups/' + snap.id + '/download', { headers: { Authorization: 'Bearer ' + A } }); assert.strictEqual(dl.status, 200);
+    assert.strictEqual(Buffer.from(await dl.arrayBuffer()).subarray(0, 15).toString(), 'SQLite format 3');
+    assert.strictEqual((await call('/api/admin/backups/' + snap.id + '/download', user.token)).status, 403);
+    assert.strictEqual((await call('/api/admin/backups/delete', A, { id: snap.id })).backups.some(b => b.id === snap.id), false);
+    // rotation : seules les sauvegardes automatiques excédentaires disparaissent
+    const { Backups } = require('./backup.js'), { DatabaseSync } = require('node:sqlite'), bdir = path.join(dir, 'rot'), tdb = new DatabaseSync(':memory:');
+    tdb.exec('CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT, version INTEGER)'); const B = Backups(tdb, bdir, { keep: 2 });
+    for (let i = 0; i < 4; i++) B.create('auto'); B.create('manual');
+    assert.strictEqual(B.list().filter(b => b.kind === 'auto').length, 2); assert.strictEqual(B.list().filter(b => b.kind === 'manual').length, 1);
+    assert.strictEqual(B.daily(), null, 'pas de 2e sauvegarde quotidienne le même jour'); B.setKeep(1); assert.strictEqual(B.list().filter(b => b.kind === 'auto').length, 1);
+    fs.writeFileSync(path.join(bdir, 'cornichon-20200101-000000-000-auto.db'), 'pas une base'); assert.throws(() => B.restore('cornichon-20200101-000000-000-auto.db'), /invalide|corrompue/);
+    tdb.close(); bsrv.close();
+  }
   for (const x of [s3, srv, rcv]) x.close(); rcv.closeAllConnections && rcv.closeAllConnections();
-  console.log('ok jetons, webhooks, double authentification & statistiques'); process.exit(0);
+  console.log('ok jetons, webhooks, double authentification, statistiques & sauvegardes'); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });
