@@ -125,3 +125,65 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   for (const [f, t] of [['sw.js', 'javascript'], ['manifest.webmanifest', 'manifest+json'], ['icon.svg', 'svg'], ['notif.js', 'javascript']]) { const r = await fetch(b2 + '/' + f); assert.strictEqual(r.status, 200, f); assert.ok(r.headers.get('content-type').includes(t), f); }
   s2.close(); console.log('ok fichiers PWA');
 })().catch(e => { console.error(e); process.exit(1); });
+// jetons d'API + webhooks : vrai récepteur HTTP local, signature, journal, révocation
+(async () => {
+  const crypto = require('crypto'), http = require('http');
+  const got = []; let status = 200;
+  const rcv = http.createServer((q, r) => { let b = ''; q.on('data', c => b += c); q.on('end', () => { got.push({ h: q.headers, b }); r.writeHead(status); r.end('reçu'); }); });
+  await new Promise(ok => rcv.listen(0, '127.0.0.1', ok));
+  const hook = 'http://127.0.0.1:' + rcv.address().port + '/h';
+  const srv = createServer({ db: ':memory:', authPerMin: 1000, webhookPrivate: true }); await new Promise(ok => srv.listen(0, '127.0.0.1', ok));
+  const base = 'http://127.0.0.1:' + srv.address().port;
+  const call = async (p, tok, data) => { const r = await fetch(base + p, { method: data === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok }, body: data === undefined ? undefined : JSON.stringify(data) }); return Object.assign(await r.json(), { status: r.status }); };
+  const open = async (name) => (await (await fetch(base + '/api/signup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, password: 'secret1' }) })).json()).token;
+  const wait = async f => { for (let i = 0; i < 50 && !f(); i++) await new Promise(ok => setTimeout(ok, 50)); };
+  const al = await open('alice'), bo = await open('bobby');
+  // jetons : validation, affichage unique, permissions
+  assert.strictEqual((await call('/api/dev/token', al, { label: '', scopes: ['read'] })).status, 400);
+  assert.strictEqual((await call('/api/dev/token', al, { label: 'x', scopes: ['admin'] })).status, 400);
+  const ro = await call('/api/dev/token', al, { label: 'lecture', scopes: ['read'] }), rw = await call('/api/dev/token', al, { label: 'bot', scopes: ['read', 'write'] });
+  assert.ok(/^cnch_[0-9a-f]{40}$/.test(ro.token));
+  const list = await call('/api/dev', al); assert.strictEqual(list.tokens.length, 2); assert.ok(!JSON.stringify(list).includes(ro.token), 'le jeton complet n\'est plus jamais renvoyé');
+  assert.strictEqual((await call('/api/dev', bo)).tokens.length, 0);
+  assert.strictEqual((await call('/api/v1/me', ro.token)).name, 'alice');
+  assert.strictEqual((await call('/api/v1/posts', ro.token, { text: 'non' })).status, 403, 'jeton en lecture seule');
+  const pp = await call('/api/v1/posts', rw.token, { text: 'publié par jeton' }); assert.strictEqual(pp.author, 'alice');
+  assert.strictEqual((await call('/api/state?v=-1', rw.token)).status, 403, 'un jeton n\'ouvre que /api/v1');
+  assert.strictEqual((await call('/api/dev', rw.token)).status, 403);
+  assert.strictEqual((await call('/api/v1/me', 'cnch_' + '0'.repeat(40))).status, 401);
+  // webhooks : URL, événements, SSRF par défaut
+  assert.strictEqual((await call('/api/dev/hook', al, { url: 'ftp://x', events: ['mention'] })).status, 400);
+  assert.strictEqual((await call('/api/dev/hook', al, { url: hook, events: [] })).status, 400);
+  const h = await call('/api/dev/hook', al, { url: hook, events: ['mention', 'follow'] }); assert.ok(h.id);
+  const hs = (await call('/api/dev', al)).hooks[0]; assert.ok(/^whsec_/.test(hs.secret));
+  // test + signature
+  const t = await call('/api/dev/hook-test', al, { id: h.id, event: 'ping' }); assert.strictEqual(t.ok, true); assert.strictEqual(t.code, 200);
+  const sig = crypto.createHmac('sha256', hs.secret).update(got[0].b).digest('hex');
+  assert.strictEqual(got[0].h['x-cornichon-signature'], 'sha256=' + sig); assert.strictEqual(JSON.parse(got[0].b).test, true);
+  // évènements réels : mention puis abonné
+  await act2(bo, 'post', 'salut @alice !');
+  async function act2(tok, method, ...args) { return call('/api/call', tok, { method, args }); }
+  await wait(() => got.length >= 2); assert.strictEqual(JSON.parse(got[1].b).event, 'mention'); assert.strictEqual(JSON.parse(got[1].b).data.from, 'bobby'); assert.ok(JSON.parse(got[1].b).data.post.text.includes('@alice'));
+  await act2(bo, 'toggleFollow', 'alice');
+  await wait(() => got.length >= 3); assert.strictEqual(JSON.parse(got[2].b).event, 'follow');
+  assert.strictEqual((await call('/api/v1/mentions', ro.token)).mentions.length, 1);
+  assert.deepStrictEqual((await call('/api/v1/followers', ro.token)).followers, ['bobby']);
+  // journal + échec + renvoi
+  let lg = (await call('/api/dev', al)).log; assert.strictEqual(lg.length, 3); assert.ok(lg.every(x => x.ok));
+  assert.ok((await call('/api/dev/delivery?id=' + lg[0].id, al)).payload.includes('follow'));
+  assert.strictEqual((await call('/api/dev/delivery?id=' + lg[0].id, bo)).status, 400, 'journal privé');
+  status = 500; const bad = await call('/api/dev/redeliver', al, { id: lg[0].id }); assert.strictEqual(bad.ok, false); assert.strictEqual(bad.code, 500);
+  status = 200;
+  // pause : plus d'envoi ; suppression
+  await call('/api/dev/hook-update', al, { id: h.id, active: false }); const n = got.length; await act2(bo, 'post', 'encore @alice'); await new Promise(ok => setTimeout(ok, 300)); assert.strictEqual(got.length, n);
+  assert.strictEqual((await call('/api/dev/hook-delete', bo, { id: h.id })).status, 400, 'pas le webhook d\'autrui');
+  // révocation
+  await call('/api/dev/token-revoke', al, { id: rw.id }); assert.strictEqual((await call('/api/v1/me', rw.token)).status, 401);
+  assert.strictEqual((await call('/api/v1/me', ro.token)).status, 200);
+  // adresses internes refusées par défaut
+  const s3 = createServer({ db: ':memory:' }); await new Promise(ok => s3.listen(0, '127.0.0.1', ok));
+  const b3 = 'http://127.0.0.1:' + s3.address().port, tk = (await (await fetch(b3 + '/api/signup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'carol', password: 'secret1' }) })).json()).token;
+  const r3 = await fetch(b3 + '/api/dev/hook', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tk }, body: JSON.stringify({ url: 'http://127.0.0.1:9/x', events: ['follow'] }) }); assert.strictEqual(r3.status, 400);
+  for (const x of [s3, srv, rcv]) x.close(); rcv.closeAllConnections && rcv.closeAllConnections();
+  console.log('ok jetons & webhooks'); process.exit(0);
+})().catch(e => { console.error(e); process.exit(1); });

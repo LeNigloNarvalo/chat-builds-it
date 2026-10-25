@@ -3,7 +3,7 @@
 // et envoient leurs actions à /api/call, authentifiées par une session aléatoire (seul son hachage SHA-256 est stocké).
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
-const Social = require('./social.js');
+const Social = require('./social.js'), { Dev } = require('./devapi.js');
 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
@@ -23,9 +23,10 @@ function createServer(opts = {}) {
     CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, name TEXT NOT NULL, epoch INTEGER NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL);`);
   const getRow = db.prepare('SELECT v, version FROM kv WHERE k = ?'), putRow = db.prepare(`INSERT INTO kv (k, v, version) VALUES (?, ?, 1)
     ON CONFLICT(k) DO UPDATE SET v = excluded.v, version = version + 1`);
-  const storage = { getItem: k => { const r = getRow.get(k); return r ? r.v : null; }, setItem: (k, v) => { putRow.run(k, String(v)); if (k === Social.KEY) announce(); } };
+  const storage = { getItem: k => { const r = getRow.get(k); return r ? r.v : null; }, setItem: (k, v) => { putRow.run(k, String(v)); if (k === Social.KEY) { announce(); setImmediate(() => { try { dev.scan(); } catch (e) { console.error('Webhooks :', e); } }); } } };
   const version = () => (getRow.get(Social.KEY) || { version: 0 }).version;
   const net = Social.Net(storage);
+  const dev = Dev(db, net, { allowPrivate: opts.webhookPrivate || process.env.WEBHOOK_ALLOW_PRIVATE === '1' });
 
   // ---- temps réel (SSE) : chaque changement des données est annoncé aux clients connectés, qui rapatrient alors leur vue ----
   const live = new Set(); // { res, name }
@@ -35,6 +36,7 @@ function createServer(opts = {}) {
     if (announced) return; announced = true;
     setImmediate(() => { announced = false; if (live.size) { const v = version(); for (const c of live) emit(c, 'update', { version: v }); } });
   }
+  dev.onLog(owner => { for (const c of live) if (c.name === owner) emit(c, 'dev', {}); });
   const beat = setInterval(() => { for (const c of live) { try { c.res.write(': ♥\n\n'); } catch (e) { live.delete(c); } } }, 25000); beat.unref();
 
   // ---- publication planifiée : l'horloge du serveur publie les brouillons dont la date est arrivée ----
@@ -51,6 +53,8 @@ function createServer(opts = {}) {
     return { name, token };
   };
   function auth(req) {
+    const t = /^Bearer (cnch_[0-9a-f]{40})$/.exec(req.headers.authorization || ''); // jeton d'API personnel : n'ouvre que /api/v1/*
+    if (t) { const k = dev.checkToken(t[1]); return k && { name: k.name, scopes: k.scopes, tokenId: k.id, api: true }; }
     const m = /^Bearer ([0-9a-f]{64})$/.exec(req.headers.authorization || ''); if (!m) return null;
     const s = getS.get(sha(m[1])); if (!s || s.expires < Date.now()) return null;
     try { if (net.epoch(s.name) !== s.epoch) { delS.run(s.hash); return null; } } catch (e) { delS.run(s.hash); return null; }
@@ -132,6 +136,40 @@ function createServer(opts = {}) {
       return send(res, 200, { ok: true, name: net.confirmEmail(t.name, t.email), email: t.email });
     }
     const me = auth(req); if (!me) throw new Http(401, 'Session expirée : reconnectez-vous');
+    // ---- API publique (jeton personnel ou session) : lire et publier ----
+    if (url.pathname.startsWith('/api/v1/')) {
+      if (me.api && dev.limited(me.tokenId)) throw new Http(429, 'Trop de requêtes : 60 par minute et par jeton');
+      const need = s => { if (me.api && !me.scopes.includes(s)) throw new Http(403, 'Ce jeton n\'a pas la permission « ' + s + ' »'); };
+      const pub = p => ({ id: p.id, author: p.author, text: p.text, at: p.at, replyTo: p.replyTo || null, likes: p.likes.length });
+      const lim = () => Math.min(50, Math.max(1, +url.searchParams.get('limit') || 20));
+      if (route === 'GET /api/v1/me') { need('read'); return send(res, 200, { name: me.name, bio: net.profile(me.name).bio, followers: net.followers(me.name).length, following: net.profile(me.name).following.length, scopes: me.api ? me.scopes : ['read', 'write'] }); }
+      if (route === 'GET /api/v1/feed') { need('read'); return send(res, 200, { posts: net.page(me.name, 'feed', { limit: lim(), before: url.searchParams.get('before') }).posts.map(pub) }); }
+      if (route === 'GET /api/v1/followers') { need('read'); return send(res, 200, { followers: net.followers(me.name) }); }
+      if (route === 'GET /api/v1/mentions') {
+        need('read'); const d = net.db(), seen = new Set();
+        return send(res, 200, { mentions: net.notifications(me.name).filter(n => n.type === 'mention' && !seen.has(n.postId) && seen.add(n.postId)).slice(0, lim()).map(n => d.posts.find(p => p.id === n.postId)).filter(Boolean).map(pub) });
+      }
+      if (route === 'POST /api/v1/posts') { need('write'); const b = await body(req); return send(res, 200, pub(await net.post(me.name, String(b.text || ''), b.replyTo ? +b.replyTo : undefined))); }
+      throw new Http(404, 'Route inconnue');
+    }
+    if (me.api) throw new Http(403, 'Un jeton d\'API ne donne accès qu\'à /api/v1/*');
+    // ---- gestion des jetons et des webhooks : réservée à la session du propriétaire ----
+    if (url.pathname.startsWith('/api/dev')) {
+      const dv = url.pathname.slice(8);
+      if (route === 'GET /api/dev') return send(res, 200, { tokens: dev.tokens(me.name), hooks: dev.hooks(me.name), log: dev.log(me.name), events: dev.EVENTS });
+      if (route === 'GET /api/dev/delivery') return send(res, 200, dev.detail(me.name, url.searchParams.get('id')));
+      if (req.method === 'POST') {
+        const b = await body(req);
+        if (dv === '/token') return send(res, 200, dev.createToken(me.name, b.label, b.scopes));
+        if (dv === '/token-revoke') { dev.revokeToken(me.name, b.id); return send(res, 200, { ok: true }); }
+        if (dv === '/hook') return send(res, 200, dev.createHook(me.name, b.url, b.events));
+        if (dv === '/hook-update') { dev.updateHook(me.name, b.id, b); return send(res, 200, { ok: true }); }
+        if (dv === '/hook-delete') { dev.deleteHook(me.name, b.id); return send(res, 200, { ok: true }); }
+        if (dv === '/hook-test') return send(res, 200, await dev.testHook(me.name, b.id, b.event));
+        if (dv === '/redeliver') return send(res, 200, await dev.redeliver(me.name, b.id));
+      }
+      throw new Http(404, 'Route inconnue');
+    }
     if (route === 'GET /api/state') {
       tick();
       const v = version();
@@ -163,12 +201,12 @@ function createServer(opts = {}) {
     }
     if (route === 'POST /api/email-remove') { net.removeEmail(me.name); delTUser.run(me.name, 'verify'); delTUser.run(me.name, 'reset'); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/logout') { delS.run(me.hash); return send(res, 200, { ok: true }); }
-    if (route === 'POST /api/logout-all') { net.logoutAll(me.name); delUser.run(me.name); return send(res, 200, { ok: true }); }
+    if (route === 'POST /api/logout-all') { net.logoutAll(me.name); delUser.run(me.name); dev.revokeAll(me.name); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/password') {
       const b = await body(req); await net.changePassword(me.name, String(b.oldPw || ''), String(b.newPw || ''));
       delUser.run(me.name); return send(res, 200, openSession(me.name)); // les autres appareils sont déconnectés
     }
-    if (route === 'POST /api/delete-account') { const b = await body(req); await net.deleteAccount(me.name, String(b.password || '')); delUser.run(me.name); return send(res, 200, { ok: true }); }
+    if (route === 'POST /api/delete-account') { const b = await body(req); await net.deleteAccount(me.name, String(b.password || '')); delUser.run(me.name); dev.forget(me.name); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/read-notifications') { net.notifications(me.name, true); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/call') {
       const b = await body(req);

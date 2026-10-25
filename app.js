@@ -35,7 +35,7 @@ const GRADS = ['linear-gradient(135deg,#9146ff,#ff4d8d)', 'linear-gradient(135de
 const bannerCss = b => !b ? GRADS[0] : b.startsWith('grad:') ? GRADS[+b.slice(5)] : `center/cover url("${encodeURI(b).replace(/"/g, '%22')}"), ${GRADS[4]}`;
 const peopleList = names => names.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)} · ${esc(prof(n).bio || '')}</span></div>`).join('') || '<p class="mut">Personne pour l’instant.</p>';
 const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'à l’instant' : m < 60 ? m + ' min' : m < 1440 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' j'; };
-const go = (page, arg) => { view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
+const go = (page, arg) => { if (page === 'dev') { dev.loaded = false; dev.fresh = null; dev.detail = null; } view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
 // ---- fil paginé côté serveur (/api/feed) : pages de 10 posts, défilement infini, bandeau « N nouveaux posts » ----
 const PAGE = 10, fs = { scope: null, who: null, ids: [], more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: 0 };
 // clé du fil affiché : « feed », « explore » ou « list:<propriétaire>:<id> » (fil dédié d'une liste de comptes)
@@ -67,6 +67,7 @@ const typingHTML = () => typingNow().includes(view.arg) ? `<span id="typing" cla
 let lastTyped = 0;
 const onLive = (ev, d) => {
   if (ev === 'update') sync.poll().then(feedFresh);
+  else if (ev === 'dev') { if (view.page === 'dev') devLoad(); }
   else if (ev === 'typing') { typing[d.from] = Date.now() + 4000; if (view.page === 'dm') refresh(); setTimeout(() => { if (view.page === 'dm') refresh(); }, 4100); }
 };
 const ensureLive = () => { if (me) sync.live(onLive); };
@@ -284,7 +285,7 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['groups', `👥 Communautés ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `🗂 Listes ${(net.lists(me, me) || []).length || ''}`], ['drafts', `📝 Brouillons ${net.drafts(me).length || ''}`], ['dm', `✉️ Messages ${unreadDm.total || ''}`], ['profile', '👤 Profil'], ['theme', '🎨 Thème'], ['settings', '⚙️ Réglages'], ['blocks', '🚫 Bloqués'], ['security', '🔒 Sécurité'], ['diag', '✅ Vérification']].concat(net.isAdmin(me) ? [['mod', `🛡 Modération ${net.queue(me).length || ''}`]] : [])
+  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['groups', `👥 Communautés ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `🗂 Listes ${(net.lists(me, me) || []).length || ''}`], ['drafts', `📝 Brouillons ${net.drafts(me).length || ''}`], ['dm', `✉️ Messages ${unreadDm.total || ''}`], ['profile', '👤 Profil'], ['theme', '🎨 Thème'], ['settings', '⚙️ Réglages'], ['blocks', '🚫 Bloqués'], ['security', '🔒 Sécurité'], ['dev', '🔑 API & Webhooks'], ['diag', '✅ Vérification']].concat(net.isAdmin(me) ? [['mod', `🛡 Modération ${net.queue(me).length || ''}`]] : [])
     .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
   // onglets du fil : global + une entrée par liste (les siennes)
@@ -299,6 +300,7 @@ function render() {
       + (fs.more ? '<button class="card morebar" id="more" data-more>Chargement de la suite…</button>' : ps.length ? '<p class="mut" role="status">Vous avez tout vu 🥒</p>' : '');
   };
   if (view.page === 'feed') h = composer('Quoi de neuf ?') + whoToFollow() + tabs() + e + paged();
+  else if (view.page === 'dev') h = devPage(e);
   else if (view.page === 'groups') h = groupsPage(e);
   else if (view.page === 'group') h = groupPage(e, paged);
   else if (view.page === 'lists') h = listsPage(e);
@@ -387,6 +389,40 @@ function render() {
   ensureLive();
   const m = $('#more'); if (m) more.observe(m);
   if (feedScope() && (fs.scope !== feedScope() || fs.who !== me)) feedLoad(true);
+}
+// ---- jetons d'API & webhooks : tout est stocké côté serveur, la page ne garde que la dernière lecture ----
+const dev = { data: null, loaded: false, fresh: null, detail: null, secrets: {} };
+async function devLoad() {
+  try { dev.data = await sync.get('/api/dev'); dev.loaded = true; } catch (e) { err = e.message; dev.loaded = true; }
+  if (view.page === 'dev') { const k = document.activeElement && document.activeElement.id; if (!/^dv-/.test(k || '')) refresh(); }
+}
+const dt = t => t ? new Date(t).toLocaleString('fr-FR') : '—';
+const EVLAB = { mention: '💬 nouvelle mention', follow: '➕ nouvel abonné', ping: '🏓 ping' };
+function devPage(e) {
+  if (!dev.loaded) { devLoad(); return '<p class="mut" role="status">Chargement…</p>'; }
+  const d = dev.data || { tokens: [], hooks: [], log: [], events: [] }, base = location.origin;
+  const tokens = d.tokens.map(t => `<div class="card"><b>🔑 ${esc(t.label)}</b> <code>${esc(t.prefix)}…</code> <span class="mut">${t.scopes.map(s => s === 'read' ? 'lecture' : 'publication').join(' + ')} · créé ${dt(t.created)} · ${t.last_used ? 'utilisé ' + t.uses + '× (dernier : ' + dt(t.last_used) + ')' : 'jamais utilisé'}</span>
+    <button data-dvrevoke="${t.id}" aria-label="Révoquer le jeton ${esc(t.label)}">🗑 Révoquer</button></div>`).join('') || '<p class="mut">Aucun jeton : crée-en un pour publier ou lire depuis un script.</p>';
+  const hooks = d.hooks.map(h => `<div class="card"><b>${h.active ? '🟢' : '⏸'} ${esc(h.url)}</b> <span class="mut">${h.events.map(x => EVLAB[x]).join(', ')}${h.fails ? ' · ' + h.fails + ' échec' + (h.fails > 1 ? 's' : '') + ' de suite' : ''}</span>
+    ${!h.active && h.fails >= 10 ? '<p class="err">Désactivé après 10 échecs consécutifs.</p>' : ''}
+    <p class="mut">Secret de signature : <code>${esc(h.secret)}</code></p>
+    <div class="row"><button data-dvtest="${h.id}:ping">🏓 Tester (ping)</button><button data-dvtest="${h.id}:mention">💬 Tester mention</button><button data-dvtest="${h.id}:follow">➕ Tester abonné</button>
+    <button data-dvtoggle="${h.id}">${h.active ? '⏸ Mettre en pause' : '▶ Réactiver'}</button><button data-dvhookdel="${h.id}">🗑 Supprimer</button></div></div>`).join('') || '<p class="mut">Aucun webhook déclaré.</p>';
+  const log = d.log.map(l => `<tr class="${l.ok ? 'ok' : 'err'}"><td>${l.ok ? '✅' : '❌'}</td><td>${dt(l.at)}</td><td>${EVLAB[l.event] || esc(l.event)}${l.test ? ' <span class="mut">(test)</span>' : ''}</td><td>${esc((d.hooks.find(h => h.id === l.hook) || {}).url || 'webhook supprimé')}</td>
+    <td>${l.status || '—'}${l.error ? ' · ' + esc(l.error) : ''}</td><td>${l.ms == null ? '' : l.ms + ' ms'}</td><td><button data-dvdetail="${l.id}">Détails</button> <button data-dvredo="${l.id}">↻ Renvoyer</button></td></tr>`).join('');
+  const det = dev.detail ? `<div class="card"><b>Envoi n°${dev.detail.id}</b> <button data-dvclose>Fermer</button><p class="mut">Corps envoyé</p><pre>${esc(JSON.stringify(JSON.parse(dev.detail.payload), null, 2))}</pre><p class="mut">Réponse du serveur distant</p><pre>${esc(dev.detail.response || '(vide)')}</pre></div>` : '';
+  return `<div class="card"><h2>🔑 Jetons d’API & webhooks</h2><p class="mut">Des jetons personnels (révocables à tout moment) pour publier ou lire via l’API, et des webhooks appelés quand tu reçois une mention ou un nouvel abonné.</p></div>${e}${dev.fresh ? `<div class="card" role="status"><b class="ok">Jeton créé — copie-le maintenant, il ne sera plus jamais affiché :</b><br><code id="dv-new">${esc(dev.fresh)}</code> <button data-dvcopy>Copier</button></div>` : ''}
+    <div class="card"><b>Nouveau jeton</b><input id="dv-label" maxlength="40" placeholder="Nom (ex. bot de stream)" aria-label="Nom du jeton">
+      <label class="inl"><input type="checkbox" id="dv-read" checked> lecture (fil, mentions, abonnés)</label> <label class="inl"><input type="checkbox" id="dv-write"> publication de posts</label> <button data-dvnew>Générer le jeton</button></div>
+    <div class="card"><b>Mes jetons (${d.tokens.length})</b></div>${tokens}
+    <div class="card"><b>Utiliser l’API</b><pre>curl -H "Authorization: Bearer cnch_…" ${esc(base)}/api/v1/mentions
+curl -H "Authorization: Bearer cnch_…" -H "Content-Type: application/json" \\
+  -d '{"text":"Bonjour depuis l’API 🥒"}' ${esc(base)}/api/v1/posts</pre><p class="mut">Routes : <code>GET /api/v1/me</code>, <code>/feed</code>, <code>/mentions</code>, <code>/followers</code> (lecture) · <code>POST /api/v1/posts</code> (publication) · 60 requêtes par minute et par jeton.</p></div>
+    <div class="card"><b>Nouveau webhook</b><input id="dv-url" maxlength="300" placeholder="https://exemple.org/mon-webhook" aria-label="Adresse du webhook" autocomplete="off">
+      ${d.events.map(x => `<label class="inl"><input type="checkbox" class="dv-ev" value="${x}" checked> ${EVLAB[x]}</label>`).join(' ')} <button data-dvhook>Déclarer le webhook</button>
+      <p class="mut">Chaque envoi est un POST JSON signé : en-tête <code>X-Cornichon-Signature: sha256=HMAC(secret, corps)</code>. Les adresses internes sont refusées.</p></div>
+    <div class="card"><b>Mes webhooks (${d.hooks.length})</b></div>${hooks}
+    <div class="card"><b>📜 Journal des envois</b> <span class="mut">(100 derniers)</span>${log ? `<div class="scroll"><table class="dvlog"><thead><tr><th></th><th>Date</th><th>Évènement</th><th>Webhook</th><th>Statut</th><th>Durée</th><th></th></tr></thead><tbody>${log}</tbody></table></div>` : '<p class="mut">Aucun envoi pour l’instant : utilise un bouton « Tester ».</p>'}</div>${det}`;
 }
 // ---- communautés thématiques ----
 const ROLES = { owner: '👑 propriétaire', mod: '🛡 modérateur', member: 'membre', pending: '⏳ demande envoyée', invited: '✉️ invité' };
@@ -575,10 +611,20 @@ document.addEventListener('click', async ev => {
   } else if ('notiftest' in b.dataset) Notif.show({ id: 'test' + Date.now(), type: 'mention' }, 'Le bocal');
 });
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
+  const d = ev.target.closest('*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
   if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
+  else if ('dvnew' in D) attempt(async () => { const sc = ['read', 'write'].filter(s => $('#dv-' + s).checked); const r = await sync.send('/api/dev/token', { label: v('#dv-label'), scopes: sc }); dev.fresh = r.token; await devLoad(); });
+  else if ('dvcopy' in D) { try { navigator.clipboard.writeText(dev.fresh); notice = 'Jeton copié ✔'; } catch (x) { notice = 'Sélectionne le jeton pour le copier'; } render(); }
+  else if ('dvrevoke' in D) { if (confirm('Révoquer ce jeton ? Les scripts qui l’utilisent cesseront de fonctionner.')) attempt(async () => { await sync.send('/api/dev/token-revoke', { id: +D.dvrevoke }); dev.fresh = null; await devLoad(); }); }
+  else if ('dvhook' in D) attempt(async () => { await sync.send('/api/dev/hook', { url: v('#dv-url'), events: [...document.querySelectorAll('.dv-ev')].filter(x => x.checked).map(x => x.value) }); await devLoad(); });
+  else if ('dvtoggle' in D) attempt(async () => { const h = dev.data.hooks.find(x => x.id === +D.dvtoggle); await sync.send('/api/dev/hook-update', { id: h.id, active: !h.active }); await devLoad(); });
+  else if ('dvhookdel' in D) { if (confirm('Supprimer ce webhook et son journal ?')) attempt(async () => { await sync.send('/api/dev/hook-delete', { id: +D.dvhookdel }); await devLoad(); }); }
+  else if ('dvtest' in D) attempt(async () => { const [id, event] = D.dvtest.split(':'); const r = await sync.send('/api/dev/hook-test', { id: +id, event }); await devLoad(); if (!r.ok) throw new Error('Test échoué : ' + r.error); });
+  else if ('dvredo' in D) attempt(async () => { const r = await sync.send('/api/dev/redeliver', { id: +D.dvredo }); await devLoad(); if (!r.ok) throw new Error('Renvoi échoué : ' + r.error); });
+  else if ('dvdetail' in D) attempt(async () => { dev.detail = await sync.get('/api/dev/delivery?id=' + D.dvdetail); });
+  else if ('dvclose' in D) { dev.detail = null; render(); }
   else if ('diag' in D) runDiag();
   else if ('login' in D) attempt(async () => openSession(await net.login(v('#u'), v('#pw'))));
   else if ('signup' in D) attempt(async () => openSession(await net.signup(v('#u'), v('#pw'), v('#bio'))));
