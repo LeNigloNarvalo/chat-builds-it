@@ -7,7 +7,7 @@ const { Guard, clientIp, PROBATION_MS } = require('./guard.js'), { Store } = req
 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
-const ACTIONS = new Set(['setBirthDate', 'requestParentLink', 'answerParentLink', 'unlinkParent', 'setSupervision', 'removeContact', 'parentAnswer', 'parentAnswerFollower', 'addMedia', 'setMediaAlt', 'deleteMedia', 'post', 'deletePost', 'editPost', 'toggleBookmark', 'togglePin', 'addMutedWord', 'removeMutedWord', 'toggleLess', 'resetLess', 'setWarning', 'toggleTopic', 'toggleRepost', 'toggleLike', 'react', 'quote', 'toggleFollow', 'setPrivateAccount', 'approveFollower', 'declineFollower', 'removeFollower', 'updateProfile', 'setOnboarding', 'importUser', 'previewImport', 'applyImport', 'archiveCreate', 'archiveFull', 'archiveData', 'archiveDelete', 'archivePreview', 'archiveRestore', 'setArchiveCfg', 'send', 'reactMessage', 'editMessage', 'deleteMessage', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'appeal', 'decideAppeal', 'adminSanction', 'adminDeleteUser', 'requestVerification', 'decideVerification', 'grantBadge', 'revokeBadge', 'exportUser', 'markDmRead', 'deleteConversation', 'saveDraft', 'deleteDraft', 'publishDraft', 'createList', 'updateList', 'deleteList', 'toggleListMember', 'saveSharedList', 'forgetSharedList', 'dismissSuggestion', 'saveSearch', 'deleteSearch', 'markSearchSeen', 'checkSearches', 'setNotifPrefs', 'setPrivacy', 'requestDeletion', 'cancelDeletion', 'vote', 'createGroup', 'updateGroup', 'deleteGroup', 'joinGroup', 'leaveGroup', 'handleRequest', 'inviteToGroup', 'respondInvite', 'cancelInvite', 'removeFromGroup', 'unbanFromGroup', 'setGroupMod', 'createRoom', 'sendRoom', 'markRoomRead', 'addToRoom', 'renameRoom', 'removeFromRoom', 'setRoomAdmin', 'setRoomMute', 'leaveRoom', 'reportMessage', 'resolveMessageReport', 'createEvent', 'updateEvent', 'deleteEvent', 'rsvp', 'openTicket', 'replyTicket', 'closeTicket', 'setQuestionBox', 'ask', 'withdrawQuestion', 'answerQuestion', 'rejectQuestion', 'questions', 'sentQuestions', 'createOrg', 'orgs', 'org', 'myOrgs', 'orgInvites', 'orgRole', 'updateOrg', 'deleteOrg', 'inviteToOrg', 'cancelOrgInvite', 'respondOrgInvite', 'setOrgRole', 'removeFromOrg', 'orgPosts', 'orgLog', 'saveOrgDraft', 'deleteOrgDraft', 'submitOrgPost', 'decideOrgPost', 'retractOrgPost', 'proposeOrgTransfer', 'cancelOrgTransfer', 'respondOrgTransfer', 'automodSave', 'automodToggle', 'automodDelete', 'automodUndo', 'automodReject', 'proposeIdea', 'voteIdea', 'followIdea', 'commentIdea', 'deleteIdeaComment', 'deleteIdea', 'setIdeaStatus', 'publishUpdate', 'deleteUpdate', 'markRoadmapSeen', 'announce', 'deleteAnnouncement', 'dismissAnnouncement', 'reportIncident', 'updateIncident', 'setMaintenance']);
+const ACTIONS = new Set(['circleLeave', 'circleAdd', 'circleRemove', 'circleAnswer', 'circleConfig', 'circleHeir', 'circleApprove', 'circleCancel', 'legacyDownload', 'setBirthDate', 'requestParentLink', 'answerParentLink', 'unlinkParent', 'setSupervision', 'removeContact', 'parentAnswer', 'parentAnswerFollower', 'addMedia', 'setMediaAlt', 'deleteMedia', 'post', 'deletePost', 'editPost', 'toggleBookmark', 'togglePin', 'addMutedWord', 'removeMutedWord', 'toggleLess', 'resetLess', 'setWarning', 'toggleTopic', 'toggleRepost', 'toggleLike', 'react', 'quote', 'toggleFollow', 'setPrivateAccount', 'approveFollower', 'declineFollower', 'removeFollower', 'updateProfile', 'setOnboarding', 'importUser', 'previewImport', 'applyImport', 'archiveCreate', 'archiveFull', 'archiveData', 'archiveDelete', 'archivePreview', 'archiveRestore', 'setArchiveCfg', 'send', 'reactMessage', 'editMessage', 'deleteMessage', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'appeal', 'decideAppeal', 'adminSanction', 'adminDeleteUser', 'requestVerification', 'decideVerification', 'grantBadge', 'revokeBadge', 'exportUser', 'markDmRead', 'deleteConversation', 'saveDraft', 'deleteDraft', 'publishDraft', 'createList', 'updateList', 'deleteList', 'toggleListMember', 'saveSharedList', 'forgetSharedList', 'dismissSuggestion', 'saveSearch', 'deleteSearch', 'markSearchSeen', 'checkSearches', 'setNotifPrefs', 'setPrivacy', 'requestDeletion', 'cancelDeletion', 'vote', 'createGroup', 'updateGroup', 'deleteGroup', 'joinGroup', 'leaveGroup', 'handleRequest', 'inviteToGroup', 'respondInvite', 'cancelInvite', 'removeFromGroup', 'unbanFromGroup', 'setGroupMod', 'createRoom', 'sendRoom', 'markRoomRead', 'addToRoom', 'renameRoom', 'removeFromRoom', 'setRoomAdmin', 'setRoomMute', 'leaveRoom', 'reportMessage', 'resolveMessageReport', 'createEvent', 'updateEvent', 'deleteEvent', 'rsvp', 'openTicket', 'replyTicket', 'closeTicket', 'setQuestionBox', 'ask', 'withdrawQuestion', 'answerQuestion', 'rejectQuestion', 'questions', 'sentQuestions', 'createOrg', 'orgs', 'org', 'myOrgs', 'orgInvites', 'orgRole', 'updateOrg', 'deleteOrg', 'inviteToOrg', 'cancelOrgInvite', 'respondOrgInvite', 'setOrgRole', 'removeFromOrg', 'orgPosts', 'orgLog', 'saveOrgDraft', 'deleteOrgDraft', 'submitOrgPost', 'decideOrgPost', 'retractOrgPost', 'proposeOrgTransfer', 'cancelOrgTransfer', 'respondOrgTransfer', 'automodSave', 'automodToggle', 'automodDelete', 'automodUndo', 'automodReject', 'proposeIdea', 'voteIdea', 'followIdea', 'commentIdea', 'deleteIdeaComment', 'deleteIdea', 'setIdeaStatus', 'publishUpdate', 'deleteUpdate', 'markRoadmapSeen', 'announce', 'deleteAnnouncement', 'dismissAnnouncement', 'reportIncident', 'updateIncident', 'setMaintenance']);
 const States = require('./states.js');
 const STATIC = new Set(['index.html', 'states.js', 'help.js', 'i18n.js', 'style.css', 'a11y.js', 'theme.js', 'social.js', 'sync.js', 'diag.js', 'quality.js', 'app.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'notif.js', 'qrcode.js', 'stats.js', 'calls.js', 'automod.js']);
 const TYPES = { html: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', webmanifest: 'application/manifest+json; charset=utf-8', svg: 'image/svg+xml' };
@@ -61,9 +61,14 @@ function createServer(opts = {}) {
   const tick = () => { try { net.publishDue(); } catch (e) { fail('Publication planifiée', e); } };
   const sched = setInterval(tick, 5000); sched.unref(); tick();
   // suppressions de compte dont le délai de grâce est écoulé (lancé après l'initialisation complète, jamais au démarrage)
+  const forgetAccount = n => { delV.run(n.toLowerCase(), n.toLowerCase()); delUser.run(n); db.prepare('DELETE FROM security_log WHERE name = ?').run(n); tfa.forget(n); passkeys.forget(n); oauth.forget(n); dev.forget(n); };
   const reap = () => {
     try {
-      for (const n of net.dueDeletions()) if (net.finalizeDeletion(n)) { delV.run(n.toLowerCase(), n.toLowerCase()); delUser.run(n); db.prepare('DELETE FROM security_log WHERE name = ?').run(n); tfa.forget(n); passkeys.forget(n); oauth.forget(n); dev.forget(n); }
+      for (const n of net.dueDeletions()) if (net.finalizeDeletion(n)) forgetAccount(n);
+      for (const n of net.dueHeirs()) { // héritier : mémorial (sessions révoquées) ou suppression, export remis au contact
+        const r = net.applyHeir(n); if (!r) continue;
+        if (r.mode === 'delete') forgetAccount(n); else { delUser.run(n); tfa.revokeDevices(n); dev.revokeAll(n); }
+      }
     } catch (e) { fail('Suppression de compte', e); }
   };
   const reaper = setInterval(reap, 5000); reaper.unref();
@@ -106,6 +111,7 @@ function createServer(opts = {}) {
     const s = getS.get(sha(m[1])); if (!s || s.expires < Date.now()) return null;
     try { if (net.epoch(s.name) !== s.epoch) { delS.run(s.hash); return null; } } catch (e) { delS.run(s.hash); return null; }
     if (Date.now() - (s.last_seen || 0) > 60000) touchS.run(Date.now(), s.hash);
+    try { net.touch(s.name); } catch (e) { /* activité non enregistrée */ }
     return { name: net.profile(s.name).name, hash: s.hash };
   }
 
@@ -146,7 +152,7 @@ function createServer(opts = {}) {
   };
   const checkBurst = (name, req) => { try { if (failL.get(name, Date.now() - 600000).n >= 5) alertMail(name, 'Plusieurs tentatives de connexion échouées ont visé votre compte ces dernières minutes.', req); } catch (e) { fail('Alerte de connexion', e); } };
   // e-mails de notification (immédiats hors heures calmes) et résumés quotidiens, selon les préférences de chaque compte
-  const mailTick = () => { try { for (const j of net.mailJobs(origin()).concat(net.archiveJobs(origin()))) mail(j.to, j.subject, j.text); } catch (e) { fail('E-mails de notification', e); } };
+  const mailTick = () => { try { for (const j of net.mailJobs(origin()).concat(net.archiveJobs(origin()), net.circleJobs(origin()))) mail(j.to, j.subject, j.text); } catch (e) { fail('E-mails de notification', e); } };
   const mailer = setInterval(mailTick, opts.mailCheckMs || 5000); mailer.unref();
 
   // ---- limite de débit par IP sur les routes d'authentification ----
@@ -268,6 +274,18 @@ function createServer(opts = {}) {
       if (!u || u.email !== t.email) throw new Http(400, 'Lien invalide : l\'adresse du compte a changé');
       await net.resetPassword(t.name, pw); oauth.setHasPassword(t.name); tfa.revokeDevices(t.name); delUser.run(t.name); delTUser.run(t.name, 'reset'); secLog(t.name, 'password_reset', req); // toutes les sessions actives sont révoquées
       return send(res, 200, { ok: true, name: t.name });
+    }
+    // récupération par contacts de confiance (sans session) : demande, suivi et changement du mot de passe avec le code secret
+    if (route === 'POST /api/circle-start') {
+      const b = await body(req); await spam('login', req, String(b.id || '').slice(0, 40));
+      return send(res, 200, await net.circleRecoverStart(String(b.id || '')));
+    }
+    if (route === 'POST /api/circle-status') { const b = await body(req); await spam('login', req); return send(res, 200, await net.circleRecoverStatus(b.rid, String(b.code || ''))); }
+    if (route === 'POST /api/circle-finish') {
+      const b = await body(req); await spam('login', req);
+      const name = await net.circleRecoverFinish(b.rid, String(b.code || ''), String(b.password || ''));
+      oauth.setHasPassword(name); tfa.revokeDevices(name); delUser.run(name); delTUser.run(name, 'reset'); secLog(name, 'password_reset', req);
+      return send(res, 200, { ok: true, name });
     }
     if (route === 'POST /api/verify-email') {
       const b = await body(req), t = takeToken('verify', b.token);

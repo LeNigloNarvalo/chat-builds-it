@@ -180,7 +180,7 @@
   const ANN_LEVELS = { info: 'ℹ️ Info', success: '🎉 Nouveauté', warning: '⚠️ Attention', critical: '🚨 Urgent' };
   const COMPONENTS = { feed: '📰 Fil et publications', dm: '✉️ Messages privés', media: '🖼 Médias et vidéos', login: '🔑 Connexion', api: '🔌 API et webhooks' };
   const IMPACTS = { degraded: '🟠 Service dégradé', outage: '🔴 Panne', maintenance: '🛠 Maintenance' }, INC_STATES = { investigating: '🔎 Analyse en cours', identified: '🎯 Cause identifiée', monitoring: '👀 Surveillance', resolved: '✅ Résolu' };
-  const MAINT_BLOCK = new Set(['setBirthDate', 'requestParentLink', 'answerParentLink', 'unlinkParent', 'setSupervision', 'removeContact', 'parentAnswer', 'parentAnswerFollower', 'post', 'editPost', 'quote', 'react', 'toggleLike', 'toggleRepost', 'send', 'sendRoom', 'editMessage', 'createRoom', 'createGroup', 'createEvent', 'createList', 'ask', 'answerQuestion', 'vote', 'addMedia', 'publishDraft', 'createOrg', 'submitOrgPost', 'toggleFollow', 'joinGroup', 'updateProfile', 'proposeIdea', 'voteIdea', 'commentIdea', 'followIdea']);
+  const MAINT_BLOCK = new Set(['circleLeave', 'circleAdd', 'circleRemove', 'circleAnswer', 'circleConfig', 'circleHeir', 'circleApprove', 'circleCancel', 'setBirthDate', 'requestParentLink', 'answerParentLink', 'unlinkParent', 'setSupervision', 'removeContact', 'parentAnswer', 'parentAnswerFollower', 'post', 'editPost', 'quote', 'react', 'toggleLike', 'toggleRepost', 'send', 'sendRoom', 'editMessage', 'createRoom', 'createGroup', 'createEvent', 'createList', 'ask', 'answerQuestion', 'vote', 'addMedia', 'publishDraft', 'createOrg', 'submitOrgPost', 'toggleFollow', 'joinGroup', 'updateProfile', 'proposeIdea', 'voteIdea', 'commentIdea', 'followIdea']);
   // ---- feuille de route publique : nouveautés datées, idées des membres, votes et statuts ----
   const IDEA_STATES = { considered: '💭 Envisagé', progress: '🚧 En cours', delivered: '✅ Livré' }, UPD_TAGS = { new: '✨ Nouveauté', improved: '🔧 Amélioration', fixed: '🐛 Correctif', soon: '🔭 Bientôt' };
   // ---- comptes supervisés : âge, restrictions des mineurs et contrôle parental ----
@@ -248,6 +248,7 @@ function Net(storage, now) {
     const checkBirth = b => { const p = parseBirth(b); need(p && p.ms <= now() && ageAt(b, now()) <= 120, 'Date de naissance invalide (format AAAA-MM-JJ)'); return p; };
     const isMinor = u => minorU(u, now());
     const hasParent = u => !!(u.parent && db.users[lc(u.parent)]);
+    const circ = u => (u.circle = u.circle || { contacts: [], threshold: CIRCLE_MIN, delayH: 24, heir: null });
     const supOf = u => (u.sup = u.sup || { contacts: [], pending: [], words: [], log: [] });
     const offHours = u => isMinor(u) && hasParent(u) && !inWindow(u.sup, now());
     // demande à valider par le parent : une seule par (type, compte, sens), le parent est prévenu
@@ -281,6 +282,8 @@ function Net(storage, now) {
     const blog = (name, badge, action, by, reason) => { db.badgeLog = db.badgeLog || []; db.badgeLog.push({ id: id(), at: now(), user: name, badge, action, by: by || name, reason: reason || '' }); if (db.badgeLog.length > 3000) db.badgeLog.splice(0, db.badgeLog.length - 3000); };
     const purge = u => { // supprime un compte avec tout ce qui le concerne
         const n = u.name;
+        for (const c of Object.values(db.users)) if (c.circle) { c.circle.contacts = c.circle.contacts.filter(x => lc(x.name) !== lc(n)); if (c.circle.heir && lc(c.circle.heir.contact) === lc(n)) c.circle.heir = null; }
+        db.recoveries = (db.recoveries || []).filter(r => lc(r.user) !== lc(n));
         for (const c of Object.values(db.users)) { if (c.parent && lc(c.parent) === lc(n)) delete c.parent; if (c.parentReq) c.parentReq = c.parentReq.filter(x => lc(x) !== lc(n)); if (c.sup) { c.sup.contacts = (c.sup.contacts || []).filter(x => lc(x) !== lc(n)); c.sup.pending = (c.sup.pending || []).filter(x => lc(x.other) !== lc(n)); } }
         for (const g of db.groups.filter(x => lc(x.owner) === lc(n))) dropGroup(g); // ses communautés disparaissent avec lui
         for (const g of db.groups) for (const k of ['mods', 'members', 'requests', 'invites', 'banned']) g[k] = g[k].filter(x => lc(x) !== lc(n));
@@ -521,11 +524,12 @@ function Net(storage, now) {
           db.attempts[key] = a; save();
           throw new Error('Identifiants invalides');
         }
-        delete db.attempts[key]; save();
+        need(!db.users[key].memorial, 'Ce compte est un mémorial : la connexion n’est plus possible 🕯');
+        delete db.attempts[key]; db.users[key].lastSeen = now(); save();
         return db.users[key].name;
       },
       // session valide = compte existant et même « époque » (incrémentée par « se déconnecter partout »)
-      epoch: n => (user(n).epoch || 0),
+      epoch: n => { const u = user(n); need(!u.memorial, 'Ce compte est un mémorial : la connexion n’est plus possible 🕯'); return u.epoch || 0; },
       async changePassword(name, oldPw, newPw) {
         need((newPw || '').length >= 4, 'Nouveau mot de passe trop court (4 min)');
         need(newPw !== oldPw, 'Le nouveau mot de passe doit être différent');
@@ -2301,6 +2305,116 @@ function Net(storage, now) {
         viaParent = true;
         try { return accept ? api.approveFollower(c.name, name) : api.declineFollower(c.name, name); } finally { viaParent = false; }
       },
+      // ---- contacts de confiance : 2 à 5 comptes qui peuvent valider une récupération (seuil d'approbations + délai d'alerte) ----
+      circleView: by => db.circleView || circleViewOf(db, user(by).name, now()),
+      touch(by) { const u = db.users[lc(by)]; if (u && now() - (u.lastSeen || 0) > 3600000) { u.lastSeen = now(); save(); } },
+      circleAdd(by, name) {
+        const u = user(by), c = user(name), k = circ(u); need(!u.admin && !u.memorial, 'Action impossible pour ce compte');
+        need(c.name !== u.name, 'Vous ne pouvez pas être votre propre contact'); need(!c.admin && !c.memorial, 'Ce compte ne peut pas être contact de confiance');
+        need(!has(u.blocked, c.name) && !has(c.blocked, u.name), 'Contact indisponible (blocage)'); need(!has(k.contacts.map(x => x.name), c.name), 'Déjà dans vos contacts de confiance');
+        need(k.contacts.length < CIRCLE_MAX, `${CIRCLE_MAX} contacts de confiance maximum`);
+        k.contacts.push({ name: c.name, status: 'pending', at: now() }); notify(c.name, u.name, 'circle', null, { what: 'invite' }); save();
+      },
+      circleRemove(by, name) {
+        const u = user(by), k = circ(u); need(k.contacts.some(x => lc(x.name) === lc(name)), 'Contact introuvable');
+        k.contacts = k.contacts.filter(x => lc(x.name) !== lc(name)); if (k.heir && lc(k.heir.contact) === lc(name)) k.heir = null;
+        k.threshold = Math.min(k.threshold, Math.max(CIRCLE_MIN, k.contacts.length)); save();
+      },
+      circleLeave(by, owner) {
+        const o = user(owner), me = user(by), k = circ(o); need(k.contacts.some(x => lc(x.name) === lc(me.name)), 'Vous n’êtes pas contact de ce compte');
+        k.contacts = k.contacts.filter(x => lc(x.name) !== lc(me.name)); if (k.heir && lc(k.heir.contact) === lc(me.name)) k.heir = null; notify(o.name, me.name, 'circle', null, { what: 'declined' }); save();
+      },
+      circleAnswer(by, owner, accept) {
+        const o = user(owner), me = user(by), e = ((o.circle || {}).contacts || []).find(x => lc(x.name) === lc(me.name)); need(e, 'Invitation introuvable');
+        need(e.status === 'pending', 'Invitation déjà traitée');
+        if (accept) e.status = 'accepted'; else o.circle.contacts = o.circle.contacts.filter(x => x !== e);
+        notify(o.name, me.name, 'circle', null, { what: accept ? 'accepted' : 'declined' }); save();
+      },
+      circleConfig(by, o) {
+        const u = user(by), k = circ(u); o = o || {};
+        if ('threshold' in o) { const n = Math.floor(+o.threshold); need(n >= CIRCLE_MIN && n <= Math.min(CIRCLE_MAX, k.contacts.length), `Seuil : entre ${CIRCLE_MIN} et le nombre de contacts désignés (${k.contacts.length})`); k.threshold = n; }
+        if ('delayH' in o) { const n = Math.floor(+o.delayH); need(n >= 1 && n <= 168, 'Délai d’alerte : 1 à 168 heures'); k.delayH = n; }
+        save(); return k;
+      },
+      circleHeir(by, h) {
+        const u = user(by), k = circ(u); need(!u.admin, 'Le compte Streamer ne peut pas avoir d’héritier');
+        if (!h) { k.heir = null; save(); return null; }
+        need(h.mode === 'memorial' || h.mode === 'delete', 'Choisissez « mémorial » ou « suppression »');
+        const days = Math.floor(+h.days); need(days >= HEIR_MIN && days <= HEIR_MAX, `Inactivité : ${HEIR_MIN} à ${HEIR_MAX} jours`);
+        const c = k.contacts.find(x => lc(x.name) === lc(h.contact)); need(c && c.status === 'accepted', 'L’héritier doit être un contact de confiance qui a accepté');
+        k.heir = { mode: h.mode, contact: c.name, days }; delete k.warned; save(); return k.heir;
+      },
+      // ---- récupération sociale (sans session) : le demandeur garde un code secret ; les contacts approuvent ; l'alerte laisse au titulaire le temps d'annuler ----
+      async circleRecoverStart(name) {
+        const none = 'Récupération par contacts de confiance impossible pour ce compte';
+        let u = db.users[lc(name)]; need(u && !u.admin && !u.memorial, none);
+        const k = circ(u), ok = k.contacts.filter(c => c.status === 'accepted').length; need(ok >= k.threshold && k.threshold >= CIRCLE_MIN, none);
+        const code = randHex(16), hash = await hashPw(code); load(); u = user(name);
+        const open = (db.recoveries = db.recoveries || []).filter(r => r.user === u.name && recLive(r, now())); for (const r of open.slice(0, Math.max(0, open.length - 2))) r.status = 'cancelled'; // 3 demandes ouvertes au plus
+        const r = { id: id(), user: u.name, at: now(), hash, approvals: [], refusals: [], need: k.threshold, delayH: k.delayH, readyAt: null, status: 'open' }; db.recoveries.push(r);
+        if (db.recoveries.length > 500) db.recoveries = db.recoveries.filter(x => x.status === 'open').concat(db.recoveries.filter(x => x.status !== 'open').slice(-300));
+        for (const c of k.contacts) if (c.status === 'accepted') notify(c.name, '', 'circle', null, { what: 'recovery', owner: u.name });
+        notify(u.name, '', 'circle', null, { what: 'alert' }); save(); return { id: r.id, code };
+      },
+      async circleRecoverStatus(rid, code) {
+        const r = (db.recoveries || []).find(x => x.id === +rid); need(r && r.hash.includes('$') && r.hash === await hashPw(String(code || ''), r.hash.split('$')[0]), 'Demande introuvable');
+        load(); const cur = db.recoveries.find(x => x.id === r.id); if (cur.status === 'open' && !recLive(cur, now())) { cur.status = 'expired'; save(); }
+        return { status: cur.status, owner: cur.user, approvals: cur.approvals.length, need: cur.need, readyAt: cur.readyAt, expires: cur.at + REC_TTL };
+      },
+      circleApprove(by, rid, accept) {
+        const me = user(by), r = (db.recoveries || []).find(x => x.id === +rid); need(r && recLive(r, now()), 'Demande introuvable ou expirée');
+        const o = user(r.user), e = ((o.circle || {}).contacts || []).find(x => lc(x.name) === lc(me.name)); need(e && e.status === 'accepted', 'Vous n’êtes pas contact de confiance de ce compte');
+        need(!r.approvals.includes(me.name) && !r.refusals.includes(me.name), 'Vous avez déjà répondu');
+        (accept ? r.approvals : r.refusals).push(me.name);
+        const left = o.circle.contacts.filter(c => c.status === 'accepted').length - r.refusals.length;
+        if (r.approvals.length >= r.need && !r.readyAt) { r.readyAt = now() + (o.circle.delayH || 24) * 3600000; notify(o.name, '', 'circle', null, { what: 'ready' }); }
+        else if (!r.readyAt && left < r.need) { r.status = 'denied'; notify(o.name, '', 'circle', null, { what: 'denied' }); }
+        save(); return r.status;
+      },
+      circleCancel(by, rid) {
+        const r = (db.recoveries || []).find(x => x.id === +rid && x.user === user(by).name && x.status === 'open'); need(r, 'Demande introuvable'); r.status = 'cancelled'; save();
+      },
+      async circleRecoverFinish(rid, code, pw) {
+        need(String(pw || '').length >= 4, 'Nouveau mot de passe trop court (4 min)');
+        let r = (db.recoveries || []).find(x => x.id === +rid); need(r && r.hash.includes('$') && r.hash === await hashPw(String(code || ''), r.hash.split('$')[0]), 'Demande introuvable');
+        const pass = await hashPw(pw); load(); r = db.recoveries.find(x => x.id === +rid);
+        need(r && r.status === 'open' && recLive(r, now()), 'Demande expirée ou annulée');
+        need(r.approvals.length >= r.need, `Il manque des approbations (${r.approvals.length}/${r.need})`);
+        need(r.readyAt && now() >= r.readyAt, `Délai d’alerte en cours : réessayez à partir de ${new Date(r.readyAt).toISOString().slice(0, 16).replace('T', ' ')} UTC`);
+        const u = user(r.user); need(!u.memorial, 'Compte mémorial');
+        u.pass = pass; u.epoch = (u.epoch || 0) + 1; delete db.attempts[lc(u.name)]; u.lastSeen = now(); r.status = 'done';
+        for (const x of db.recoveries) if (x.user === u.name && x.status === 'open') x.status = 'cancelled';
+        save(); return u.name;
+      },
+      // ---- héritier : après une longue inactivité, mémorial ou suppression, avec export remis au contact ----
+      dueHeirs: () => Object.values(db.users).filter(u => !u.admin && !u.memorial && u.circle && u.circle.heir && now() - (u.lastSeen || u.joined) >= u.circle.heir.days * DAY_MS).map(u => u.name),
+      applyHeir(name) {
+        const u = db.users[lc(name)], h = u && u.circle && u.circle.heir; if (!u || u.admin || u.memorial || !h) return null;
+        const c = db.users[lc(h.contact)], e = c && u.circle.contacts.find(x => lc(x.name) === lc(c.name));
+        if (!c || !e || e.status !== 'accepted') { u.circle.heir = null; save(); return null; }
+        const d = archFit(archBuild(u)), owner = u.name;
+        (db.legacy = db.legacy || []).push({ id: id(), owner, to: c.name, at: now(), mode: h.mode, counts: archCounts(d), size: JSON.stringify(d).length, data: d });
+        if (h.mode === 'delete') { purge(u); notify(c.name, '', 'circle', null, { what: 'legacy', mode: 'delete', owner }); }
+        else { u.memorial = { at: now(), by: c.name }; u.epoch = (u.epoch || 0) + 1; delete u.deleteAt; notify(c.name, owner, 'circle', null, { what: 'legacy', mode: 'memorial', owner }); }
+        save(); return { name: owner, mode: h.mode, contact: c.name };
+      },
+      legacyDownload(by, lid) {
+        const l = (db.legacy || []).find(x => x.id === +lid && x.to === user(by).name); need(l, 'Export introuvable'); return l.data;
+      },
+      // e-mails (comptes à adresse vérifiée) : demande de récupération, délai d'alerte, inactivité proche de l'héritage
+      circleJobs(origin) {
+        const jobs = [], t = now(); let changed = false, mail = (u, subject, text) => { if (u && u.email) jobs.push({ to: u.email, subject, text }); };
+        for (const r of db.recoveries || []) {
+          const u = db.users[lc(r.user)]; if (!u || !recLive(r, t)) continue;
+          if (!r.mailedStart) { r.mailedStart = changed = true; mail(u, 'Agora : demande de récupération de votre compte', `Bonjour @${u.name},\n\nQuelqu'un demande à récupérer votre compte avec l'aide de vos contacts de confiance. Si ce n'est pas vous, connectez-vous et annulez la demande : ${origin}/ (menu « Plus » → Contacts de confiance).`); }
+          if (r.readyAt && !r.mailedReady) { r.mailedReady = changed = true; mail(u, 'Agora : récupération approuvée, délai d\'alerte en cours', `Bonjour @${u.name},\n\nVos contacts ont approuvé la récupération. Le mot de passe pourra être changé à partir de ${new Date(r.readyAt).toISOString().slice(0, 16).replace('T', ' ')} UTC. Pas vous ? Annulez maintenant : ${origin}/`); }
+        }
+        for (const u of Object.values(db.users)) {
+          const h = u.circle && u.circle.heir; if (!h || u.memorial || u.circle.warned || t - (u.lastSeen || u.joined) < h.days * DAY_MS - HEIR_WARN) continue;
+          u.circle.warned = changed = true; mail(u, 'Agora : votre compte sera bientôt ' + (h.mode === 'delete' ? 'supprimé' : 'transformé en mémorial'), `Bonjour @${u.name},\n\nSans connexion de votre part d'ici 7 jours, votre compte sera ${h.mode === 'delete' ? 'supprimé' : 'transformé en mémorial'} et son export remis à @${h.contact}. Il suffit de vous connecter pour repousser l'échéance : ${origin}/`);
+        }
+        if (changed) save(); return jobs;
+      },
       notifications(by, markRead) {
         const bell = normPrefs(user(by).notifPrefs).types;
         const l = db.notifs.filter(n => n.to === user(by).name && !hiddenFor(by, n.from) && !(bell[n.type] && !bell[n.type].bell)).sort((a, b) => b.id - a.id);
@@ -2325,19 +2439,35 @@ function Net(storage, now) {
 
   // Vue d'un compte sur les données (envoyée par le serveur) : jamais de mot de passe, d'époque de session,
   // de messages ou notifications d'autrui, ni de listes privées (favoris, blocages, sanctions) des autres comptes.
+  // ---- contacts de confiance, récupération sociale et compte mémorial ----
+  const CIRCLE_MIN = 2, CIRCLE_MAX = 5, REC_TTL = 7 * DAY_MS, HEIR_MIN = 30, HEIR_MAX = 1825, HEIR_WARN = 7 * DAY_MS;
+  const recLive = (r, t) => r.status === 'open' && r.at + REC_TTL > t;
+  const circleViewOf = (db, name, t) => {
+    const me = db.users[String(name || '').toLowerCase()], lcm = String(name || '').toLowerCase(); if (!me) return { own: null, incoming: [], asContact: [], mine: [], legacies: [] };
+    const accepted = x => ((x.circle || {}).contacts || []).some(c => c.name.toLowerCase() === lcm && c.status === 'accepted');
+    const rows = (db.recoveries || []).filter(r => recLive(r, t));
+    return {
+      own: me.circle ? JSON.parse(JSON.stringify(me.circle)) : { contacts: [], threshold: 2, delayH: 24, heir: null },
+      active: me.lastSeen || me.joined,
+      incoming: Object.values(db.users).filter(x => x !== me && ((x.circle || {}).contacts || []).some(c => c.name.toLowerCase() === lcm)).map(x => ({ owner: x.name, status: x.circle.contacts.find(c => c.name.toLowerCase() === lcm).status, heir: !!(x.circle.heir && x.circle.heir.contact.toLowerCase() === lcm) })),
+      asContact: rows.filter(r => db.users[r.user.toLowerCase()] && accepted(db.users[r.user.toLowerCase()])).map(r => ({ id: r.id, owner: r.user, at: r.at, approvals: r.approvals.length, need: r.need, iApproved: r.approvals.includes(me.name), iRefused: r.refusals.includes(me.name), readyAt: r.readyAt || null })),
+      mine: rows.filter(r => r.user === me.name).map(r => ({ id: r.id, at: r.at, approvals: r.approvals.slice(), need: r.need, readyAt: r.readyAt || null, expires: r.at + REC_TTL })),
+      legacies: (db.legacy || []).filter(l => l.to === me.name).map(({ data, ...m }) => m),
+    };
+  };
   function snapshot(db, by, t) {
     t = t || Date.now();
     const me = db.users[String(by || '').toLowerCase()];
     if (!me) throw new Error('Utilisateur introuvable');
     const lcm = me.name.toLowerCase(), users = Object.create(null);
     for (const [k, u] of Object.entries(db.users)) {
-      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, notifPrefs, privacy, deleteAt, onboarding, fy, annSeen, roadSeen, birth, sup, parent, parentReq, ...pub } = u;
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, notifPrefs, privacy, deleteAt, onboarding, fy, annSeen, roadSeen, birth, sup, parent, parentReq, circle, ...pub } = u;
       pub.minor = minorU(u, t);
       if (lists) pub.lists = k === lcm ? lists : lists.filter(l => l.public || (l.share && (me.sharedLists || []).some(r => r.owner.toLowerCase() === k && r.id === l.id && r.token === l.share))).map(l => ({ ...l, share: null }));
       if (k !== lcm && !privOk(db, me.name, u.name, 'profile')) Object.assign(pub, { bio: '', link: '', banner: '', display: '', photo: '', locked: true });
       if (k !== lcm && !privOk(db, me.name, u.name, 'posts')) pub.lockedPosts = true;
       pub.followReq = k === lcm ? (u.followReq || []).slice() : (u.followReq || []).filter(x => x === me.name);
-      if (k === lcm) Object.assign(pub, { birth, parent, parentReq, sup: sup && { ...sup, pending: (sup.pending || []).map(({ text, ...q }) => q) }, annSeen, roadSeen, privacy: normPrivacy(privacy), deleteAt, onboarding, fy, dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
+      if (k === lcm) Object.assign(pub, { birth, parent, parentReq, circle, sup: sup && { ...sup, pending: (sup.pending || []).map(({ text, ...q }) => q) }, annSeen, roadSeen, privacy: normPrivacy(privacy), deleteAt, onboarding, fy, dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
       else if (me.admin) Object.assign(pub, { sanction, sanctions });
       users[k] = JSON.parse(JSON.stringify(pub));
     }
@@ -2370,6 +2500,7 @@ function Net(storage, now) {
       status: statusView(db, Date.now()),
       roadmap: db.roadmap || { updates: [], ideas: [] },
       parental: supervision(db, me.name, t),
+      circleView: circleViewOf(db, me.name, t),
       audit: me.admin ? (db.audit || []).slice(-300) : [], totals: me.admin ? { hiddenPosts: db.posts.filter(p => !p.replyTo && p.group && !readable.has(p.group)).length, hiddenMessages: db.messages.filter(m => m.from !== me.name && m.to !== me.name).length } : undefined,
       verifs: me.admin ? (db.verifs || []).slice(-200) : (db.verifs || []).filter(v => v.user === me.name),
       badgeLog: me.admin ? (db.badgeLog || []).slice(-500) : (db.badgeLog || []).filter(e => e.user === me.name),
@@ -2379,6 +2510,6 @@ function Net(storage, now) {
     };
   }
 
-  const exported = { ADULT_AGE, parseBirth, ageAt, inWindow, hm, IDEA_STATES, UPD_TAGS, ANN_LEVELS, COMPONENTS, IMPACTS, INC_STATES, MAINT_BLOCK, AM, normImport, MSG_EMOJIS, Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
+  const exported = { CIRCLE_MIN, CIRCLE_MAX, HEIR_MIN, HEIR_MAX, circleViewOf, ADULT_AGE, parseBirth, ageAt, inWindow, hm, IDEA_STATES, UPD_TAGS, ANN_LEVELS, COMPONENTS, IMPACTS, INC_STATES, MAINT_BLOCK, AM, normImport, MSG_EMOJIS, Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
   if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);
