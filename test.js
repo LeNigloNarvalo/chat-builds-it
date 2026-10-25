@@ -150,3 +150,11 @@ const G = require('./gravity.js');
   G.step(z, st, 0.01, () => 0.9); assert.strictEqual(st.score, sc + G.COIN_PTS); assert(z.waves.length > 0, 'ondes de couleur');
   G.step(z, st, G.DURATION + 1, () => 0.9); assert(!z.on); }
 console.log('gravity ok');
+// éruption volcanique : le volcan sort, crache lave et étincelles, puis disparaît
+const Vo = require('./volcano.js');
+{ const v = Vo.newVolcano(); Vo.start(v);
+  for (let i = 0; i < 60; i++) Vo.step(v, 0.05, Math.random);
+  assert(v.rise > 0.99 && v.bursts > 0, 'le volcan éclate'); assert(v.lava.length + v.sparks.length > 0 && v.glow > 0, 'lave, étincelles et lueur');
+  Vo.step(v, Vo.DURATION + 1, () => 0.5); assert(!v.on);
+  for (let i = 0; i < 100; i++) Vo.step(v, 0.05, () => 0.5); assert(v.rise === 0 && v.lava.length === 0, 'tout retombe'); }
+console.log('volcano ok');

@@ -33,7 +33,7 @@ html.stream #hs,html.stream #rpb,html.stream #rp{display:none!important}
 <div id="secret" hidden><input id="sc" placeholder="code secret…" autocomplete="off" maxlength="60" aria-label="code secret"><div class="pad"><button data-c="ArrowUp">↑</button><button data-c="ArrowDown">↓</button><button data-c="ArrowLeft">←</button><button data-c="ArrowRight">→</button><button data-c="KeyB">B</button><button data-c="KeyA">A</button></div><small id="scn"></small></div>
 <canvas id="c" width="480" height="640"></canvas>
 <p id="demo" style="display:none;color:#00e5ff;opacity:1;margin:4px">🤖 MODE DÉMO — l'IA joue (window.setAutoplay(false) pour reprendre)</p>
-<p>← → / Q D : bouger · Espace : tirer · Entrée : (re)lancer · tactile : glisser · <small>↑↑↓↓←→←→BA ?</small> · <button id="storm" style="background:#ff6b35;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">☄ Tempête (M)</button> · <button id="rpb" style="background:#ff4d6d;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🎬 Replay (R)</button> · <button id="disco" style="background:#a55eea;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🪩 Disco (J)</button> · <button id="grav" style="background:#a55eea;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🙃 Gravité inversée (G)</button> · <a href="versus.html" style="color:#ff4d6d">⚔ Mode 2 joueurs</a></p>
+<p>← → / Q D : bouger · Espace : tirer · Entrée : (re)lancer · tactile : glisser · <small>↑↑↓↓←→←→BA ?</small> · <button id="storm" style="background:#ff6b35;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">☄ Tempête (M)</button> · <button id="rpb" style="background:#ff4d6d;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🎬 Replay (R)</button> · <button id="disco" style="background:#a55eea;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🪩 Disco (J)</button> · <button id="grav" style="background:#a55eea;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🙃 Gravité inversée (G)</button> · <button id="volc" style="background:#e8431a;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🌋 Éruption (V)</button> · <a href="versus.html" style="color:#ff4d6d">⚔ Mode 2 joueurs</a></p>
 <section id="hs">
 <h2>🏆 CLASSEMENT</h2>
 <div id="defi"></div>
@@ -50,6 +50,7 @@ html.stream #hs,html.stream #rpb,html.stream #rp{display:none!important}
 <script src="replay.js"></script>
 <script src="disco.js"></script>
 <script src="gravity.js"></script>
+<script src="volcano.js"></script>
 <script>
 const cv = document.getElementById('c'), g = cv.getContext('2d');
 const keys = {}; let s = Logic.newState(), running = false, last = 0;
@@ -275,6 +276,11 @@ function setGravity(on) { on ? Gravity.start(grav) : Gravity.stop(grav); documen
 document.getElementById('grav').addEventListener('click', e => { setGravity(!grav.on); e.target.blur(); });
 addEventListener('keydown', e => { if (e.code === 'KeyG' && e.target !== pseudoEl && e.target !== scEl && !e.repeat) setGravity(!grav.on); });
 window.setGravity = setGravity;
+const volc = Volcano.newVolcano();
+function setVolcano(on) { on ? Volcano.start(volc) : Volcano.stop(volc); document.getElementById('volc').textContent = volc.on ? '🌋 Éruption : ON (V)' : '🌋 Éruption (V)'; }
+document.getElementById('volc').addEventListener('click', e => { setVolcano(!volc.on); e.target.blur(); });
+addEventListener('keydown', e => { if (e.code === 'KeyV' && e.target !== pseudoEl && e.target !== scEl && !e.repeat) setVolcano(!volc.on); });
+window.setVolcano = setVolcano;
 let autoplay = false, idle = 0;
 window.setAutoplay = function (on) { autoplay = !!on; idle = 0; document.getElementById('demo').style.display = autoplay ? 'block' : 'none'; };
 function newGame() { rec = Replay.newRecorder(); recDone = false; s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); }
@@ -293,6 +299,7 @@ function frame(t) {
     if (s.over) endBoss();
   } else if (running) Logic.step(s, dt, inp);
   const gWas = grav.on; if (running) Gravity.step(grav, s, dt); if (gWas && !grav.on) setGravity(false);
+  { const vWas = volc.on; Volcano.step(volc, dt); if (vWas && !volc.on) setVolcano(false); }
   if (disco.on && running) {
     Disco.step(disco, s, dt, inp.fire && s.cooldown > 0.2);
     disco.events.forEach(ev => { beep(ev.bass, 0.18, 'triangle', 0.07); beep(ev.lead, 0.1, 'square', ev.onBeat ? 0.045 : 0.025); s.flash = ''; if (ev.onBeat) s.shake = Math.max(s.shake, 0.05); });
@@ -327,6 +334,20 @@ function frame(t) {
   if (s.pac > 0) { const m = 0.15 + 0.4 * Math.abs(Math.sin(performance.now() / 90)), cx = p.x + p.w / 2, cy = p.y - 6; g.shadowColor = '#ffe600'; g.shadowBlur = 16; g.fillStyle = '#ffe600'; g.beginPath(); g.moveTo(cx, cy); g.arc(cx, cy, 24, -Math.PI / 2 + m, -Math.PI / 2 + Math.PI * 2 - m); g.fill(); }
   grav.coins.forEach(c => { const cx = c.x + 10, cy = c.y + 10, k = Math.abs(Math.cos(grav.t * 5 + c.ph)); g.shadowColor = '#ffd23f'; g.shadowBlur = 14; g.fillStyle = '#ffd23f'; g.beginPath(); g.ellipse(cx, cy, 10 * Math.max(0.25, k), 10, 0, 0, Math.PI * 2); g.fill(); g.fillStyle = '#b8860b'; g.fillRect(cx - 1.5, cy - 5, 3, 10); });
   g.shadowBlur = 0;
+  if (volc.rise > 0) {
+    const vy = 640 - 90 * volc.rise, fl = 0.85 + 0.15 * Math.sin(volc.t * 25);
+    g.save(); g.globalCompositeOperation = 'lighter';
+    const gr = g.createRadialGradient(240, 550, 20, 240, 550, 520); gr.addColorStop(0, `rgba(255,120,30,${0.55 * volc.glow * fl})`); gr.addColorStop(1, 'rgba(255,60,0,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 480, 640); g.restore();
+    g.fillStyle = '#2b1410'; g.beginPath(); g.moveTo(90, 640); g.lineTo(200, vy + 10); g.lineTo(280, vy + 10); g.lineTo(390, 640); g.closePath(); g.fill();
+    g.fillStyle = '#ff5a14'; g.shadowColor = '#ff8a00'; g.shadowBlur = 24; g.beginPath(); g.ellipse(240, vy + 10, 42, 9 + 3 * fl, 0, 0, Math.PI * 2); g.fill(); g.shadowBlur = 0;
+    g.strokeStyle = '#ff7a1a'; g.lineWidth = 3; g.beginPath(); g.moveTo(228, vy + 14); g.lineTo(205, 640); g.moveTo(252, vy + 14); g.lineTo(280, 640); g.stroke();
+    g.save(); g.globalCompositeOperation = 'lighter';
+    volc.lava.forEach(q => { g.fillStyle = `hsla(${q.hue},100%,55%,${Math.min(1, q.life)})`; g.shadowColor = '#ff6a00'; g.shadowBlur = 18; g.beginPath(); g.arc(q.x, q.y, q.r, 0, Math.PI * 2); g.fill(); });
+    volc.sparks.forEach(q => { g.fillStyle = `hsla(${q.hue},100%,75%,${Math.min(1, q.life)})`; g.shadowColor = '#ffd23f'; g.shadowBlur = 8; g.fillRect(q.x, q.y, 3, 3); });
+    g.restore(); g.shadowBlur = 0;
+    if (volc.on) text('🌋 ÉRUPTION COSMIQUE ' + Math.ceil(volc.left) + 's', 240, 560, 13, '#ff9f43');
+  }
   s.bombs.forEach((b, i) => { g.fillStyle = disco.on ? Disco.color(disco, i) : '#ff4d6d'; const k = dsc, w = b.w * k, h = b.h * k; g.fillRect(b.x - (w - b.w) / 2, b.y - (h - b.h) / 2, w, h); });
   s.particles.forEach(q => { g.globalAlpha = Math.max(0, q.life/0.6); g.fillStyle = q.color; g.fillRect(q.x, q.y, 3, 3); });
   g.globalAlpha = 1; g.shadowBlur = 0;
