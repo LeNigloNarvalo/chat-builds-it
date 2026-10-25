@@ -156,6 +156,36 @@ sync.onState(() => { livePill(); if (me && sync.connected()) sync.poll().then(()
 const pc = { posts: {}, notifs: {} };
 let err = '';
 const diag = { res: null, busy: false };
+// ---- panneau de qualité : tests automatisés, santé du site, rapport d'erreurs (journal partagé, lu à chaque rendu) ----
+const qual = { res: null, busy: false, srv: null, msg: '' };
+window.addEventListener('error', ev => { Quality.record(store, ev.filename ? ev.filename.split('/').pop() + ':' + ev.lineno : 'Navigateur', ev.error || ev.message); if (view.page === 'quality') refresh(); });
+window.addEventListener('unhandledrejection', ev => { Quality.record(store, 'Promesse rejetée', ev.reason); if (view.page === 'quality') refresh(); });
+window.addEventListener('storage', ev => { if ((ev.key === Quality.ERR_KEY || ev.key === Quality.RUN_KEY) && view.page === 'quality') refresh(); });
+async function runQuality() {
+  qual.busy = true; qual.msg = ''; render();
+  qual.res = await Quality.run({ store, get: sync.get, me: () => me, connected: sync.connected }, { Social, Stats, I18n, States });
+  Quality.saveRun(store, qual.res);
+  qual.srv = null; if (net.isAdmin(me)) { try { qual.srv = (await sync.get('/api/admin/status')).errors.recent; } catch (e) {} }
+  qual.busy = false; refresh();
+}
+const qReport = () => Quality.report(qual.res, Quality.errors(store), qual.srv);
+function qualityPage(e) {
+  const r = qual.res, errs = Quality.errors(store), hist = Quality.runs(store), sc = r ? Quality.score(r, errs) : null, g = r && Quality.grade(sc);
+  const list = a => `<ul class="diag">${a.map(x => `<li>${x.ok ? '✅' : '❌'} <b>${esc(x.name)}</b> <span class="mut">${esc(x.detail)} · ${x.ms} ms</span></li>`).join('')}</ul>`;
+  const okN = a => a.filter(x => x.ok).length;
+  return `<div class="card"><h2>🧪 Panneau de qualité</h2><p class="mut">Lance les tests automatisés du site, sonde sa santé en direct et rassemble les erreurs dans un rapport. Aucune de tes données n’est modifiée.</p>
+    <button data-qrun ${qual.busy ? 'disabled' : ''}>${qual.busy ? 'Analyse en cours…' : '▶ Lancer tous les contrôles'}</button></div>
+    ${r ? `<div class="card qscore" role="status"><div class="qbig ${sc >= 90 ? 'ok' : sc >= 70 ? '' : 'err'}">${g.icon} ${sc}<small>/100</small></div><b>${g.label}</b>
+      <p class="mut">Tests : ${okN(r.tests)}/${r.tests.length} · Santé : ${okN(r.health)}/${r.health.length} · Erreurs (24 h) : ${errs.filter(x => Date.now() - x.at < 86400000).length} · ${ago(r.at)}</p></div>
+    <div class="card"><h3>🤖 Tests automatisés <span class="${okN(r.tests) === r.tests.length ? 'ok' : 'err'}">${okN(r.tests)}/${r.tests.length}</span></h3>${list(r.tests)}</div>
+    <div class="card"><h3>🩺 Santé du site <span class="${okN(r.health) === r.health.length ? 'ok' : 'err'}">${okN(r.health)}/${r.health.length}</span></h3>${list(r.health)}</div>` : '<div class="card mut">Aucun contrôle lancé pour l’instant.</div>'}
+    <div class="card"><h3>🚨 Rapport d’erreurs <span class="${errs.length ? 'err' : 'ok'}">${errs.length}</span></h3>
+      ${errs.length ? `<ul class="diag">${errs.map(x => `<li>❌ <b>${esc(x.where)}</b> ${x.count > 1 ? `<span class="badge">×${x.count}</span>` : ''} <span class="mut">· ${ago(x.at)} · ${esc(x.message)}</span></li>`).join('')}</ul>` : '<p class="ok">Aucune erreur enregistrée dans ce navigateur.</p>'}
+      ${qual.srv ? `<h3>🖥 Côté serveur (${qual.srv.length})</h3>${qual.srv.length ? `<ul class="diag">${qual.srv.map(x => `<li>❌ <b>${esc(x.where)}</b> <span class="mut">· ${ago(x.at)} · ${esc(x.message)}</span></li>`).join('')}</ul>` : '<p class="ok">Aucune erreur serveur.</p>'}` : ''}
+      <p><button data-qcopy>📋 Copier le rapport</button> <button data-qdl>⬇️ Télécharger</button> <button data-qsim class="secondary">🧨 Simuler une erreur</button> ${errs.length ? '<button data-qclear class="secondary">🧹 Effacer</button>' : ''}</p>
+      ${qual.msg ? `<p class="ok" role="status">${esc(qual.msg)}</p>` : ''}</div>
+    ${hist.length ? `<div class="card"><h3>📜 Historique des contrôles</h3><ul class="diag">${hist.map(x => `<li>${x.failed + x.unhealthy ? '❌' : '✅'} <span class="mut">${ago(x.at)} · tests ${x.tests - x.failed}/${x.tests} · santé ${x.health - x.unhealthy}/${x.health}</span></li>`).join('')}</ul></div>` : ''}${e}`;
+}
 async function runDiag() {
   diag.busy = true; render();
   diag.res = await Diag.run({ store, get: sync.get, me: () => me, connected: sync.connected });
@@ -1115,7 +1145,7 @@ function renderPage() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['fts', '⚡ Recherche rapide'], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['media', `🖼 Médias ${net.media(me).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['qa', `❓ Questions ${net.questions(me, 'open').length || ''}`], ['migrate', '🧳 Import et archives'], ['orgs', `🏢 Pages ${net.orgInvites(me).length + net.myOrgs(me).filter(g => net.orgPosts(me, g.id, 'pending').length && net.orgRole(me, g.id) !== 'editor').length || ''}`], ['profile', t('nav.profile')], ['help', '❓ Aide'], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
+  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['fts', '⚡ Recherche rapide'], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['media', `🖼 Médias ${net.media(me).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['qa', `❓ Questions ${net.questions(me, 'open').length || ''}`], ['migrate', '🧳 Import et archives'], ['orgs', `🏢 Pages ${net.orgInvites(me).length + net.myOrgs(me).filter(g => net.orgPosts(me, g.id, 'pending').length && net.orgRole(me, g.id) !== 'editor').length || ''}`], ['profile', t('nav.profile')], ['help', '❓ Aide'], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')], ['quality', `🧪 Qualité ${Quality.errors(store).length || ''}`]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
   const MAIN = ['feed', 'explore', 'fts', 'dm', 'profile'], btn = ([k, l]) => { const [ic, ...rest] = String(l).split(' '); return `<button data-page="${k}" class="${view.page === k ? 'on' : ''}" aria-label="${esc(rest.join(' ').trim() || l)}">${ic}<span class="lt"> ${rest.join(' ')}</span></button>`; };
   const main = MAIN.map(k => items.find(x => x[0] === k)), more = items.filter(x => !MAIN.includes(x[0]));
   const moreOn = more.some(x => x[0] === view.page), badge = more.some(x => /\d/.test(x[1].replace(/^\S+\s*/, ''))) ? ' •' : '';
@@ -1154,6 +1184,7 @@ function renderPage() {
   else if (view.page === 'events') h = eventsPage(e);
   else if (view.page === 'qa') h = qaPage(e);
   else if (view.page === 'migrate') h = migratePage(e);
+  else if (view.page === 'quality') h = qualityPage(e);
   else if (view.page === 'orgs') h = orgsPage(e);
   else if (view.page === 'org') h = orgPage(e);
   else if (view.page === 'group') h = groupPage(e, paged);
@@ -1995,6 +2026,11 @@ document.addEventListener('click', ev => {
   else if ('dvdetail' in D) attempt(async () => { dev.detail = await sync.get('/api/dev/delivery?id=' + D.dvdetail); });
   else if ('dvclose' in D) { dev.detail = null; render(); }
   else if ('diag' in D) runDiag();
+  else if ('qrun' in D) runQuality();
+  else if ('qclear' in D) { Quality.clearErrors(store); refresh(); }
+  else if ('qsim' in D) { Quality.record(store, 'Simulation', new Error('Erreur de test déclenchée depuis le panneau de qualité')); refresh(); }
+  else if ('qcopy' in D) { const txt = qReport(); (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(() => { qual.msg = 'Rapport copié ✔'; refresh(); }, () => { qual.msg = 'Copie impossible : utilisez le téléchargement'; refresh(); }); }
+  else if ('qdl' in D) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([qReport()], { type: 'text/plain;charset=utf-8' })); a.download = 'rapport-qualite.txt'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }
   else if ('login' in D) attempt(async () => { const name = v('#u'), pw = v('#pw'), r = await net.login(name, pw); if (r && r.mfa) mfa = { name, password: pw }; else openSession(r); });
   else if ('pklogin' in D) attempt(async () => { openSession(await net.passkeyLogin(await pkGet(await net.passkeyOptions()))); });
   else if ('mfago' in D) attempt(async () => { const r = await net.login(mfa.name, mfa.password, v('#mfa-code'), !!($('#mfa-trust') || {}).checked); mfa = null; openSession(r); });
