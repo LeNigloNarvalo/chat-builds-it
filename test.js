@@ -233,9 +233,9 @@ console.log('ok');
   assert.ok(m.name && m.start_url && m.display === 'standalone' && m.icons.length && fs.existsSync(__dirname + '/' + m.icons[0].src));
   const sw = fs.readFileSync(__dirname + '/sw.js', 'utf8'); assert.ok(/addEventListener\('fetch'/.test(sw) && /api\/feed/.test(sw) && /notificationclick/.test(sw));
   const store = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = String(v); } };
-  assert.deepStrictEqual(Notif.load(store), { enabled: false, types: { mention: true, reply: true, follow: true, poll: true, group: true } });
+  assert.deepStrictEqual(Notif.load(store), { enabled: false, types: { mention: true, reply: true, follow: true, poll: true, group: true, search: true } });
   const L = [{ id: 1, type: 'mention', read: false }, { id: 2, type: 'like', read: false }, { id: 3, type: 'follow', read: false }, { id: 4, type: 'reply', read: true }, { id: 5, type: 'reply', read: false }];
-  const on = { enabled: true, types: { mention: true, reply: true, follow: false, poll: true, group: true } };
+  const on = { enabled: true, types: { mention: true, reply: true, follow: false, poll: true, group: true, search: true } };
   assert.deepStrictEqual(Notif.pick(L, on, null), { show: [], seen: 5 }); // première ouverture : rien d'ancien
   assert.deepStrictEqual(Notif.pick(L, on, 0).show.map(n => n.id), [1, 5]); // pas de like, pas d'abonné (désactivé), pas de déjà lu
   assert.strictEqual(Notif.pick(L, { enabled: false, types: on.types }, 0).show.length, 0);
@@ -382,5 +382,32 @@ console.log('ok');
   assert.ok(!('lists' in require('./social.js').snapshot(r.db(), 'lou').users.lia) || require('./social.js').snapshot(r.db(), 'lou').users.lia.lists.length === 0);
   r.updateList('lia', l.id, { share: false }); assert.throws(() => r.list('lia', l.id, 'leo'), /introuvable/); assert.strictEqual(r.sharedLists('leo').length, 0);
   const t2 = r.updateList('lia', l.id, { share: true }).share; assert.notStrictEqual(t2, tok);
+}
+
+// recherche avancée : opérateurs, filtres, tri, recherches enregistrées avec badge et alerte
+{
+  let t = Date.parse('2025-03-10T12:00:00'); const r = Net({ d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } }, () => t);
+  await r.signup('zoe', 'pass1'); await r.signup('max', 'pass2');
+  const a = r.post('max', 'chat mignon'); t += 86400000 * 3;
+  const b = r.post('max', 'chat photo', null, [{ src: 'data:image/png;base64,AAAA' }]), c = r.post('zoe', 'chat sondage', null, [], { options: ['a', 'b'], minutes: 60 });
+  r.toggleLike('zoe', b.id);
+  const ids = q => r.find(q, 'zoe').posts.map(p => p.id);
+  assert.deepStrictEqual(ids('chat'), [c.id, b.id, a.id]);
+  assert.deepStrictEqual(ids('chat de:@max'), [b.id, a.id]);
+  assert.deepStrictEqual(ids('chat avec:image'), [b.id]);
+  assert.deepStrictEqual(ids('chat avec:sondage'), [c.id]);
+  assert.deepStrictEqual(ids('chat depuis:2025-03-12'), [c.id, b.id]);
+  assert.deepStrictEqual(ids('chat avant:2025-03-11'), [a.id]);
+  assert.strictEqual(ids('chat tri:populaire')[0], b.id);
+  const s = r.saveSearch('zoe', 'chat de:@max', 'recent', 'Chats de Max');
+  assert.strictEqual(r.searches('zoe')[0].fresh, 0);
+  assert.throws(() => r.saveSearch('zoe', '   '), /vide/);
+  r.post('max', 'un autre chat'); r.post('zoe', 'chat de zoe');
+  assert.strictEqual(r.searches('zoe')[0].fresh, 1);
+  assert.strictEqual(r.checkSearches('zoe'), 1); assert.strictEqual(r.checkSearches('zoe'), 0);
+  const nt = r.notifications('zoe').find(n => n.type === 'search'); assert.ok(nt && nt.count === 1 && nt.name === 'Chats de Max');
+  r.markSearchSeen('zoe', s.id); assert.strictEqual(r.searches('zoe')[0].fresh, 0);
+  r.deleteSearch('zoe', s.id); assert.strictEqual(r.searches('zoe').length, 0);
+  console.log('ok recherche avancée : filtres, tri, recherches enregistrées, alertes');
 }
 })();

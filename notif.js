@@ -1,8 +1,8 @@
 // Notifications de l'appli installable : réglages par type (propres à l'appareil) et choix de ce qu'il faut afficher.
 (function (root) {
-  const KEY = 'app.notifprefs', SEEN = 'app.notifseen.', TYPES = { mention: '@ Mentions', reply: '💬 Réponses', follow: '👤 Nouveaux abonnés', poll: '📊 Sondages clos', group: '👥 Communautés' };
-  const TEXT = { mention: 'vous a mentionné', reply: 'a répondu à votre post', follow: 'vous suit maintenant', poll: 'Votre sondage est terminé', group: { invite: 'vous invite dans une communauté', request: 'demande à rejoindre votre communauté', accepted: 'vous a accepté dans une communauté', mod: 'vous a nommé modérateur', removed: 'vous a retiré d’une communauté', banned: 'vous a banni d’une communauté' } };
-  const load = store => { let o = {}; try { o = JSON.parse(store.getItem(KEY) || '{}') || {}; } catch (e) {} return { enabled: !!o.enabled, types: Object.assign({ mention: true, reply: true, follow: true, poll: true, group: true }, o.types) }; };
+  const KEY = 'app.notifprefs', SEEN = 'app.notifseen.', TYPES = { mention: '@ Mentions', reply: '💬 Réponses', follow: '👤 Nouveaux abonnés', poll: '📊 Sondages clos', group: '👥 Communautés', search: '🔎 Recherches enregistrées' };
+  const TEXT = { mention: 'vous a mentionné', reply: 'a répondu à votre post', follow: 'vous suit maintenant', poll: 'Votre sondage est terminé', search: 'a de nouveaux résultats', group: { invite: 'vous invite dans une communauté', request: 'demande à rejoindre votre communauté', accepted: 'vous a accepté dans une communauté', mod: 'vous a nommé modérateur', removed: 'vous a retiré d’une communauté', banned: 'vous a banni d’une communauté' } };
+  const load = store => { let o = {}; try { o = JSON.parse(store.getItem(KEY) || '{}') || {}; } catch (e) {} return { enabled: !!o.enabled, types: Object.assign({ mention: true, reply: true, follow: true, poll: true, group: true, search: true }, o.types) }; };
   const save = (store, p) => store.setItem(KEY, JSON.stringify(p));
   // notifications à afficher : plus récentes que la dernière vue, non lues, du type activé ; renvoie aussi le nouveau repère
   function pick(list, prefs, lastSeen) {
@@ -15,7 +15,7 @@
   const seenSet = (store, me, v) => store.setItem(SEEN + me, String(v));
   const supported = () => typeof Notification !== 'undefined' && typeof navigator !== 'undefined' && 'serviceWorker' in navigator;
   async function show(n, name) {
-    const o = { body: n.type === 'group' ? `${name} ${TEXT.group[n.what] || 'communauté'}` : n.type === 'poll' ? TEXT.poll + ' : voir les résultats' : `${name} ${TEXT[n.type]}`, icon: 'icon.svg', badge: 'icon.svg', tag: 'cornichon-' + n.id, data: { id: n.id } };
+    const o = { body: n.type === 'group' ? `${name} ${TEXT.group[n.what] || 'communauté'}` : n.type === 'poll' ? TEXT.poll + ' : voir les résultats' : n.type === 'search' ? `🔎 « ${n.name} » : ${n.count} nouveau${n.count > 1 ? 'x' : ''} résultat${n.count > 1 ? 's' : ''}` : `${name} ${TEXT[n.type]}`, icon: 'icon.svg', badge: 'icon.svg', tag: 'cornichon-' + n.id, data: { id: n.id } };
     try { const reg = await navigator.serviceWorker.ready; return await reg.showNotification('🥒 Cornichon', o); } catch (e) { new Notification('🥒 Cornichon', o); }
   }
   const api = { KEY, TYPES, TEXT, load, save, pick, seenGet, seenSet, supported, show };

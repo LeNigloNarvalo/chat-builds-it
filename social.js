@@ -437,6 +437,69 @@
           posts: vis(by, db.posts.filter(p => !p.group && p.text.toLowerCase().includes(q)), p => p.author).sort((a, b) => b.id - a.id),
         };
       },
+      // ---- recherche avancée : « de:@pseudo », « depuis:AAAA-MM-JJ », « avant:AAAA-MM-JJ », « avec:image », « avec:sondage », « tri:populaire » ----
+      parseSearch(raw) {
+        const o = { text: '', from: null, since: null, until: null, image: false, poll: false, sort: 'recent' }, rest = [];
+        const day = (v, end) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v); if (!m) return null; const t = new Date(+m[1], +m[2] - 1, +m[3]).getTime(); return isNaN(t) ? null : t + (end ? 86400000 : 0); };
+        for (const w of String(raw || '').split(/\s+/).filter(Boolean)) {
+          const m = /^(de|from|depuis|since|avant|until|avec|with|tri|sort):(.*)$/i.exec(w); if (!m) { rest.push(w); continue; }
+          const k = m[1].toLowerCase(), v = m[2].replace(/^@/, '').toLowerCase();
+          if (k === 'de' || k === 'from') o.from = v || null;
+          else if (k === 'depuis' || k === 'since') o.since = day(v, false);
+          else if (k === 'avant' || k === 'until') o.until = day(v, true);
+          else if (k === 'avec' || k === 'with') { if (v === 'image' || v === 'images') o.image = true; else if (v === 'sondage' || v === 'poll') o.poll = true; }
+          else o.sort = /^(populaire|popular|top)$/.test(v) ? 'popular' : 'recent';
+        }
+        o.text = rest.join(' ').toLowerCase(); return o;
+      },
+      // résultats d'une recherche avancée (chaîne avec opérateurs ou objet déjà analysé) ; sort force le tri
+      find(raw, by, sort) {
+        const o = typeof raw === 'string' ? api.parseSearch(raw) : raw; if (sort) o.sort = sort;
+        const any = o.text || o.from || o.since != null || o.until != null || o.image || o.poll;
+        if (!any) return { users: [], posts: [] };
+        let posts = vis(by, db.posts.filter(p => !p.group && !p.hidden
+          && (!o.text || p.text.toLowerCase().includes(o.text))
+          && (!o.from || lc(p.author) === o.from)
+          && (o.since == null || p.at >= o.since) && (o.until == null || p.at < o.until)
+          && (!o.image || (p.images && p.images.length)) && (!o.poll || p.poll)), p => p.author);
+        const pop = p => p.likes.length * 2 + db.posts.filter(r => r.replyTo === p.id).length * 3;
+        posts = o.sort === 'popular' ? posts.map(p => [p, pop(p)]).sort((a, b) => b[1] - a[1] || b[0].id - a[0].id).map(x => x[0]) : posts.sort((a, b) => b.id - a.id);
+        const users = o.text && !o.from && !o.since && !o.until && !o.image && !o.poll ? vis(by, Object.values(db.users).filter(u => u.name.toLowerCase().includes(o.text)), u => u.name) : [];
+        return { users, posts };
+      },
+      // recherches enregistrées (menu) : { id, name, q, sort, seen, notified } ; fresh = nouveaux résultats depuis la dernière visite
+      searches(by) {
+        const u = user(by);
+        return (u.searches || []).map(s => ({ id: s.id, name: s.name, q: s.q, sort: s.sort, ...(r => ({ fresh: r.filter(p => p.id > s.seen).length, alert: r.filter(p => p.id > s.notified).length }))(api.find(s.q, by, s.sort).posts.filter(p => lc(p.author) !== lc(by))) }));
+      },
+      saveSearch(by, q, sort, name) {
+        q = String(q || '').trim().slice(0, 200); const o = api.parseSearch(q); // les appels internes relisent le storage : on ne garde aucune référence avant
+        need(o.text || o.from || o.since != null || o.until != null || o.image || o.poll, 'Recherche vide');
+        const u = user(by); guard(by);
+        const l = u.searches = u.searches || []; need(l.length < 20, '20 recherches enregistrées maximum');
+        sort = sort === 'popular' ? 'popular' : 'recent';
+        const dup = l.find(s => s.q === q && s.sort === sort); if (dup) return dup;
+        const top = db.posts.reduce((m, p) => Math.max(m, p.id), 0);
+        const s = { id: id(), name: String(name || q).trim().slice(0, 40) || q, q, sort, seen: top, notified: top }; l.push(s); save(); return s;
+      },
+      deleteSearch(by, sid) { const u = user(by); u.searches = (u.searches || []).filter(s => s.id !== sid); save(); },
+      // ouvre une recherche enregistrée : remet son badge à zéro
+      markSearchSeen(by, sid) {
+        const s = (user(by).searches || []).find(x => x.id === sid); if (!s) return;
+        const top = db.posts.reduce((m, p) => Math.max(m, p.id), 0); if (s.seen === top && s.notified >= top) return;
+        s.seen = top; s.notified = Math.max(s.notified, top); save();
+      },
+      // alertes : une notification par recherche enregistrée ayant de nouveaux résultats depuis la dernière alerte ; renvoie le nombre créé
+      checkSearches(by) {
+        const found = api.searches(by).filter(s => s.alert).map(s => [s.id, api.find(s.q, by, s.sort).posts.filter(p => lc(p.author) !== lc(by))]);
+        const u = user(by); let n = 0;
+        for (const [sid, posts] of found) {
+          const s = (u.searches || []).find(x => x.id === sid), fresh = s ? posts.filter(p => p.id > s.notified) : []; if (!fresh.length) continue;
+          s.notified = Math.max(...fresh.map(p => p.id));
+          db.notifs.push({ id: id(), to: u.name, from: '', type: 'search', postId: fresh[0].id, at: now(), read: false, search: s.id, name: s.name, count: fresh.length }); n++;
+        }
+        if (n) save(); return n;
+      },
       trending() {
         const c = {};
         for (const p of db.posts) if (!p.group) for (const t of p.text.match(/#\w+/g) || []) c[t.toLowerCase()] = (c[t.toLowerCase()] || 0) + 1;
@@ -873,9 +936,9 @@
     if (!me) throw new Error('Utilisateur introuvable');
     const lcm = me.name.toLowerCase(), users = Object.create(null);
     for (const [k, u] of Object.entries(db.users)) {
-      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, ...pub } = u;
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, ...pub } = u;
       if (lists) pub.lists = k === lcm ? lists : lists.filter(l => l.public || (l.share && (me.sharedLists || []).some(r => r.owner.toLowerCase() === k && r.id === l.id && r.token === l.share))).map(l => ({ ...l, share: null }));
-      if (k === lcm) Object.assign(pub, { dismissed, topics, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
+      if (k === lcm) Object.assign(pub, { dismissed, topics, searches, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
       else if (me.admin) Object.assign(pub, { sanction });
       users[k] = JSON.parse(JSON.stringify(pub));
     }
