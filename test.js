@@ -70,6 +70,19 @@ assert.throws(() => n2.importUser('fred', '{pas du json'), /invalide/);
 assert.throws(() => n2.importUser('fred', { format: 'x' }), /export/);
 const evil = JSON.parse(exs); evil.messages = [{ from: 'gina', to: 'fred', text: 'x', at: 1 }, { from: 'gina', to: 'gina', text: 'y', at: 2 }]; evil.posts = [];
 assert.strictEqual(n2.importUser('fred', evil).messages, 1);
+// favoris, repartages, modification (15 min)
+{ let ck = 2e12; const m3 = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
+  const z = Net(m3, () => ck); await z.signup('hana', 'pass8'); await z.signup('igor', 'pass9');
+  const hp = z.post('hana', 'premier jet');
+  assert.strictEqual(z.toggleBookmark('igor', hp.id), true); assert.strictEqual(z.bookmarks('igor').length, 1); assert.strictEqual(Net(m3, () => ck).isBookmarked('igor', hp.id), true);
+  assert.strictEqual(z.toggleRepost('igor', hp.id), true); assert.strictEqual(z.timeline('igor')[0].by, 'igor'); assert.strictEqual(z.repostCount(hp.id), 1);
+  assert.throws(() => z.toggleRepost('hana', hp.id), /propre/);
+  ck += 60000; z.editPost('hana', hp.id, 'version corrigée');
+  assert.ok(z.db().posts[0].editedAt && z.db().posts[0].history[0].text === 'premier jet');
+  assert.throws(() => z.editPost('igor', hp.id, 'piraté'), /vos posts/); assert.throws(() => z.editPost('hana', hp.id, 'version corrigée'), /changement/);
+  ck += 15 * 60000; assert.throws(() => z.editPost('hana', hp.id, 'trop tard'), /15 minutes/); assert.strictEqual(z.canEdit('hana', hp.id), false);
+  z.deletePost('hana', hp.id); assert.ok(z.bookmarks('igor').length === 0 && z.timeline('igor').length === 0);
+}
 // préférences d'accessibilité
 const A = require('./a11y.js'), pm = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
 assert.deepStrictEqual(A.load(pm), { theme: 'auto', size: 100 });

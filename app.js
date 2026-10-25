@@ -44,10 +44,15 @@ window.addEventListener('storage', ev => { if (ev.key === A11Y_KEY) { prefs = A1
 const openSession = name => { me = name; store.setItem(SESSION, me + '|' + net.epoch(me)); };
 
 function postHTML(p, thread) {
-  const liked = me && p.likes.includes(me), n = net.replies(p.id).length;
-  return `<div class="card post">${av(p.author)}<span class="who" data-user="${p.author}">${esc(shown(p.author))}</span> <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span>
-  <p>${rich(p.text)}</p><div class="acts"><button data-like="${p.id}" class="${liked ? 'on' : ''}">♥ ${p.likes.length}</button>
-  <button data-open="${p.id}">💬 ${n}</button>${p.author === me || net.isAdmin(me) ? `<button data-del="${p.id}">🗑</button>` : ''}</div></div>`;
+  const liked = me && p.likes.includes(me), n = net.replies(p.id).length, editing = view.editing === p.id && net.canEdit(me, p.id);
+  const saved = net.isBookmarked(me, p.id), rp = net.hasReposted(me, p.id), rc = net.repostCount(p.id), hist = p.history || [];
+  const edited = p.editedAt ? `<button class="lnk" data-hist="${p.id}" aria-expanded="${view.hist === p.id}">modifié</button>` : '';
+  const histHTML = p.editedAt && view.hist === p.id ? `<div class="hist"><b>Historique des modifications</b>${hist.map(h => `<div class="mut">${ago(h.at)} · ${esc(h.text)}</div>`).join('')}<div>Actuel · ${esc(p.text)}</div></div>` : '';
+  const body = editing ? `<textarea id="edit-txt" maxlength="280">${esc(p.text)}</textarea><button data-saveedit="${p.id}">💾 Enregistrer</button> <button data-canceledit>Annuler</button> <span class="mut">${Math.ceil(net.editLeft(p.id) / 60000)} min restantes</span>` : `<p>${rich(p.text)}</p>`;
+  return `<div class="card post">${av(p.author)}<span class="who" data-user="${p.author}">${esc(shown(p.author))}</span> <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span> ${edited}
+  ${body}${histHTML}<div class="acts"><button data-like="${p.id}" class="${liked ? 'on' : ''}">♥ ${p.likes.length}</button>
+  <button data-open="${p.id}">💬 ${n}</button>${!p.replyTo && p.author !== me ? `<button data-repost="${p.id}" class="${rp ? 'on' : ''}" aria-pressed="${rp}" aria-label="${rp ? 'Annuler le repartage' : 'Repartager sur mon profil'}">🔁 ${rc}</button>` : rc ? `<span class="mut">🔁 ${rc}</span>` : ''}
+  <button data-bm="${p.id}" class="${saved ? 'on' : ''}" aria-pressed="${saved}" aria-label="${saved ? 'Retirer des favoris' : 'Mettre en favori'}">${saved ? '🔖' : '📑'}</button>${net.canEdit(me, p.id) && !editing ? `<button data-edit="${p.id}" aria-label="Modifier le post">✏️</button>` : ''}${p.author === me || net.isAdmin(me) ? `<button data-del="${p.id}">🗑</button>` : ''}</div></div>`;
 }
 const composer = (ph, reply) => `<div class="card"><textarea id="txt" maxlength="280" placeholder="${ph}"></textarea><button data-send="${reply || ''}">Publier</button></div>`;
 
@@ -61,7 +66,7 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length;
-  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['dm', '✉️ Messages'], ['profile', '👤 Profil'], ['settings', '⚙️ Réglages'], ['security', '🔒 Sécurité']]
+  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['dm', '✉️ Messages'], ['profile', '👤 Profil'], ['settings', '⚙️ Réglages'], ['security', '🔒 Sécurité']]
     .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
   const list = ps => ps.map(p => postHTML(p)).join('') || '<p class="mut">Rien ici pour l’instant.</p>';
@@ -73,12 +78,14 @@ function render() {
     const medal = i => ['🥇', '🥈', '🥉'][i] || `#${i + 1}`;
     h = `<div class="card"><b>🔴 En direct · hashtags du moment</b><ol class="trend">${net.trendingLive().map(t => `<li><span class="tag" data-search="${t.tag}">${t.tag}</span> <span class="mut">${t.count} post${t.count > 1 ? 's' : ''}</span><i class="bar" style="width:${Math.max(6, Math.round(t.score / (net.trendingLive(1)[0].score || 1) * 100))}%"></i></li>`).join('') || '<li class="mut">aucun hashtag</li>'}</ol></div>
     <div class="card"><b>🏆 Classement des posts</b></div>` + net.ranking(6).map((r, i) => `<div class="rank"><span class="medal">${medal(i)}</span>${postHTML(r.post)}<span class="mut">score ${r.score.toFixed(1)}</span></div>`).join('') + (e || '');
+  } else if (view.page === 'bookmarks') {
+    h = `<div class="card"><h2>🔖 Mes favoris</h2><p class="mut">Les posts que tu as mis de côté (visibles par toi seul).</p></div>${e}` + list(net.bookmarks(me));
   } else if (view.page === 'search') {
     const r = net.search(view.arg);
     h = `<div class="card"><input id="q" placeholder="Pseudo, mot, #tag" value="${esc(view.arg || '')}"><button data-dosearch>Chercher</button></div>` +
       r.users.map(u => `<div class="card">${av(u.name)}<span class="who" data-user="${u.name}">${esc(shown(u.name))}</span> <span class="mut">${esc(u.bio)}</span></div>`).join('') + list(r.posts);
   } else if (view.page === 'notifs') {
-    const L = { like: 'a aimé votre post', reply: 'a répondu à votre post', mention: 'vous a mentionné', follow: 'vous suit' };
+    const L = { like: 'a aimé votre post', reply: 'a répondu à votre post', mention: 'vous a mentionné', follow: 'vous suit', repost: 'a repartagé votre post' };
     h = net.notifications(me, true).map(n => `<div class="card" ${n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}><b>${esc(n.from)}</b> ${L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') || '<p class="mut">Aucune notification.</p>';
   } else if (view.page === 'thread') {
     const p = net.db().posts.find(x => x.id === view.arg);
@@ -89,7 +96,7 @@ function render() {
       <p>${esc(u.bio) || '<span class="mut">Pas de bio</span>'}</p>${u.link ? `<p><a href="${esc(u.link)}" target="_blank" rel="noopener noreferrer nofollow">🔗 ${esc(u.link.replace(/^https?:\/\//, ''))}</a></p>` : ''}
       <p class="stats"><button data-sub="followers:${u.name}" class="${view.sub === 'followers' ? 'on' : ''}"><b>${fl.length}</b> abonnés</button> <button data-sub="following:${u.name}" class="${view.sub === 'following' ? 'on' : ''}"><b>${u.following.length}</b> abonnements</button></p>` +
       (self ? `<button data-page="settings">⚙️ Modifier le profil</button>` : `<button data-follow="${u.name}">${fl.includes(me) ? 'Se désabonner' : 'Suivre'}</button> <button data-chat="${u.name}">Message</button>`) + `</div></div>${e}` +
-      (view.sub ? `<div class="card"><b>${view.sub === 'followers' ? 'Abonnés' : 'Abonnements'}</b> <button data-sub="">✕</button></div>` + peopleList(view.sub === 'followers' ? fl : u.following) : list(net.byUser(name)));
+      (view.sub ? `<div class="card"><b>${view.sub === 'followers' ? 'Abonnés' : 'Abonnements'}</b> <button data-sub="">✕</button></div>` + peopleList(view.sub === 'followers' ? fl : u.following) : (net.timeline(name).map(t => (t.by ? `<p class="mut rt">🔁 ${esc(shown(t.by))} a repartagé</p>` : '') + postHTML(t.post)).join('') || '<p class="mut">Rien ici pour l’instant.</p>'));
   } else if (view.page === 'settings') {
     const u = net.profile(me), b = u.banner || '';
     h = `<div class="card"><h2>⚙️ Réglages du profil</h2><div class="banner" id="pvb" style="background:${bannerCss(b)}"></div>
@@ -143,7 +150,7 @@ document.addEventListener('keydown', ev => {
 const download = (name, text) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); };
 
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import]');
+  const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist]');
   if (!d) return;
   const D = d.dataset, v = id => ($(id) || {}).value;
   if ('login' in D) attempt(async () => openSession(await net.login(v('#u'), v('#pw'))));
@@ -168,6 +175,12 @@ document.addEventListener('click', ev => {
   else if ('page' in D) { err = ''; notice = ''; go(D.page); $('#app').focus(); }
   else if ('send' in D) attempt(() => net.post(me, v('#txt'), D.send ? +D.send : null));
   else if ('like' in D) attempt(() => net.toggleLike(me, +D.like));
+  else if ('bm' in D) attempt(() => net.toggleBookmark(me, +D.bm));
+  else if ('repost' in D) attempt(() => net.toggleRepost(me, +D.repost));
+  else if ('edit' in D) { view.editing = +D.edit; render(); const t = $('#edit-txt'); if (t) t.focus(); }
+  else if ('canceledit' in D) { view.editing = null; render(); }
+  else if ('saveedit' in D) attempt(() => { net.editPost(me, +D.saveedit, v('#edit-txt')); view.editing = null; });
+  else if ('hist' in D) { view.hist = view.hist === +D.hist ? null : +D.hist; render(); }
   else if ('del' in D) attempt(() => net.deletePost(me, +D.del));
   else if ('open' in D) go('thread', +D.open);
   else if ('sub' in D) { const [k, n] = D.sub.split(':'); view = { page: 'profile', arg: n, sub: k || null }; render(); }

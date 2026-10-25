@@ -2,8 +2,8 @@
 // Chaque appel relit le storage (lecture-modification-écriture) : aucune copie ancienne n'est conservée en mémoire.
 (function (root) {
   const KEY = 'twitchgram.v1';
-  const empty = () => ({ users: {}, posts: [], messages: [], notifs: [], seq: 1, attempts: {} });
-  const MAX_FAILS = 5, LOCK_MS = 60000;
+  const empty = () => ({ users: {}, posts: [], messages: [], notifs: [], reposts: [], seq: 1, attempts: {} });
+  const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000;
 
   const RESERVED = 'streamer';
   const subtle = () => (root.crypto || require('crypto').webcrypto).subtle;
@@ -88,6 +88,7 @@
         for (const p of db.posts) p.likes = p.likes.filter(x => x !== n);
         for (const x of Object.values(db.users)) x.following = x.following.filter(f => f !== n);
         db.messages = db.messages.filter(m => m.from !== n && m.to !== n);
+        db.reposts = db.reposts.filter(r => r.by !== n && !gone.has(r.postId));
         db.notifs = db.notifs.filter(x => x.from !== n && x.to !== n && !gone.has(x.postId));
         delete db.users[n.toLowerCase()]; delete db.attempts[n.toLowerCase()];
         save();
@@ -114,8 +115,51 @@
       deletePost(by, postId) {
         const p = db.posts.find(x => x.id === postId);
         need(p && (p.author === by || (db.users[by.toLowerCase()] || {}).admin), 'Suppression interdite');
-        db.posts = db.posts.filter(x => x.id !== postId && x.replyTo !== postId);
+        const gone = new Set([postId, ...db.posts.filter(x => x.replyTo === postId).map(x => x.id)]);
+        db.posts = db.posts.filter(x => !gone.has(x.id));
+        db.reposts = db.reposts.filter(r => !gone.has(r.postId));
+        for (const u of Object.values(db.users)) if (u.bookmarks) u.bookmarks = u.bookmarks.filter(i => !gone.has(i));
         save();
+      },
+      // modification : auteur seulement, dans les 15 min ; l'ancien texte part dans l'historique
+      editPost(by, postId, text) {
+        const p = db.posts.find(x => x.id === postId); need(p, 'Post introuvable');
+        need(p.author === user(by).name, 'Vous ne pouvez modifier que vos posts');
+        need(now() - p.at <= EDIT_MS, 'Modification impossible après 15 minutes');
+        text = (text || '').trim();
+        need(text && text.length <= 280, 'Message vide ou > 280 caractères');
+        need(text !== p.text, 'Aucun changement');
+        (p.history = p.history || []).push({ text: p.text, at: p.editedAt || p.at });
+        p.text = text; p.editedAt = now();
+        save(); return p;
+      },
+      canEdit: (by, postId) => { const p = db.posts.find(x => x.id === postId); return !!(p && by && p.author.toLowerCase() === by.toLowerCase() && now() - p.at <= EDIT_MS); },
+      editLeft: postId => { const p = db.posts.find(x => x.id === postId); return p ? Math.max(0, p.at + EDIT_MS - now()) : 0; },
+      // favoris : liste personnelle (stockée sur le compte, partagée via le storage)
+      toggleBookmark(by, postId) {
+        const u = user(by); need(db.posts.find(x => x.id === postId), 'Post introuvable');
+        const b = u.bookmarks = u.bookmarks || [], i = b.indexOf(postId);
+        if (i >= 0) b.splice(i, 1); else b.push(postId);
+        save(); return i < 0;
+      },
+      isBookmarked: (by, postId) => !!(((db.users[(by || '').toLowerCase()] || {}).bookmarks || []).includes(postId)),
+      bookmarks: by => (user(by).bookmarks || []).slice().reverse().map(i => db.posts.find(p => p.id === i)).filter(Boolean),
+      // repartage sur son profil (posts racines des autres uniquement)
+      toggleRepost(by, postId) {
+        const me = user(by), p = db.posts.find(x => x.id === postId); need(p, 'Post introuvable');
+        need(!p.replyTo, 'Seuls les posts peuvent être repartagés');
+        need(p.author !== me.name, 'Impossible de repartager son propre post');
+        const i = db.reposts.findIndex(r => r.by === me.name && r.postId === postId);
+        if (i >= 0) db.reposts.splice(i, 1); else { db.reposts.push({ id: id(), by: me.name, postId, at: now() }); notify(p.author, me.name, 'repost', postId); }
+        save(); return i < 0;
+      },
+      repostCount: postId => db.reposts.filter(r => r.postId === postId).length,
+      hasReposted: (by, postId) => db.reposts.some(r => r.by.toLowerCase() === (by || '').toLowerCase() && r.postId === postId),
+      // profil : posts + repartages, récents d'abord
+      timeline(n) {
+        const own = db.posts.filter(p => !p.replyTo && p.author.toLowerCase() === n.toLowerCase()).map(p => ({ post: p, at: p.at, by: null }));
+        const rt = db.reposts.filter(r => r.by.toLowerCase() === n.toLowerCase()).map(r => ({ post: db.posts.find(p => p.id === r.postId), at: r.at, by: r.by })).filter(x => x.post);
+        return own.concat(rt).sort((a, b) => b.at - a.at);
       },
       toggleLike(by, postId) {
         const p = db.posts.find(x => x.id === postId); need(p, 'Post introuvable'); user(by);

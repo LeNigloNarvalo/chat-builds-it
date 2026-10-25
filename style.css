@@ -25,3 +25,5 @@ a{color:var(--lnk)}
 .row{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.card textarea.json{height:90px}
 .tag,.mention,.person,.who{border-radius:4px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+.lnk{background:none;border:0;padding:0;color:var(--lnk);font-size:.8em;text-decoration:underline;cursor:pointer}.hist{border-left:3px solid var(--acc);padding:4px 8px;margin:6px 0;font-size:.9em}.rt{margin:8px 0 0}.acts button.on{color:var(--acc)}
