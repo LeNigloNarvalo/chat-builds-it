@@ -645,3 +645,26 @@ console.log('ok');
   assert.throws(() => n2.send('vera', 'vlad', '', [aud, vid]), /seule/);
   console.log('médias réseau ok');
 })().catch(e => { console.error(e); process.exit(1); });
+// fil « Pour vous » : pertinence, mots masqués, « moins de ça », explications
+(async () => {
+  const S = require('./social.js'), m = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } }, n = S.Net(m);
+  await n.signup('fya', 'pass1'); await n.signup('fyb', 'pass2'); await n.signup('fyc', 'pass3');
+  n.toggleFollow('fya', 'fyb'); n.toggleTopic('fya', '#chat');
+  const pb = n.post('fyb', 'bonjour du suivi'), pc = n.post('fyc', 'un #chat passe'), pd = n.post('fyc', 'Un SPOILER énorme'), pe = n.post('fyc', 'autre truc');
+  let ids = n.forYou('fya').map(x => x.post.id);
+  assert.ok(ids.includes(pb.id) && ids.includes(pc.id) && ids.includes(pe.id));
+  assert.ok(ids.indexOf(pb.id) < ids.indexOf(pe.id) && ids.indexOf(pc.id) < ids.indexOf(pe.id), 'abonnement et sujet suivi remontent');
+  assert.ok(n.whyShown('fya', pb.id)[0].includes('suivez') && n.whyShown('fya', pc.id)[0].includes('#chat'));
+  n.addMutedWord('fya', 'spoiler');
+  assert.ok(!n.forYou('fya').some(x => x.post.id === pd.id) && !n.feed('fya').concat(n.fyFilter('fya', n.explore('fya'))).some(p => p.id === pd.id));
+  assert.ok(n.fyFilter('fya', n.explore('fya')).every(p => p.id !== pd.id) && n.explore('fya').some(p => p.id === pd.id));
+  assert.ok(n.page('fya', 'explore', {}).posts.every(p => p.id !== pd.id));
+  assert.throws(() => n.addMutedWord('fya', 'x'), /court/);
+  assert.deepStrictEqual(n.removeMutedWord('fya', 'SPOILER'), []);
+  assert.ok(n.forYou('fya').some(x => x.post.id === pd.id));
+  assert.strictEqual(n.toggleLess('fya', pc.id), true);
+  assert.ok(!n.forYou('fya').some(x => x.post.id === pc.id) && n.fyPrefs('fya').lessAuthors.fyc === 1);
+  assert.ok(!n.profile('fyb').fy && n.toggleLess('fya', pc.id) === false && n.forYou('fya').some(x => x.post.id === pc.id));
+  const pg = n.page('fya', 'foryou', { limit: 1 }); assert.ok(pg.more && pg.posts.length === 1 && n.page('fya', 'foryou', { limit: 1, before: pg.posts[0].id }).posts[0].id !== pg.posts[0].id);
+  console.log('pour vous ok');
+})().catch(e => { console.error(e); process.exit(1); });

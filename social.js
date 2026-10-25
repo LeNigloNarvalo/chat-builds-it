@@ -26,6 +26,16 @@
   // badges de confiance : « vérifié » et « modérateur » sont attribués (et révocables) par les administrateurs, « ancien » est automatique
   const BADGES = { verified: { icon: '✅', label: 'Vérifié' }, moderator: { icon: '🛡', label: 'Modérateur' }, veteran: { icon: '🏅', label: 'Ancien' } }, GRANTABLE = ['verified', 'moderator'], VETERAN_MS = 30 * 86400000, VERIF_COOLDOWN_MS = 86400000;
   const RESERVED = 'streamer';
+  // « Pour vous » : mots masqués (insensibles à la casse et aux accents ; « #sujet » vise un hashtag, le reste un mot ou une expression entière)
+  const MAX_FY_WORDS = 100;
+  const fyNorm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const fyTags = p => [...new Set(String(p.text || '').toLowerCase().match(/#\w+/g) || [])];
+  const fyEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const fyMuted = (p, words) => {
+    if (!words.length) return false;
+    const t = fyNorm(p.text);
+    return words.some(w => { const n = fyNorm(w); return n && new RegExp('(^|[^\\p{L}\\p{N}_#])' + fyEsc(n) + '(?![\\p{L}\\p{N}_])', 'u').test(t); });
+  };
   // signalements : motifs, sanctions de modération (durée de suspension en heures)
   const REASONS = { spam: 'Spam ou publicité', harcelement: 'Harcèlement', haine: 'Haine ou discrimination', violence: 'Violence ou menace', nsfw: 'Contenu inapproprié', autre: 'Autre' };
   const SANC_TXT = { warn: 'Avertissement', mute: 'Mute', suspend: 'Suspension', ban: 'Bannissement' };
@@ -804,6 +814,63 @@ function Net(storage, now) {
         if (i >= 0) l.splice(i, 1); else { need(l.length < 50, '50 sujets suivis maximum'); l.push(tag); }
         save(); return i < 0;
       },
+      // ---- fil « Pour vous » : classé par pertinence (affinités, interactions, sujets suivis), avec mots masqués, « moins de ça » et explication ----
+      fyPrefs(by) {
+        const f = (db.users[lc(by)] || {}).fy || {};
+        return { words: (f.words || []).slice(), less: (f.less || []).slice(), lessAuthors: Object.assign({}, f.lessAuthors), lessTags: Object.assign({}, f.lessTags) };
+      },
+      addMutedWord(by, w) {
+        const u = user(by); guard(by); w = String(w || '').trim().replace(/\s+/g, ' ').slice(0, 60); need(w.length >= 2, 'Mot ou expression trop court (2 caractères minimum)');
+        const f = u.fy = u.fy || {}, l = f.words = f.words || [];
+        need(l.length < MAX_FY_WORDS, MAX_FY_WORDS + ' mots masqués maximum');
+        if (!l.some(x => fyNorm(x) === fyNorm(w))) l.push(w);
+        save(); return l.slice();
+      },
+      removeMutedWord(by, w) {
+        const u = user(by), f = u.fy = u.fy || {}; f.words = (f.words || []).filter(x => fyNorm(x) !== fyNorm(w)); save(); return f.words.slice();
+      },
+      // « moins de ça » : écarte le post et baisse l'auteur et les sujets ; un second appel annule
+      toggleLess(by, postId) {
+        const u = user(by); guard(by); const p = db.posts.find(x => x.id === +postId); need(p && !p.replyTo, 'Post introuvable');
+        const f = u.fy = u.fy || {}, l = f.less = f.less || [], la = f.lessAuthors = f.lessAuthors || {}, lt = f.lessTags = f.lessTags || {}, i = l.indexOf(p.id), a = lc(p.author), tags = fyTags(p), d = i >= 0 ? -1 : 1;
+        if (i >= 0) l.splice(i, 1); else l.push(p.id);
+        if (l.length > 200) l.shift();
+        if (a !== lc(u.name)) { la[a] = Math.max(0, (la[a] || 0) + d); if (!la[a]) delete la[a]; }
+        for (const t of tags) { lt[t] = Math.max(0, (lt[t] || 0) + d); if (!lt[t]) delete lt[t]; }
+        save(); return d > 0;
+      },
+      resetLess(by) { const u = user(by), f = u.fy = u.fy || {}; f.less = []; f.lessAuthors = {}; f.lessTags = {}; save(); },
+      // posts classés avec les raisons de leur présence : [{ post, score, reasons: [texte] }]
+      forYou(by) {
+        const me = user(by), fy = me.fy || {}, words = fy.words || [], less = new Set(fy.less || []), la = fy.lessAuthors || {}, lt = fy.lessTags || {};
+        const folk = new Set((me.following || []).map(lc)), topics = new Set(me.topics || []), mine = lc(me.name), t0 = now();
+        const aff = Object.create(null), bump = (n, v) => { n = lc(n); aff[n] = (aff[n] || 0) + v; };
+        const byId = new Map(db.posts.map(p => [p.id, p]));
+        for (const p of db.posts) {
+          if (p.likes.includes(me.name)) bump(p.author, 1);
+          if (lc(p.author) === mine && p.replyTo) { const t = byId.get(p.replyTo); if (t) bump(t.author, 2); }
+        }
+        for (const r of db.reposts) if (r.by === me.name) { const t = byId.get(r.postId); if (t) bump(t.author, 1.5); }
+        for (const m of db.messages) { if (lc(m.from) === mine) bump(m.to, 0.5); }
+        const rc = {}; for (const p of db.posts) if (p.replyTo) rc[p.replyTo] = (rc[p.replyTo] || 0) + 1;
+        const cand = visP(by, db.posts.filter(p => !p.replyTo && !p.group && !p.hidden && lc(p.author) !== mine && !less.has(p.id) && !fyMuted(p, words)), p => p.author);
+        return cand.map(p => {
+          const a = lc(p.author), tags = fyTags(p), reasons = []; let s = 0;
+          if (folk.has(a)) { s += 3; reasons.push('Vous suivez @' + p.author); }
+          if (aff[a]) { const v = Math.min(4, aff[a]); s += v; reasons.push(`Vous interagissez souvent avec @${p.author} (${Math.round(aff[a])} interaction${aff[a] >= 2 ? 's' : ''})`); }
+          const tm = tags.filter(t => topics.has(t)); if (tm.length) { s += 3 * tm.length; reasons.push('Sujet suivi : ' + tm.join(', ')); }
+          const fl = p.likes.filter(n => folk.has(lc(n)) && lc(n) !== a); if (fl.length) { s += Math.min(3, fl.length * 1.5); reasons.push('Aimé par @' + fl[0] + (fl.length > 1 ? ' et ' + (fl.length - 1) + ' autre' + (fl.length > 2 ? 's' : '') + ' de vos abonnements' : ' (vous le suivez)')); }
+          const pop = p.likes.length + (rc[p.id] || 0) * 2; if (pop >= 2) { s += Math.min(2, Math.log2(1 + pop) / 2); reasons.push('Populaire en ce moment (' + p.likes.length + ' like' + (p.likes.length > 1 ? 's' : '') + ', ' + (rc[p.id] || 0) + ' réponse' + ((rc[p.id] || 0) > 1 ? 's' : '') + ')'); }
+          const pen = (la[a] || 0) * 2 + tags.reduce((x, t) => x + (lt[t] || 0) * 1.5, 0); if (pen) { s -= pen; reasons.push('Réduit car vous avez demandé moins de contenu similaire'); }
+          const h = Math.max(0, t0 - p.at) / 36e5; s = (s + 0.5) * Math.pow(0.5, h / 24);
+          if (!reasons.length) reasons.push('Récent dans la communauté');
+          return { post: p, score: Math.round(s * 1000) / 1000, reasons };
+        }).filter(x => x.score > 0.001).sort((a, b) => b.score - a.score || b.post.id - a.post.id);
+      },
+      // pourquoi ce post est proposé ?
+      whyShown(by, postId) { const r = api.forYou(by).find(x => x.post.id === +postId); return r ? r.reasons : ['Ce post n’est pas dans « Pour vous » (il est dans votre fil chronologique ou a été écarté).']; },
+      // applique les mots masqués d'un compte à une liste de posts (fils chronologique et Explorer)
+      fyFilter(by, posts) { const w = ((db.users[lc(by)] || {}).fy || {}).words || []; return w.length ? posts.filter(p => lc(p.author) === lc(by) || !fyMuted(p, w)) : posts; },
       // fil des sujets suivis
       topicsFeed(by) {
         const t = new Set(api.topics(by));
@@ -897,7 +964,13 @@ function Net(storage, now) {
       page(by, scope, o) {
         o = o || {};
         if (scope === 'search' || scope === 'notifs' || scope === 'convs' || scope === 'dm') return api.pageIds(by, scope, o);
-        const all = scope === 'feed' ? api.feed(by) : scope === 'group' ? api.groupFeed(by, +o.group) : scope === 'list' ? api.listFeed(by, o.owner, +o.list) : api.explore(by), limit = Math.min(50, Math.max(1, +o.limit || 10));
+        if (scope === 'foryou') {
+          const ids = api.forYou(by).map(x => x.post.id), limit = Math.min(50, Math.max(1, +o.limit || 10));
+          if (o.after) return { count: ids.filter(i => i > +o.after).length };
+          const k = o.before ? ids.indexOf(+o.before) : -1, rest = k < 0 ? ids : ids.slice(k + 1);
+          return { posts: rest.slice(0, limit).map(id => ({ id })), more: rest.length > limit, total: ids.length };
+        }
+        const all = scope === 'feed' ? api.fyFilter(by, api.feed(by)) : scope === 'explore' ? api.fyFilter(by, api.explore(by)) : scope === 'group' ? api.groupFeed(by, +o.group) : scope === 'list' ? api.listFeed(by, o.owner, +o.list) : api.explore(by), limit = Math.min(50, Math.max(1, +o.limit || 10));
         if (o.after) return { count: all.filter(p => p.id > +o.after).length };
         const rest = o.before ? all.filter(p => p.id < +o.before) : all;
         return { posts: rest.slice(0, limit), more: rest.length > limit, total: all.length };
@@ -1444,11 +1517,11 @@ function Net(storage, now) {
     if (!me) throw new Error('Utilisateur introuvable');
     const lcm = me.name.toLowerCase(), users = Object.create(null);
     for (const [k, u] of Object.entries(db.users)) {
-      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, notifPrefs, privacy, deleteAt, onboarding, ...pub } = u;
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, notifPrefs, privacy, deleteAt, onboarding, fy, ...pub } = u;
       if (lists) pub.lists = k === lcm ? lists : lists.filter(l => l.public || (l.share && (me.sharedLists || []).some(r => r.owner.toLowerCase() === k && r.id === l.id && r.token === l.share))).map(l => ({ ...l, share: null }));
       if (k !== lcm && !privOk(db, me.name, u.name, 'profile')) Object.assign(pub, { bio: '', link: '', banner: '', display: '', photo: '', locked: true });
       if (k !== lcm && !privOk(db, me.name, u.name, 'posts')) pub.lockedPosts = true;
-      if (k === lcm) Object.assign(pub, { privacy: normPrivacy(privacy), deleteAt, onboarding, dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
+      if (k === lcm) Object.assign(pub, { privacy: normPrivacy(privacy), deleteAt, onboarding, fy, dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
       else if (me.admin) Object.assign(pub, { sanction, sanctions });
       users[k] = JSON.parse(JSON.stringify(pub));
     }
