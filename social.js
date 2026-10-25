@@ -8,8 +8,8 @@
   const RESERVED = 'streamer';
   // signalements : motifs, sanctions de modération (durée de suspension en heures)
   const REASONS = { spam: 'Spam ou publicité', harcelement: 'Harcèlement', haine: 'Haine ou discrimination', violence: 'Violence ou menace', nsfw: 'Contenu inapproprié', autre: 'Autre' };
-  const SANC_TXT = { warn: 'Avertissement', suspend: 'Suspension', ban: 'Bannissement' };
-  const ACTIONS = ['dismiss', 'hide', 'delete', 'warn', 'suspend', 'ban'];
+  const SANC_TXT = { warn: 'Avertissement', mute: 'Mute', suspend: 'Suspension', ban: 'Bannissement' };
+  const ACTIONS = ['dismiss', 'hide', 'delete', 'warn', 'mute', 'suspend', 'ban'];
   // images jointes : jusqu'à 4 par post/message, en data URL (redimensionnées côté navigateur), avec texte alternatif
   const MAX_IMAGES = 4, MAX_IMG_CHARS = 400000, IMG_RE = /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+\/=]+$/;
   function cleanImages(list) {
@@ -85,8 +85,9 @@ function Net(storage, now) {
     const has = (list, n) => (list || []).some(x => lc(x) === lc(n));
     // masqué pour `by` : compte bloqué ou masqué par lui (ses posts, réponses et DM disparaissent)
     const hiddenFor = (by, author) => { const u = db.users[lc(by)]; return !!(u && author && lc(author) !== lc(by) && (has(u.blocked, author) || has(u.muted, author))); };
-    const guard = n => {
+    const guard = (n, speak) => {
       const s = user(n).sanction; if (!s) return;
+      need(!(speak && s.type === 'mute' && s.until > now()), `Compte en mute (lecture seule) pendant encore ${Math.ceil((s.until - now()) / 60000)} min : vous ne pouvez ni publier ni écrire`);
       need(s.type !== 'ban', 'Votre compte est banni : action impossible');
       need(!(s.type === 'suspend' && s.until > now()), `Compte suspendu pendant encore ${Math.ceil((s.until - now()) / 60000)} min`);
     };
@@ -132,7 +133,7 @@ function Net(storage, now) {
     const makePost = (author, text, replyTo, images, poll, group) => {
         text = (text || '').trim(); images = cleanImages(images);
         need((text || images.length) && text.length <= 280, 'Message vide ou > 280 caractères');
-        user(author); guard(author);
+        user(author); guard(author, true);
         let gid = group ? +group : null;
         if (replyTo) { const tp = db.posts.find(p => p.id === replyTo); need(tp, 'Post introuvable'); need(!blockedBy(author, tp.author), 'Cet utilisateur vous a bloqué : réponse impossible'); if (tp.group) gid = tp.group; }
         let g = null;
@@ -302,7 +303,7 @@ function Net(storage, now) {
       // modification : auteur seulement, dans les 15 min ; l'ancien texte part dans l'historique
       editPost(by, postId, text) {
         const p = db.posts.find(x => x.id === postId); need(p, 'Post introuvable');
-        need(p.author === user(by).name, 'Vous ne pouvez modifier que vos posts'); guard(by);
+        need(p.author === user(by).name, 'Vous ne pouvez modifier que vos posts'); guard(by, true);
         need(now() - p.at <= EDIT_MS, 'Modification impossible après 15 minutes');
         text = (text || '').trim();
         need(text && text.length <= 280, 'Message vide ou > 280 caractères');
@@ -701,7 +702,7 @@ function Net(storage, now) {
       send(from, to, text, images) {
         text = (text || '').trim(); images = cleanImages(images);
         need((text || images.length) && text.length <= 500, 'Message invalide');
-        user(from); guard(from); const t = user(to);
+        user(from); guard(from, true); const t = user(to);
         need(!blockedBy(from, to), 'Cet utilisateur vous a bloqué : message impossible');
         need(!has(user(from).blocked, to), 'Débloquez cet utilisateur pour lui écrire');
         const m = { id: id(), from: user(from).name, to: t.name, text, at: now() };
@@ -857,14 +858,14 @@ function Net(storage, now) {
         if (action !== 'dismiss' && target) need(!target.admin, 'Impossible de sanctionner un administrateur');
         const hp = action === 'hide' && db.posts.find(x => x.id === postId);
         if (action === 'hide') { need(hp, 'Post introuvable'); hp.hidden = { at: now(), by: user(by).name, reason: REASONS[open[0].reason] }; notify(hp.author, user(by).name, 'hide', postId); }
-        if (target && ['warn', 'suspend', 'ban'].includes(action)) {
+        if (target && ['warn', 'mute', 'suspend', 'ban'].includes(action)) {
           const prev = target.sanction || {};
           target.sanction = { type: action, at: now(), by: user(by).name, reason: REASONS[open[0].reason], warnings: (prev.warnings || 0) + (action === 'warn' ? 1 : 0) };
-          if (action === 'suspend') target.sanction.until = now() + hours * 36e5;
-          (target.sanctions = target.sanctions || []).push({ type: action, at: now(), reason: REASONS[open[0].reason], hours: action === 'suspend' ? hours : 0, postId });
+          if (action === 'suspend' || action === 'mute') target.sanction.until = now() + hours * 36e5;
+          (target.sanctions = target.sanctions || []).push({ id: id(), type: action, at: now(), by: user(by).name, reason: REASONS[open[0].reason], hours: action === 'suspend' || action === 'mute' ? hours : 0, postId });
           notify(target.name, user(by).name, 'sanction', null, { what: action });
         }
-        audit(by, 'report-' + action, target ? target.name : open[0].target, `post #${postId} · ${REASONS[open[0].reason]} · ${open.length} signalement(s)` + (action === 'suspend' ? ` · ${hours} h` : ''));
+        audit(by, 'report-' + action, target ? target.name : open[0].target, `post #${postId} · ${REASONS[open[0].reason]} · ${open.length} signalement(s)` + (action === 'suspend' || action === 'mute' ? ` · ${hours} h` : ''));
         for (const r of open) Object.assign(r, { status: action === 'dismiss' ? 'dismissed' : 'actioned', action, closedAt: now(), closedBy: user(by).name });
         save();
         if (action === 'delete') api.deletePost(by, postId); // relit le storage : à faire après l'enregistrement
@@ -895,12 +896,18 @@ function Net(storage, now) {
         answer = String(answer || '').trim().slice(0, 300);
         if (accept) {
           const u = db.users[lc(a.user)], p = db.posts.find(x => x.id === a.postId);
-          if (a.kind === 'sanction') { if (u) delete u.sanction; } else if (p) delete p.hidden;
+          if (a.kind === 'sanction') { if (u) { const l = (u.sanctions || []).filter(x => x.type === (u.sanction || {}).type); if (l.length) l[l.length - 1].overturned = now(); delete u.sanction; } } else if (p) delete p.hidden;
         }
         Object.assign(a, { status: accept ? 'accepted' : 'rejected', answer, closedAt: now(), closedBy: user(by).name });
         audit(by, accept ? 'appeal-accept' : 'appeal-reject', a.user, (a.kind === 'hide' ? `post #${a.postId}` : 'sanction') + (answer ? ' · ' + answer : ''));
         notify(a.user, user(by).name, 'appeal', a.postId, { what: accept ? 'accepted' : 'rejected', answer });
         save();
+      },
+      // historique d'un compte (admin) : sanctions successives, signalements reçus, appels
+      accountHistory(by, n) {
+        need(api.isAdmin(by), 'Réservé à l’administrateur'); const u = user(n);
+        return { name: u.name, sanction: api.sanctionOf(u.name), sanctions: (u.sanctions || []).slice().reverse(),
+          reports: db.reports.filter(r => lc(r.target) === lc(u.name)).sort((a, b) => b.at - a.at), appeals: (db.appeals || []).filter(a => lc(a.user) === lc(u.name)).sort((a, b) => b.at - a.at) };
       },
       adminUsers(by) {
         need(api.isAdmin(by), 'Réservé à l’administrateur');
@@ -909,15 +916,15 @@ function Net(storage, now) {
       },
       // sanction directe d'un compte (sans passer par un signalement) : warn | suspend | ban
       adminSanction(by, n, type, hours, reason) {
-        need(api.isAdmin(by), 'Réservé à l’administrateur'); need(['warn', 'suspend', 'ban'].includes(type), 'Action inconnue');
+        need(api.isAdmin(by), 'Réservé à l’administrateur'); need(['warn', 'mute', 'suspend', 'ban'].includes(type), 'Action inconnue');
         const u = user(n); need(!u.admin, 'Impossible de sanctionner un administrateur');
         reason = String(reason || '').trim().slice(0, 200) || 'Décision de l’administrateur'; hours = Math.min(24 * 90, Math.max(1, +hours || 24));
         const prev = u.sanction || {};
         u.sanction = { type, at: now(), by: user(by).name, reason, warnings: (prev.warnings || 0) + (type === 'warn' ? 1 : 0) };
-        if (type === 'suspend') u.sanction.until = now() + hours * 36e5;
-        (u.sanctions = u.sanctions || []).push({ type, at: now(), reason, hours: type === 'suspend' ? hours : 0 });
+        if (type === 'suspend' || type === 'mute') u.sanction.until = now() + hours * 36e5;
+        (u.sanctions = u.sanctions || []).push({ id: id(), type, at: now(), by: user(by).name, reason, hours: type === 'suspend' || type === 'mute' ? hours : 0 });
         notify(u.name, user(by).name, 'sanction', null);
-        audit(by, 'user-' + type, u.name, reason + (type === 'suspend' ? ` · ${hours} h` : '')); save();
+        audit(by, 'user-' + type, u.name, reason + (type === 'suspend' || type === 'mute' ? ` · ${hours} h` : '')); save();
       },
       adminDeleteUser(by, n, reason) {
         need(api.isAdmin(by), 'Réservé à l’administrateur'); const u = user(n); need(!u.admin, 'Le compte Streamer ne peut pas être supprimé');
@@ -926,20 +933,20 @@ function Net(storage, now) {
       adminStats(by) {
         need(api.isAdmin(by), 'Réservé à l’administrateur');
         const day = 86400000, t = now(), users = Object.values(db.users), t0 = db.totals || {};
-        const act = users.filter(u => u.sanction && (u.sanction.type !== 'suspend' || u.sanction.until > t));
+        const act = users.filter(u => u.sanction && (!['suspend', 'mute'].includes(u.sanction.type) || u.sanction.until > t));
         const roots = db.posts.filter(p => !p.replyTo).length, replies = db.posts.length - roots;
         return { users: users.length, newUsers7: users.filter(u => t - u.joined < 7 * day).length, posts: roots + (t0.hiddenPosts || 0), replies, messages: db.messages.length + (t0.hiddenMessages || 0), groups: db.groups.length,
           likes: db.posts.reduce((s, p) => s + p.likes.length, 0), posts24: db.posts.filter(p => t - p.at < day).length, openReports: new Set(db.reports.filter(r => r.status === 'open').map(r => r.postId)).size,
-          closedReports: db.reports.filter(r => r.status !== 'open').length, suspended: act.filter(u => u.sanction.type === 'suspend').length, banned: act.filter(u => u.sanction.type === 'ban').length };
+          closedReports: db.reports.filter(r => r.status !== 'open').length, suspended: act.filter(u => u.sanction.type === 'suspend').length, muted: act.filter(u => u.sanction.type === 'mute').length, banned: act.filter(u => u.sanction.type === 'ban').length };
       },
       auditLog(by, limit) { need(api.isAdmin(by), 'Réservé à l’administrateur'); return (db.audit || []).slice(-(limit || 100)).reverse(); },
       // sanction active d'un compte (null si aucune ou expirée) ; l'admin peut la lever
-      sanctionOf(n) { const s = (db.users[lc(n)] || {}).sanction; if (!s) return null; if (s.type === 'suspend' && s.until <= now()) return null; return s; },
+      sanctionOf(n) { const s = (db.users[lc(n)] || {}).sanction; if (!s) return null; if ((s.type === 'suspend' || s.type === 'mute') && s.until <= now()) return null; return s; },
       liftSanction(by, n) {
         need(api.isAdmin(by), 'Réservé à l’administrateur'); const u = user(n); need(u.sanction, 'Aucune sanction active');
         audit(by, 'lift', u.name, u.sanction.type); delete u.sanction; save();
       },
-      sanctioned: by => { need(api.isAdmin(by), 'Réservé à l’administrateur'); return Object.values(db.users).filter(u => u.sanction && (u.sanction.type !== 'suspend' || u.sanction.until > now())).map(u => ({ name: u.name, sanction: u.sanction })); },
+      sanctioned: by => { need(api.isAdmin(by), 'Réservé à l’administrateur'); return Object.values(db.users).filter(u => u.sanction && (!['suspend', 'mute'].includes(u.sanction.type) || u.sanction.until > now())).map(u => ({ name: u.name, sanction: u.sanction })); },
       // ---- communautés thématiques : publiques (lisibles par tous, adhésion libre) ou privées (sur demande ou invitation) ----
       createGroup(by, name, desc, rules, isPublic) {
         const u = user(by); guard(by); name = String(name || '').trim().replace(/\s+/g, ' '); desc = String(desc || '').trim(); rules = String(rules || '').trim();
@@ -1053,7 +1060,7 @@ function Net(storage, now) {
       if (k !== lcm && !privOk(db, me.name, u.name, 'profile')) Object.assign(pub, { bio: '', link: '', banner: '', display: '', photo: '', locked: true });
       if (k !== lcm && !privOk(db, me.name, u.name, 'posts')) pub.lockedPosts = true;
       if (k === lcm) Object.assign(pub, { privacy: normPrivacy(privacy), deleteAt, onboarding, dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
-      else if (me.admin) Object.assign(pub, { sanction });
+      else if (me.admin) Object.assign(pub, { sanction, sanctions });
       users[k] = JSON.parse(JSON.stringify(pub));
     }
     // communautés : les privées ne montrent leurs membres, posts et demandes qu'à leurs membres

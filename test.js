@@ -142,6 +142,13 @@ assert.strictEqual(n2.importUser('fred', evil).messages, 1);
   const p3 = n.post('cyd', 'mauvais'); n.report('ana', p3.id, 'nsfw'); n.moderate('Streamer', p3.id, 'delete');
   assert.ok(!n.explore().some(p => p.id === p3.id) && n.history('Streamer', 1)[0].action === 'delete');
   const p4 = n.post('cyd', 'ok'); n.report('ana', p4.id, 'autre'); n.moderate('Streamer', p4.id, 'dismiss'); assert.ok(n.explore().some(p => p.id === p4.id));
+  // mute : lecture seule (pas de post ni de message) jusqu'à expiration, historique par compte, appel accepté = sanction annulée
+  n.adminSanction('Streamer', 'ana', 'mute', 2, 'trop bavard'); assert.strictEqual(n.sanctionOf('ana').type, 'mute');
+  assert.throws(() => n.post('ana', 'chut'), /mute/); assert.throws(() => n.send('ana', 'bob', 'chut'), /mute/); n.toggleFollow('ana', 'bob');
+  const hist = n.accountHistory('Streamer', 'ana'); assert.ok(hist.sanctions[0].type === 'mute' && hist.sanctions[0].id);
+  assert.throws(() => n.accountHistory('ana', 'ana'), /administrateur/);
+  n.appeal('ana', 'sanction', null, 'Je conteste le mute'); n.decideAppeal('Streamer', n.appeals('Streamer')[0].id, true, 'ok');
+  assert.ok(!n.sanctionOf('ana') && n.accountHistory('Streamer', 'ana').sanctions[0].overturned); n.post('ana', 'de retour');
   // tableau de bord d'administration : utilisateurs, sanctions directes, statistiques globales et journal d'audit
   assert.throws(() => n.adminUsers('ana'), /administrateur/); assert.throws(() => n.adminStats('ana'), /administrateur/); assert.throws(() => n.auditLog('ana'), /administrateur/);
   assert.throws(() => n.adminSanction('ana', 'cyd', 'ban'), /administrateur/); assert.throws(() => n.adminDeleteUser('ana', 'cyd'), /administrateur/);
