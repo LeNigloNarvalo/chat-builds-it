@@ -33,7 +33,7 @@ html.stream #hs,html.stream #rpb,html.stream #rp{display:none!important}
 <div id="secret" hidden><input id="sc" placeholder="code secret…" autocomplete="off" maxlength="60" aria-label="code secret"><div class="pad"><button data-c="ArrowUp">↑</button><button data-c="ArrowDown">↓</button><button data-c="ArrowLeft">←</button><button data-c="ArrowRight">→</button><button data-c="KeyB">B</button><button data-c="KeyA">A</button></div><small id="scn"></small></div>
 <canvas id="c" width="480" height="640"></canvas>
 <p id="demo" style="display:none;color:#00e5ff;opacity:1;margin:4px">🤖 MODE DÉMO — l'IA joue (window.setAutoplay(false) pour reprendre)</p>
-<p>← → / Q D : bouger · Espace : tirer · Entrée : (re)lancer · tactile : glisser · <small>↑↑↓↓←→←→BA ?</small> · <button id="storm" style="background:#ff6b35;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">☄ Tempête (M)</button> · <button id="rpb" style="background:#ff4d6d;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🎬 Replay (R)</button> · <button id="disco" style="background:#a55eea;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🪩 Disco (J)</button> · <a href="versus.html" style="color:#ff4d6d">⚔ Mode 2 joueurs</a></p>
+<p>← → / Q D : bouger · Espace : tirer · Entrée : (re)lancer · tactile : glisser · <small>↑↑↓↓←→←→BA ?</small> · <button id="storm" style="background:#ff6b35;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">☄ Tempête (M)</button> · <button id="rpb" style="background:#ff4d6d;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🎬 Replay (R)</button> · <button id="disco" style="background:#a55eea;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🪩 Disco (J)</button> · <button id="grav" style="background:#a55eea;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🙃 Gravité inversée (G)</button> · <a href="versus.html" style="color:#ff4d6d">⚔ Mode 2 joueurs</a></p>
 <section id="hs">
 <h2>🏆 CLASSEMENT</h2>
 <div id="defi"></div>
@@ -49,6 +49,7 @@ html.stream #hs,html.stream #rpb,html.stream #rp{display:none!important}
 <script src="meteors.js"></script>
 <script src="replay.js"></script>
 <script src="disco.js"></script>
+<script src="gravity.js"></script>
 <script>
 const cv = document.getElementById('c'), g = cv.getContext('2d');
 const keys = {}; let s = Logic.newState(), running = false, last = 0;
@@ -269,6 +270,11 @@ function setDisco(on) { disco.on = !!on; disco.t = 0; disco.streak = 0; document
 document.getElementById('disco').addEventListener('click', e => { setDisco(!disco.on); e.target.blur(); });
 addEventListener('keydown', e => { if (e.code === 'KeyJ' && e.target !== pseudoEl && e.target !== scEl && !e.repeat) setDisco(!disco.on); });
 window.setDisco = setDisco;
+const grav = Gravity.newGravity();
+function setGravity(on) { on ? Gravity.start(grav) : Gravity.stop(grav); document.getElementById('grav').textContent = grav.on ? '🙃 Gravité inversée : ON (G)' : '🙃 Gravité inversée (G)'; }
+document.getElementById('grav').addEventListener('click', e => { setGravity(!grav.on); e.target.blur(); });
+addEventListener('keydown', e => { if (e.code === 'KeyG' && e.target !== pseudoEl && e.target !== scEl && !e.repeat) setGravity(!grav.on); });
+window.setGravity = setGravity;
 let autoplay = false, idle = 0;
 window.setAutoplay = function (on) { autoplay = !!on; idle = 0; document.getElementById('demo').style.display = autoplay ? 'block' : 'none'; };
 function newGame() { rec = Replay.newRecorder(); recDone = false; s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); }
@@ -286,6 +292,7 @@ function frame(t) {
     if (boss.events.includes('win')) { celebrate(2); setTimeout(() => boss && endBoss(), 3500); }
     if (s.over) endBoss();
   } else if (running) Logic.step(s, dt, inp);
+  const gWas = grav.on; if (running) Gravity.step(grav, s, dt); if (gWas && !grav.on) setGravity(false);
   if (disco.on && running) {
     Disco.step(disco, s, dt, inp.fire && s.cooldown > 0.2);
     disco.events.forEach(ev => { beep(ev.bass, 0.18, 'triangle', 0.07); beep(ev.lead, 0.1, 'square', ev.onBeat ? 0.045 : 0.025); s.flash = ''; if (ev.onBeat) s.shake = Math.max(s.shake, 0.05); });
@@ -301,6 +308,9 @@ function frame(t) {
   g.save(); g.clearRect(0, 0, 480, 640);
   if (disco.on) { g.fillStyle = Disco.color(disco, 3) + Math.round(disco.pulse * 60 + 8).toString(16).padStart(2, '0'); g.fillRect(0, 0, 480, 640); }
   if (s.shake > 0) g.translate((Math.random()-.5)*10, (Math.random()-.5)*10);
+  grav.waves.forEach(w => { g.globalAlpha = Math.max(0, w.life / 1.6) * 0.7; g.lineWidth = 4; g.strokeStyle = `hsl(${w.hue},100%,60%)`; g.beginPath(); g.arc(w.x, w.y, w.r, 0, Math.PI * 2); g.stroke(); });
+  g.globalAlpha = 1;
+  if (grav.on) { g.fillStyle = `hsla(${grav.hue},100%,60%,0.07)`; g.fillRect(0, 0, 480, 640); }
   g.fillStyle = '#fff'; stars.forEach(st => { st.y = (st.y + st.v*dt) % 640; g.fillRect(st.x, st.y, 2, 2); });
   const rowColors = ['#ff4d6d','#ff9f43','#ffd23f','#2ed573','#1e90ff','#a55eea'];
   const dsc = disco.on ? Disco.scale(disco) : 1;
@@ -315,6 +325,8 @@ function frame(t) {
     else { g.shadowColor = '#ffe600'; g.fillStyle = '#ffe600'; const m = 0.1 + 0.35 * Math.abs(Math.sin(performance.now() / 120)); g.beginPath(); g.moveTo(cx, cy); g.arc(cx, cy, 11, m, Math.PI * 2 - m); g.fill(); }
   });
   if (s.pac > 0) { const m = 0.15 + 0.4 * Math.abs(Math.sin(performance.now() / 90)), cx = p.x + p.w / 2, cy = p.y - 6; g.shadowColor = '#ffe600'; g.shadowBlur = 16; g.fillStyle = '#ffe600'; g.beginPath(); g.moveTo(cx, cy); g.arc(cx, cy, 24, -Math.PI / 2 + m, -Math.PI / 2 + Math.PI * 2 - m); g.fill(); }
+  grav.coins.forEach(c => { const cx = c.x + 10, cy = c.y + 10, k = Math.abs(Math.cos(grav.t * 5 + c.ph)); g.shadowColor = '#ffd23f'; g.shadowBlur = 14; g.fillStyle = '#ffd23f'; g.beginPath(); g.ellipse(cx, cy, 10 * Math.max(0.25, k), 10, 0, 0, Math.PI * 2); g.fill(); g.fillStyle = '#b8860b'; g.fillRect(cx - 1.5, cy - 5, 3, 10); });
+  g.shadowBlur = 0;
   s.bombs.forEach((b, i) => { g.fillStyle = disco.on ? Disco.color(disco, i) : '#ff4d6d'; const k = dsc, w = b.w * k, h = b.h * k; g.fillRect(b.x - (w - b.w) / 2, b.y - (h - b.h) / 2, w, h); });
   s.particles.forEach(q => { g.globalAlpha = Math.max(0, q.life/0.6); g.fillStyle = q.color; g.fillRect(q.x, q.y, 3, 3); });
   g.globalAlpha = 1; g.shadowBlur = 0;
@@ -325,6 +337,7 @@ function frame(t) {
   g.textAlign = 'right'; g.fillText('♥'.repeat(Math.max(0, s.lives)), 470, 22);
   if (s.pac > 0) { g.fillStyle = '#ffe600'; g.fillText('PAC ' + Math.ceil(s.pac) + 's  bombes ' + (s.pacEaten % 3) + '/3 → ♥', 470, 42); }
   if (disco.on) { text('🪩 DISCO ♪ ' + Disco.BPM + ' BPM  +' + disco.total + ' pts (tire sur le beat !)', 240, 600, 13, Disco.color(disco, 0)); g.fillStyle = Disco.color(disco, 1); g.fillRect(190, 628, 100 * disco.pulse + 4, 6); }
+  if (grav.on) { text('🙃 GRAVITÉ INVERSÉE ' + Math.ceil(grav.left) + 's — pièces +' + Gravity.COIN_PTS + ' (' + grav.collected + ')', 240, 580, 13, `hsl(${grav.hue},100%,65%)`); }
   if (s.combo > 2) text('COMBO x' + s.combo, 240, 620, 18, '#ffd23f');
   g.textAlign = 'left'; g.fillStyle = '#888'; g.fillText('RECORD ' + best, 10, 42);
   if (boss && boss.defeated) text('BOSS VAINCU ! +5000', 240, 300, 34, '#2ed573');

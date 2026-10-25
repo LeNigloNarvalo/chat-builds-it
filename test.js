@@ -141,3 +141,12 @@ const D = require('./disco.js');
   D.step(d, st, 0.01, true); D.step(d, st, D.BEAT, true); assert(st.score >= 20 + 25, 'bonus sur le beat');
   const off = D.newDisco(); assert.strictEqual(D.step(off, st, 5, false), 0); }
 console.log('disco ok');
+// zone de gravité inversée : le loot monte, les pièces se ramassent
+const G = require('./gravity.js');
+{ const z = G.newGravity(), st = L.newState(); G.start(z);
+  st.loot = [{ type: 'heart', x: 10, y: 300, w: 20, h: 20 }];
+  G.step(z, st, 0.5, () => 0.5); assert(st.loot[0].y < 300 - 40, 'le loot monte');
+  z.coins = [{ x: st.player.x, y: st.player.y, w: 20, h: 20, v: 0, ph: 0 }]; const sc = st.score;
+  G.step(z, st, 0.01, () => 0.9); assert.strictEqual(st.score, sc + G.COIN_PTS); assert(z.waves.length > 0, 'ondes de couleur');
+  G.step(z, st, G.DURATION + 1, () => 0.9); assert(!z.on); }
+console.log('gravity ok');
