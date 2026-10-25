@@ -3,7 +3,7 @@
 (function (root) {
   const KEY = 'twitchgram.v1';
   const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], appeals: [], tickets: [], verifs: [], badgeLog: [], drafts: [], media: [], groups: [], events: [], rooms: [], msgReports: [], audit: [], seq: 1, attempts: Object.create(null) });
-  const MAX_PINS = 3, MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000, POLL_MAX_MIN = 7 * 1440, MAX_OWN_GROUPS = 10, MAX_RULES = 600;
+  const MSG_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '🎉'], MAX_PINS = 3, MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000, POLL_MAX_MIN = 7 * 1440, MAX_OWN_GROUPS = 10, MAX_RULES = 600;
 
   const EV_ANSWERS = ['yes', 'maybe', 'no'], EV_REMINDS = [0, 15, 60, 180, 1440], EV_GRACE = 3 * 3600000, MAX_EVENTS = 30;
   const icsEsc = v => String(v || '').replace(/\\/g, '\\\\').replace(/\r?\n/g, '\\n').replace(/[,;]/g, c => '\\' + c);
@@ -929,13 +929,14 @@ function Net(storage, now) {
         }
         save(); return r;
       },
-      send(from, to, text, images) {
+      send(from, to, text, images, replyTo) {
         text = (text || '').trim(); const media = cleanMedia(images); images = cleanImages(images);
         need((text || images.length || media.length) && text.length <= 500, 'Message invalide');
         user(from); guard(from, true); const t = user(to);
         need(!blockedBy(from, to), 'Cet utilisateur vous a bloqué : message impossible');
         need(!has(user(from).blocked, to), 'Débloquez cet utilisateur pour lui écrire');
         const m = { id: id(), from: user(from).name, to: t.name, text, at: now() };
+        if (replyTo) { const q = db.messages.find(x => x.id === +replyTo && [x.from, x.to].includes(m.from) && [x.from, x.to].includes(t.name)); need(q, 'Message cité introuvable'); m.replyTo = q.id; }
         if (images.length) m.images = images;
         if (media.length) m.media = media;
         db.messages.push(m);
@@ -954,13 +955,53 @@ function Net(storage, now) {
         if (status === 'missed') { const open = db.notifs.find(n => n.type === 'dm' && n.to === t.name && n.from === f.name && !n.read); if (open) { open.count = (open.count || 1) + 1; open.at = m.at; } else db.notifs.push({ id: id(), to: t.name, from: f.name, type: 'dm', postId: null, at: m.at, read: false, count: 1 }); }
         save(); return m;
       },
+      // ---- messagerie enrichie : réactions, modification, suppression et recherche, en 1-à-1 (rid = null) comme en groupe ----
+      // trouve un message de la conversation de `by` (groupe `rid`, ou échange 1-à-1) et ses interlocuteurs
+      msgOf(by, rid, msgId) {
+        const me = user(by);
+        if (rid) { const r = api.room(by, rid), m = r.msgs.find(x => x.id === +msgId); need(m, 'Message introuvable'); return { m, others: r.members.filter(n => n !== me.name) }; }
+        const m = db.messages.find(x => x.id === +msgId && (x.from === me.name || x.to === me.name)); need(m, 'Message introuvable');
+        return { m, others: [m.from === me.name ? m.to : m.from] };
+      },
+      reactMessage(by, rid, msgId, emoji) {
+        const me = user(by); need(MSG_EMOJIS.includes(emoji), 'Réaction inconnue'); guard(by, true);
+        const { m, others } = api.msgOf(by, rid, msgId); need(!m.deleted && !m.call, 'Ce message ne peut pas recevoir de réaction');
+        for (const n of others) need(!blockedBy(me.name, n) && !has(me.blocked, n), 'Réaction impossible : compte bloqué');
+        const x = m.reactions = m.reactions || {}, l = x[emoji] || [];
+        x[emoji] = has(l, me.name) ? l.filter(n => n !== me.name) : [...l, me.name];
+        if (!x[emoji].length) delete x[emoji];
+        if (!Object.keys(x).length) delete m.reactions;
+        save();
+      },
+      // modifier son propre message (texte seulement) : marqué « modifié »
+      editMessage(by, rid, msgId, text) {
+        const me = user(by); guard(by, true); const { m } = api.msgOf(by, rid, msgId);
+        need(m.from === me.name, 'Vous ne pouvez modifier que vos messages'); need(!m.deleted && !m.call, 'Ce message ne peut pas être modifié');
+        text = String(text || '').trim(); need(text.length <= 500, 'Message trop long (500 caractères max)');
+        need(text || (m.images || []).length || (m.media || []).length, 'Message vide : supprimez-le plutôt');
+        if (text === m.text) return; m.text = text; m.editedAt = now(); save();
+      },
+      // supprimer son propre message : il reste une trace « message supprimé » (les réponses qui le citent restent lisibles)
+      deleteMessage(by, rid, msgId) {
+        const me = user(by); const { m } = api.msgOf(by, rid, msgId);
+        need(m.from === me.name, 'Vous ne pouvez supprimer que vos messages'); need(!m.deleted, 'Message déjà supprimé');
+        for (const k of ['images', 'media', 'reactions', 'call']) delete m[k];
+        m.text = ''; m.deleted = true; m.deletedAt = now(); save();
+      },
+      // recherche dans l'historique d'une conversation (sans accents ni casse) : messages de `by` pour `peer` ou le groupe `#id`
+      searchMessages(by, arg, q) {
+        const norm = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(), k = norm(q).trim();
+        if (!k) return [];
+        const list = typeof arg === 'string' && arg[0] === '#' ? api.roomMessages(by, +arg.slice(1)) : api.conversation(by, String(arg));
+        return list.filter(m => !m.deleted && norm(m.text).includes(k));
+      },
       // ---- messages non lus : curseur « dernier message lu » par interlocuteur, stocké sur le compte ----
       markDmRead(by, peer) {
         const me = user(by), t = user(peer), k = lc(t.name);
         const last = db.messages.filter(m => m.from === t.name && m.to === me.name).reduce((a, m) => Math.max(a, m.id), 0);
         const r = me.dmRead = me.dmRead || {};
         if ((r[k] || 0) >= last) return false;
-        r[k] = last; for (const n of db.notifs) if (n.type === 'dm' && n.to === me.name && lc(n.from) === k) n.read = true; save(); return true;
+        r[k] = last; (me.dmReadAt = me.dmReadAt || {})[k] = now(); for (const n of db.notifs) if (n.type === 'dm' && n.to === me.name && lc(n.from) === k) n.read = true; save(); return true;
       },
       // { total, peers: { pseudo: n } } : messages reçus après le curseur de lecture, hors comptes bloqués/masqués
       unreadDm(by) {
@@ -1044,11 +1085,12 @@ function Net(storage, now) {
       room(by, rid) { const r = db.rooms.find(x => x.id === +rid); need(r && has(r.members, user(by).name), 'Groupe introuvable'); return r; },
       // messages visibles par `by` : ceux des comptes qu'il a bloqués ou masqués disparaissent
       roomMessages(by, rid) { const r = api.room(by, rid); return r.msgs.filter(m => !hiddenFor(by, m.from)); },
-      sendRoom(by, rid, text, images) {
+      sendRoom(by, rid, text, images, replyTo) {
         text = (text || '').trim(); const media = cleanMedia(images); images = cleanImages(images);
         need((text || images.length || media.length) && text.length <= 500, 'Message invalide');
         const me = user(by), r = api.room(by, rid); guard(by, true);
         const m = { id: id(), from: me.name, text, at: now() }; if (images.length) m.images = images; if (media.length) m.media = media;
+        if (replyTo) { need(r.msgs.some(x => x.id === +replyTo), 'Message cité introuvable'); m.replyTo = +replyTo; }
         r.msgs.push(m); if (r.msgs.length > 500) r.msgs = r.msgs.slice(-500);
         r.read[lc(me.name)] = m.id;
         for (const n of r.members) {
@@ -1061,7 +1103,7 @@ function Net(storage, now) {
       markRoomRead(by, rid) {
         const me = user(by), r = api.room(by, rid), last = r.msgs.reduce((a, m) => Math.max(a, m.id), 0);
         if ((r.read[lc(me.name)] || 0) >= last) return false;
-        r.read[lc(me.name)] = last; for (const n of db.notifs) if (n.type === 'dm' && n.to === me.name && n.room === r.id) n.read = true; save(); return true;
+        r.read[lc(me.name)] = last; (r.readAt = r.readAt || {})[lc(me.name)] = now(); for (const n of db.notifs) if (n.type === 'dm' && n.to === me.name && n.room === r.id) n.read = true; save(); return true;
       },
       // discussions de groupe de `by`, la plus récente d'abord : { room, last, unread }
       rooms(by) {
@@ -1147,6 +1189,11 @@ function Net(storage, now) {
         Object.assign(r, { status: action === 'dismiss' ? 'dismissed' : 'actioned', action, closedAt: now(), closedBy: user(by).name }); save();
       },
       // dernier de mes messages lu par `peer` (0 si rien) : base de l'indicateur « Vu » des échanges 1-à-1
+      // heure à laquelle `peer` a lu mes messages (0 si inconnue)
+      peerReadAt(by, peer) {
+        if (db.peerReadAt) return db.peerReadAt[lc(peer)] || 0;
+        const p = db.users[lc(peer)]; return p && !hiddenFor(by, p.name) && !blockedBy(by, p.name) ? ((p.dmReadAt || {})[lc(by)] || 0) : 0;
+      },
       peerRead(by, peer) {
         if (db.peerRead) return db.peerRead[lc(peer)] || 0;
         const p = db.users[lc(peer)]; return p && !hiddenFor(by, p.name) && !blockedBy(by, p.name) ? ((p.dmRead || {})[lc(by)] || 0) : 0;
@@ -1550,6 +1597,7 @@ function Net(storage, now) {
       notifs: db.notifs.filter(n => n.to === me.name),
       rooms: db.rooms.filter(r => r.members.includes(me.name)).map(r => ({ ...r, msgs: r.msgs.slice(-200) })),
       msgReports: me.admin ? db.msgReports.filter(r => r.status === 'open') : db.msgReports.filter(r => r.by === me.name && r.status === 'open').map(r => ({ id: r.id, room: r.room, msgId: r.msgId, by: r.by, status: r.status })),
+      peerReadAt: Object.fromEntries(Object.values(db.users).filter(u => u.name !== me.name && !(u.blocked || []).includes(me.name) && !(me.blocked || []).includes(u.name) && (u.dmReadAt || {})[lcm]).map(u => [u.name.toLowerCase(), u.dmReadAt[lcm]])),
       peerRead: Object.fromEntries(Object.values(db.users).filter(u => u.name !== me.name && !(u.blocked || []).includes(me.name) && !(me.blocked || []).includes(u.name) && (u.dmRead || {})[lcm]).map(u => [u.name.toLowerCase(), u.dmRead[lcm]])),
       audit: me.admin ? (db.audit || []).slice(-300) : [], totals: me.admin ? { hiddenPosts: db.posts.filter(p => !p.replyTo && p.group && !readable.has(p.group)).length, hiddenMessages: db.messages.filter(m => m.from !== me.name && m.to !== me.name).length } : undefined,
       verifs: me.admin ? (db.verifs || []).slice(-200) : (db.verifs || []).filter(v => v.user === me.name),
@@ -1560,6 +1608,6 @@ function Net(storage, now) {
     };
   }
 
-  const exported = { Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
+  const exported = { MSG_EMOJIS, Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
   if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);
