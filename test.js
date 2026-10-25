@@ -369,4 +369,18 @@ console.log('ok');
   assert.strictEqual(r.toggleTopic('tom', '#live'), false); assert.strictEqual(r.topics('tom').length, 0);
   assert.ok(!('topics' in require('./social.js').snapshot(r.db(), 'tia').users.tom));
 }
+// listes partagées par lien : jeton secret, liste reçue, révocation
+{
+  const m2 = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
+  const r = Net(m2); await r.signup('lia', 'pass1'); await r.signup('leo', 'pass2'); await r.signup('lou', 'pass3');
+  const l = r.createList('lia', 'Amis', false); r.toggleListMember('lia', l.id, 'lou');
+  assert.throws(() => r.list('lia', l.id, 'leo'), /introuvable/); assert.throws(() => r.saveSharedList('leo', 'lia', l.id, 'faux'), /invalide/);
+  const tok = r.updateList('lia', l.id, { share: true }).share; assert.ok(tok && tok.length >= 16);
+  r.saveSharedList('leo', 'lia', l.id, tok); assert.strictEqual(r.list('lia', l.id, 'leo').members[0], 'lou'); assert.strictEqual(r.list('lia', l.id, 'leo').share, null);
+  assert.strictEqual(r.sharedLists('leo').length, 1);
+  const snap = require('./social.js').snapshot(r.db(), 'leo').users.lia; assert.ok(snap.lists.length === 1 && !snap.lists[0].share);
+  assert.ok(!('lists' in require('./social.js').snapshot(r.db(), 'lou').users.lia) || require('./social.js').snapshot(r.db(), 'lou').users.lia.lists.length === 0);
+  r.updateList('lia', l.id, { share: false }); assert.throws(() => r.list('lia', l.id, 'leo'), /introuvable/); assert.strictEqual(r.sharedLists('leo').length, 0);
+  const t2 = r.updateList('lia', l.id, { share: true }).share; assert.notStrictEqual(t2, tok);
+}
 })();

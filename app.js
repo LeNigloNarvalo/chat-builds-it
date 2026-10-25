@@ -33,6 +33,8 @@ let authMode = 'login'; // 'login' | 'forgot'
 let mfa = null; // connexion en attente du code de double authentification : { name, password } (gardé en mémoire seulement, jamais stocké)
 let linkMsg = ''; // résultat du lien ouvert (confirmation / réinitialisation)
 // l'utilisateur connecté est celui que le serveur reconnaît pour la session de cet appareil
+// lien de liste partagée : /?list=pseudo:id:jeton (retiré de l'URL, ouvert une fois connecté)
+let SHARED = (() => { const q = new URLSearchParams(location.search), v = q.get('list'); if (!v) return null; q.delete('list'); history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q : '')); const [owner, id, token] = v.split(':'); return owner && id && token ? { owner, id: +id, token } : null; })();
 let me = null;
 const checkSession = () => { me = sync.me(); };
 let view = { page: 'feed' };
@@ -171,7 +173,7 @@ sync.onChange(() => { refresh(); notifyNew(); });
 window.addEventListener('storage', ev => { if (ev.key === SESSION) sync.pull(true).then(() => refresh(), () => refresh());  // connexion/déconnexion dans un autre onglet
   if (ev.key === Theme.KEY) { th = Theme.load(store); applyTheme(); if (view.page === 'theme' && me) refresh(); }
   if (ev.key === A11Y_KEY) { prefs = A11y.load(store); applyPrefs(); } if (ev.key === I18n.KEY) { langPref = I18n.load(store); applyLang(); refresh(); } if (ev.key === null) refresh(); });
-const openSession = name => { me = name; };
+const openSession = name => { me = name; if (SHARED && !booting) { const s = SHARED; SHARED = null; net.saveSharedList(me, s.owner, s.id, s.token).then(r => go('list', { owner: r.owner, id: r.id }), e => { err = e.message; render(); }); } };
 
 // ---- double authentification (TOTP) : tout est stocké côté serveur, la page ne garde que la dernière lecture ----
 const tfa = { data: null, loaded: false, setup: null, codes: null, msg: '', trusted: false };
@@ -734,21 +736,24 @@ function groupPage(e, paged) {
 }
 // ---- listes de comptes ----
 function listsPage(e) {
-  const mine = net.lists(me, me);
-  const row = l => `<div class="card person"><b>${l.public ? '🌐' : '🔒'} ${esc(l.name)}</b> <span class="mut">${l.members.length} compte${l.members.length > 1 ? 's' : ''} · ${l.public ? 'publique' : 'privée'}</span> <button data-lopen="${esc(me)}:${l.id}">Ouvrir le fil</button></div>`;
-  return `<div class="card"><h2>🗂 Mes listes</h2><p class="mut">Regroupe des comptes dans des listes nommées et lis un fil dédié pour chacune. Une liste privée n’est visible que par toi ; une liste publique s’affiche sur ton profil.</p>
-    <input id="l-name" maxlength="40" placeholder="Nom de la liste (ex. Devs, Streamers…)" aria-label="Nom de la nouvelle liste"> <label><input type="checkbox" id="l-pub"> publique</label> <button data-lcreate>Créer la liste</button></div>${e}` + (mine.map(row).join('') || '<p class="mut">Aucune liste pour l’instant : crée la première ci-dessus.</p>');
+  const mine = net.lists(me, me), rec = net.sharedLists(me);
+  const received = rec.length ? `<div class="card"><b>📥 Listes reçues par lien</b></div>` + rec.map(r => `<div class="card person"><b>🔗 ${esc(r.list.name)}</b> <span class="mut">de @${esc(r.owner)} · ${r.list.members.length} compte${r.list.members.length > 1 ? 's' : ''}</span> <button data-lopen="${esc(r.owner)}:${r.list.id}">Ouvrir le fil</button> <button data-lforget="${esc(r.owner)}:${r.list.id}">Retirer</button></div>`).join('') : '';
+  const row = l => `<div class="card person"><b>${l.public ? '🌐' : l.share ? '🔗' : '🔒'} ${esc(l.name)}</b> <span class="mut">${l.members.length} compte${l.members.length > 1 ? 's' : ''} · ${l.public ? 'publique' : l.share ? 'partagée par lien' : 'privée'}</span> <button data-lopen="${esc(me)}:${l.id}">Ouvrir le fil</button></div>`;
+  return `<div class="card"><h2>🗂 Mes listes</h2><p class="mut">Regroupe des comptes dans des listes nommées et lis un fil dédié pour chacune. Une liste privée n’est visible que par toi ; une liste publique s’affiche sur ton profil ; une liste privée peut aussi être partagée par lien secret.</p>
+    <input id="l-name" maxlength="40" placeholder="Nom de la liste (ex. Devs, Streamers…)" aria-label="Nom de la nouvelle liste"> <label><input type="checkbox" id="l-pub"> publique</label> <button data-lcreate>Créer la liste</button></div>${e}` + (mine.map(row).join('') || '<p class="mut">Aucune liste pour l’instant : crée la première ci-dessus.</p>') + received;
 }
 function listPage(e, paged) {
   const { owner, id } = view.arg; let l;
   try { l = net.list(owner, id, me); } catch (x) { return `<div class="card"><p class="mut">Cette liste n’existe pas ou est privée.</p><button data-page="lists">Mes listes</button></div>`; }
   const own = owner.toLowerCase() === me.toLowerCase(), who = shown(owner);
   const members = l.members.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)}</span>${own ? ` <button data-lmem="${l.id}:${esc(n)}" aria-label="Retirer ${esc(n)} de la liste">Retirer</button>` : ''}</div>`).join('') || '<p class="mut">Cette liste est vide.</p>';
-  const head = `<div class="card"><h2>${l.public ? '🌐' : '🔒'} ${esc(l.name)}</h2><p class="mut">Liste ${l.public ? 'publique' : 'privée'} de <span class="who" data-user="${esc(owner)}">@${esc(owner)}</span> · ${l.members.length} compte${l.members.length > 1 ? 's' : ''}</p>` + (own
+  const head = `<div class="card"><h2>${l.public ? '🌐' : l.share ? '🔗' : '🔒'} ${esc(l.name)}</h2><p class="mut">Liste ${l.public ? 'publique' : l.share ? 'partagée par lien' : 'privée'} de <span class="who" data-user="${esc(owner)}">@${esc(owner)}</span> · ${l.members.length} compte${l.members.length > 1 ? 's' : ''}</p>` + (own
     ? `<p><input id="l-ren" maxlength="40" value="${esc(l.name)}" aria-label="Nom de la liste"> <button data-lren="${l.id}">Renommer</button> <button data-lpub="${l.id}">${l.public ? '🔒 Rendre privée' : '🌐 Rendre publique'}</button> <button data-ldel="${l.id}">🗑 Supprimer</button></p>
+       <p>${l.share ? `🔗 <input id="l-link" readonly value="${esc(shareUrl(owner, l))}" aria-label="Lien de partage" size="40"> <button data-lcopy>Copier</button> <button data-lshare="${l.id}:renew">Nouveau lien</button> <button data-lshare="${l.id}:off">Révoquer</button>` : `<button data-lshare="${l.id}:on">🔗 Partager par lien</button> <span class="mut">Seules les personnes ayant le lien (et connectées) pourront voir cette liste.</span>`}</p>
        <p><input id="l-add" placeholder="Ajouter un compte (pseudo)" aria-label="Pseudo à ajouter"> <button data-ladd="${l.id}">Ajouter</button></p>` : '') + `</div>`;
   return (own ? tabsFor() : '') + head + e + `<div class="card"><b>Fil de la liste</b></div>` + (l.members.length ? paged() : '') + `<div class="card"><b>Comptes de la liste</b></div>` + members;
 }
+const shareUrl = (owner, l) => `${location.origin}/?list=${encodeURIComponent(owner)}:${l.id}:${l.share}`;
 function tabsFor() { return `<p><button data-page="feed">← Mon fil</button> <button data-page="lists">🗂 Toutes mes listes</button></p>`; }
 // listes publiques d'un profil (et, sur le profil d'autrui, ajout à ses propres listes)
 function profileLists(name, self) {
@@ -864,7 +869,7 @@ document.addEventListener('click', async ev => {
   } else if ('notiftest' in b.dataset) Notif.show({ id: 'test' + Date.now(), type: 'mention' }, 'Le bocal');
 });
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-atab],*[data-bkcreate],*[data-bkkeep],*[data-bkask],*[data-bkno],*[data-bkrestore],*[data-bkdl],*[data-bkdel],*[data-asanc],*[data-adelask],*[data-adelno],*[data-adel],*[data-tr],*[data-trclose],*[data-lang],*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-react],*[data-picker],*[data-rwho],*[data-quote],*[data-sendquote],*[data-cancelquote],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-tag],*[data-trange],*[data-topic],*[data-login],*[data-mfago],*[data-mfaback],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-appeal],*[data-cancelappeal],*[data-sendappeal],*[data-decide],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
+  const d = ev.target.closest('*[data-atab],*[data-bkcreate],*[data-bkkeep],*[data-bkask],*[data-bkno],*[data-bkrestore],*[data-bkdl],*[data-bkdel],*[data-asanc],*[data-adelask],*[data-adelno],*[data-adel],*[data-tr],*[data-trclose],*[data-lang],*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-react],*[data-picker],*[data-rwho],*[data-quote],*[data-sendquote],*[data-cancelquote],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-tag],*[data-trange],*[data-topic],*[data-login],*[data-mfago],*[data-mfaback],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-appeal],*[data-cancelappeal],*[data-sendappeal],*[data-decide],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lshare],*[data-lcopy],*[data-lforget],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
   if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
@@ -998,6 +1003,9 @@ document.addEventListener('click', ev => {
   else if ('lren' in D) attempt(() => net.updateList(me, +D.lren, { name: v('#l-ren') }));
   else if ('ldel' in D) { if (confirm('Supprimer cette liste ?')) attempt(async () => { await net.deleteList(me, +D.ldel); go('lists'); }); }
   else if ('ladd' in D) attempt(async () => { const n = (v('#l-add') || '').trim().replace(/^@/, ''); if (!n) throw new Error('Pseudo à ajouter ?'); const t = net.profile(n).name; if (!net.listsWith(me, t).includes(+D.ladd)) await net.toggleListMember(me, +D.ladd, t); });
+  else if ('lshare' in D) { const [i, m] = D.lshare.split(':'); attempt(() => net.updateList(me, +i, { share: m === 'off' ? false : m === 'renew' ? 'renew' : true })); }
+  else if ('lcopy' in D) { const x = $('#l-link'); x.select(); (navigator.clipboard ? navigator.clipboard.writeText(x.value) : Promise.reject()).catch(() => document.execCommand('copy')); d.textContent = 'Copié ✔'; }
+  else if ('lforget' in D) { const [o, i] = D.lforget.split(':'); attempt(() => net.forgetSharedList(me, o, +i)); }
   else if ('lmem' in D) { const [i, n] = D.lmem.split(':'); attempt(() => net.toggleListMember(me, +i, n)); }
   else if ('cmopen' in D) { err = ''; go('group', +D.cmopen); }
   else if ('cmtab' in D) { view.tab = D.cmtab; err = ''; fs.scope = null; render(); }
@@ -1061,6 +1069,7 @@ render();
   booting = false; checkSession();
   if (me && Notif.supported() && Notif.seenGet(store, me) === null) Notif.seenSet(store, me, net.notifications(me).reduce((m, n) => Math.max(m, n.id), 0));
   if (new URLSearchParams(location.search).get('notif') && me) view = { page: 'notifs' };
+  if (SHARED && me) { const s = SHARED; SHARED = null; await attempt(async () => { const r = await net.saveSharedList(me, s.owner, s.id, s.token); view = { page: 'list', arg: { owner: r.owner, id: r.id } }; }); }
   if (linkMsg && me) { /✔/.test(linkMsg) ? view = { page: 'security', ok: linkMsg } : err = linkMsg; linkMsg = ''; LINK = null; }
   if (STREAM) await attempt(async () => { if (me !== 'Streamer') openSession(await net.ensureStreamer()); view = { page: 'admin' }; }); else render();
   // temps réel : le serveur annonce chaque changement (SSE) ; l'interrogation ne sert plus que de secours

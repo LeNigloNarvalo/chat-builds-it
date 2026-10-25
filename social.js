@@ -122,6 +122,8 @@
     };
 
     const cleanTag = t => { t = String(t || '').trim().toLowerCase(); if (t[0] !== '#') t = '#' + t; need(/^#\w{1,60}$/.test(t), 'Hashtag invalide'); return t; };
+    const shareToken = () => randHex(12);
+    const received = (by, o, l) => !!(l.share && ((db.users[lc(by)] || {}).sharedLists || []).some(r => lc(r.owner) === lc(o.name) && r.id === l.id && r.token === l.share));
     const ownList = (by, listId) => { const l = (user(by).lists || []).find(x => x.id === +listId); need(l, 'Liste introuvable'); return l; };
 
     const api = {
@@ -313,7 +315,7 @@
         const l = u.lists = u.lists || [];
         need(l.length < MAX_LISTS, `${MAX_LISTS} listes maximum`);
         need(!l.some(x => lc(x.name) === lc(name)), 'Vous avez déjà une liste de ce nom');
-        const x = { id: id(), name, public: !!isPublic, members: [], at: now() }; l.push(x); save(); return x;
+        const x = { id: id(), name, public: !!isPublic, share: null, members: [], at: now() }; l.push(x); save(); return x;
       },
       updateList(by, listId, o) {
         const l = ownList(by, listId); o = o || {};
@@ -322,6 +324,7 @@
           need(!user(by).lists.some(x => x !== l && lc(x.name) === lc(name)), 'Vous avez déjà une liste de ce nom'); l.name = name;
         }
         if (o.public !== undefined) l.public = !!o.public;
+        if (o.share !== undefined) l.share = o.share ? (l.share && o.share !== 'renew' ? l.share : shareToken()) : null;   // lien de partage : true/'renew' le (re)crée, false le révoque
         save(); return l;
       },
       deleteList(by, listId) { const l = ownList(by, listId), u = user(by); u.lists = u.lists.filter(x => x !== l); save(); },
@@ -333,7 +336,16 @@
         save(); return i < 0;
       },
       // listes d'un compte vues par `by` : toutes les siennes, seulement les publiques pour les autres
-      lists: (owner, by) => { const o = db.users[lc(owner)]; return o ? (o.lists || []).filter(l => l.public || lc(o.name) === lc(by)) : []; },
+      lists: (owner, by) => { const o = db.users[lc(owner)]; return o ? (o.lists || []).filter(l => l.public || lc(o.name) === lc(by) || received(by, o, l)).map(l => lc(o.name) === lc(by) ? l : Object.assign({}, l, { share: null })) : []; },
+      // listes reçues par lien : ouvrir un lien valide l'enregistre chez le visiteur (jeton vérifié) ; renvoie la liste
+      saveSharedList(by, owner, listId, token) {
+        const u = user(by), o = db.users[lc(owner)], l = o && (o.lists || []).find(x => x.id === +listId);
+        need(l && l.share && l.share === String(token), 'Lien de liste invalide ou révoqué');
+        if (lc(o.name) !== lc(u.name) && !received(by, o, l)) { const r = u.sharedLists = u.sharedLists || []; need(r.length < 50, '50 listes reçues maximum'); r.push({ owner: o.name, id: l.id, token: l.share }); save(); }
+        return { owner: o.name, id: l.id };
+      },
+      forgetSharedList(by, owner, listId) { const u = user(by); u.sharedLists = (u.sharedLists || []).filter(r => !(lc(r.owner) === lc(owner) && r.id === +listId)); save(); },
+      sharedLists: by => ((db.users[lc(by)] || {}).sharedLists || []).map(r => { const o = db.users[lc(r.owner)], l = o && (o.lists || []).find(x => x.id === r.id && x.share === r.token); return l ? { owner: o.name, list: Object.assign({}, l, { share: null }) } : null; }).filter(Boolean),
       list(owner, listId, by) { const l = api.lists(owner, by).find(x => x.id === listId); need(l, 'Liste introuvable'); return l; },
       listsWith: (by, target) => (user(by).lists || []).filter(l => has(l.members, target)).map(l => l.id),
       // fil dédié : posts racines des seuls comptes de la liste
@@ -861,9 +873,9 @@
     if (!me) throw new Error('Utilisateur introuvable');
     const lcm = me.name.toLowerCase(), users = Object.create(null);
     for (const [k, u] of Object.entries(db.users)) {
-      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, ...pub } = u;
-      if (lists) pub.lists = k === lcm ? lists : lists.filter(l => l.public);
-      if (k === lcm) Object.assign(pub, { dismissed, topics, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, ...pub } = u;
+      if (lists) pub.lists = k === lcm ? lists : lists.filter(l => l.public || (l.share && (me.sharedLists || []).some(r => r.owner.toLowerCase() === k && r.id === l.id && r.token === l.share))).map(l => ({ ...l, share: null }));
+      if (k === lcm) Object.assign(pub, { dismissed, topics, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
       else if (me.admin) Object.assign(pub, { sanction });
       users[k] = JSON.parse(JSON.stringify(pub));
     }
