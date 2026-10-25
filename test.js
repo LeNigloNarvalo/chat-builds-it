@@ -128,6 +128,15 @@ assert.strictEqual(n2.importUser('fred', evil).messages, 1);
   const p3 = n.post('cyd', 'mauvais'); n.report('ana', p3.id, 'nsfw'); n.moderate('Streamer', p3.id, 'delete');
   assert.ok(!n.explore().some(p => p.id === p3.id) && n.history('Streamer', 1)[0].action === 'delete');
   const p4 = n.post('cyd', 'ok'); n.report('ana', p4.id, 'autre'); n.moderate('Streamer', p4.id, 'dismiss'); assert.ok(n.explore().some(p => p.id === p4.id));
+  // tableau de bord d'administration : utilisateurs, sanctions directes, statistiques globales et journal d'audit
+  assert.throws(() => n.adminUsers('ana'), /administrateur/); assert.throws(() => n.adminStats('ana'), /administrateur/); assert.throws(() => n.auditLog('ana'), /administrateur/);
+  assert.throws(() => n.adminSanction('ana', 'cyd', 'ban'), /administrateur/); assert.throws(() => n.adminDeleteUser('ana', 'cyd'), /administrateur/);
+  assert.throws(() => n.adminSanction('Streamer', 'Streamer', 'ban'), /administrateur/); assert.throws(() => n.adminDeleteUser('Streamer', 'Streamer'), /supprimé/);
+  assert.ok(n.adminUsers('Streamer').some(u => u.name === 'cyd'));
+  n.adminSanction('Streamer', 'cyd', 'suspend', 3, 'test'); assert.ok(n.sanctionOf('cyd') && n.adminStats('Streamer').suspended >= 1); assert.throws(() => n.post('cyd', 'x'), /suspendu/);
+  n.liftSanction('Streamer', 'cyd'); n.post('cyd', 'revenu');
+  const nu = n.adminStats('Streamer').users; n.adminDeleteUser('Streamer', 'cyd', 'spam'); assert.strictEqual(n.adminStats('Streamer').users, nu - 1);
+  const log = n.auditLog('Streamer'); assert.ok(log.some(a => a.type === 'user-suspend' && a.target === 'cyd') && log.some(a => a.type === 'user-delete' && a.detail === 'spam') && log.some(a => a.type === 'report-ban') && log.some(a => a.type === 'lift'));
   // les listes sont partagées via le storage : une 2e instance voit tout
   assert.ok(Net(st).sanctionOf('bob').type === 'ban');
 }

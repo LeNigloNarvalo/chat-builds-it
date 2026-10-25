@@ -2,7 +2,7 @@
 // Chaque appel relit le storage (lecture-modification-écriture) : aucune copie ancienne n'est conservée en mémoire.
 (function (root) {
   const KEY = 'twitchgram.v1';
-  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], drafts: [], groups: [], seq: 1, attempts: Object.create(null) });
+  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], drafts: [], groups: [], audit: [], seq: 1, attempts: Object.create(null) });
   const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000, POLL_MAX_MIN = 7 * 1440, MAX_OWN_GROUPS = 10, MAX_RULES = 600;
 
   const RESERVED = 'streamer';
@@ -55,6 +55,23 @@
       const s = user(n).sanction; if (!s) return;
       need(s.type !== 'ban', 'Votre compte est banni : action impossible');
       need(!(s.type === 'suspend' && s.until > now()), `Compte suspendu pendant encore ${Math.ceil((s.until - now()) / 60000)} min`);
+    };
+    // journal d'audit des actions de modération (visible des seuls administrateurs)
+    const audit = (by, type, target, detail) => { db.audit = db.audit || []; db.audit.push({ id: id(), at: now(), by: user(by).name, type, target: target || null, detail: detail || '' }); if (db.audit.length > 2000) db.audit = db.audit.slice(-2000); };
+    const purge = u => { // supprime un compte avec tout ce qui le concerne
+        const n = u.name;
+        for (const g of db.groups.filter(x => lc(x.owner) === lc(n))) dropGroup(g); // ses communautés disparaissent avec lui
+        for (const g of db.groups) for (const k of ['mods', 'members', 'requests', 'invites', 'banned']) g[k] = g[k].filter(x => lc(x) !== lc(n));
+        const gone = new Set(db.posts.filter(p => p.author === n).map(p => p.id));
+        db.posts = db.posts.filter(p => !gone.has(p.id) && !gone.has(p.replyTo));
+        for (const p of db.posts) p.likes = p.likes.filter(x => x !== n);
+        for (const x of Object.values(db.users)) { x.following = x.following.filter(f => f !== n); for (const l of x.lists || []) l.members = l.members.filter(f => f !== n); }
+        db.messages = db.messages.filter(m => m.from !== n && m.to !== n); db.drafts = db.drafts.filter(d => d.author !== n);
+        db.reposts = db.reposts.filter(r => r.by !== n && !gone.has(r.postId));
+        db.reports = db.reports.filter(r => r.by !== n && r.target !== n);
+        for (const x of Object.values(db.users)) { if (x.blocked) x.blocked = x.blocked.filter(f => f !== n); if (x.muted) x.muted = x.muted.filter(f => f !== n); }
+        db.notifs = db.notifs.filter(x => x.from !== n && x.to !== n && !gone.has(x.postId));
+        delete db.users[n.toLowerCase()]; delete db.attempts[n.toLowerCase()];
     };
     const blockedBy = (author, target) => has((db.users[lc(target)] || {}).blocked, author);
     const vis = (by, list, get) => by ? list.filter(x => !hiddenFor(by, get(x))) : list;
@@ -188,20 +205,7 @@
         let u = user(name);
         need(!u.admin, 'Le compte Streamer ne peut pas être supprimé');
         need(u.pass.includes('$') && u.pass === await hashPw(password || '', u.pass.split('$')[0]), 'Mot de passe incorrect');
-        load(); u = user(name);
-        const n = u.name;
-        for (const g of db.groups.filter(x => lc(x.owner) === lc(n))) dropGroup(g); // ses communautés disparaissent avec lui
-        for (const g of db.groups) for (const k of ['mods', 'members', 'requests', 'invites', 'banned']) g[k] = g[k].filter(x => lc(x) !== lc(n));
-        const gone = new Set(db.posts.filter(p => p.author === n).map(p => p.id));
-        db.posts = db.posts.filter(p => !gone.has(p.id) && !gone.has(p.replyTo));
-        for (const p of db.posts) p.likes = p.likes.filter(x => x !== n);
-        for (const x of Object.values(db.users)) { x.following = x.following.filter(f => f !== n); for (const l of x.lists || []) l.members = l.members.filter(f => f !== n); }
-        db.messages = db.messages.filter(m => m.from !== n && m.to !== n); db.drafts = db.drafts.filter(d => d.author !== n);
-        db.reposts = db.reposts.filter(r => r.by !== n && !gone.has(r.postId));
-        db.reports = db.reports.filter(r => r.by !== n && r.target !== n);
-        for (const x of Object.values(db.users)) { if (x.blocked) x.blocked = x.blocked.filter(f => f !== n); if (x.muted) x.muted = x.muted.filter(f => f !== n); }
-        db.notifs = db.notifs.filter(x => x.from !== n && x.to !== n && !gone.has(x.postId));
-        delete db.users[n.toLowerCase()]; delete db.attempts[n.toLowerCase()];
+        load(); u = user(name); purge(u);
         save();
       },
       // vue stream : ouvre la session d'un VRAI compte « Streamer » (créé au besoin, mot de passe aléatoire jamais conservé)
@@ -569,16 +573,49 @@
           (target.sanctions = target.sanctions || []).push({ type: action, at: now(), reason: REASONS[open[0].reason], hours: action === 'suspend' ? hours : 0, postId });
           notify(target.name, user(by).name, 'sanction', null);
         }
+        audit(by, 'report-' + action, target ? target.name : open[0].target, `post #${postId} · ${REASONS[open[0].reason]} · ${open.length} signalement(s)` + (action === 'suspend' ? ` · ${hours} h` : ''));
         for (const r of open) Object.assign(r, { status: action === 'dismiss' ? 'dismissed' : 'actioned', action, closedAt: now(), closedBy: user(by).name });
         save();
         if (action === 'delete') api.deletePost(by, postId); // relit le storage : à faire après l'enregistrement
         return open.length;
       },
+      // ---- tableau de bord d'administration : utilisateurs, statistiques globales, journal d'audit ----
+      adminUsers(by) {
+        need(api.isAdmin(by), 'Réservé à l’administrateur');
+        return Object.values(db.users).map(u => ({ name: u.name, display: u.display || u.name, joined: u.joined, admin: !!u.admin, sanction: api.sanctionOf(u.name), warnings: (u.sanctions || []).length,
+          posts: db.posts.filter(p => p.author === u.name).length, reports: db.reports.filter(r => r.target === u.name && r.status === 'open').length })).sort((a, b) => b.joined - a.joined);
+      },
+      // sanction directe d'un compte (sans passer par un signalement) : warn | suspend | ban
+      adminSanction(by, n, type, hours, reason) {
+        need(api.isAdmin(by), 'Réservé à l’administrateur'); need(['warn', 'suspend', 'ban'].includes(type), 'Action inconnue');
+        const u = user(n); need(!u.admin, 'Impossible de sanctionner un administrateur');
+        reason = String(reason || '').trim().slice(0, 200) || 'Décision de l’administrateur'; hours = Math.min(24 * 90, Math.max(1, +hours || 24));
+        const prev = u.sanction || {};
+        u.sanction = { type, at: now(), by: user(by).name, reason, warnings: (prev.warnings || 0) + (type === 'warn' ? 1 : 0) };
+        if (type === 'suspend') u.sanction.until = now() + hours * 36e5;
+        (u.sanctions = u.sanctions || []).push({ type, at: now(), reason, hours: type === 'suspend' ? hours : 0 });
+        notify(u.name, user(by).name, 'sanction', null);
+        audit(by, 'user-' + type, u.name, reason + (type === 'suspend' ? ` · ${hours} h` : '')); save();
+      },
+      adminDeleteUser(by, n, reason) {
+        need(api.isAdmin(by), 'Réservé à l’administrateur'); const u = user(n); need(!u.admin, 'Le compte Streamer ne peut pas être supprimé');
+        audit(by, 'user-delete', u.name, String(reason || '').trim().slice(0, 200) || 'Décision de l’administrateur'); purge(u); save();
+      },
+      adminStats(by) {
+        need(api.isAdmin(by), 'Réservé à l’administrateur');
+        const day = 86400000, t = now(), users = Object.values(db.users), t0 = db.totals || {};
+        const act = users.filter(u => u.sanction && (u.sanction.type !== 'suspend' || u.sanction.until > t));
+        const roots = db.posts.filter(p => !p.replyTo).length, replies = db.posts.length - roots;
+        return { users: users.length, newUsers7: users.filter(u => t - u.joined < 7 * day).length, posts: roots + (t0.hiddenPosts || 0), replies, messages: db.messages.length + (t0.hiddenMessages || 0), groups: db.groups.length,
+          likes: db.posts.reduce((s, p) => s + p.likes.length, 0), posts24: db.posts.filter(p => t - p.at < day).length, openReports: new Set(db.reports.filter(r => r.status === 'open').map(r => r.postId)).size,
+          closedReports: db.reports.filter(r => r.status !== 'open').length, suspended: act.filter(u => u.sanction.type === 'suspend').length, banned: act.filter(u => u.sanction.type === 'ban').length };
+      },
+      auditLog(by, limit) { need(api.isAdmin(by), 'Réservé à l’administrateur'); return (db.audit || []).slice(-(limit || 100)).reverse(); },
       // sanction active d'un compte (null si aucune ou expirée) ; l'admin peut la lever
       sanctionOf(n) { const s = (db.users[lc(n)] || {}).sanction; if (!s) return null; if (s.type === 'suspend' && s.until <= now()) return null; return s; },
       liftSanction(by, n) {
         need(api.isAdmin(by), 'Réservé à l’administrateur'); const u = user(n); need(u.sanction, 'Aucune sanction active');
-        delete u.sanction; save();
+        audit(by, 'lift', u.name, u.sanction.type); delete u.sanction; save();
       },
       sanctioned: by => { need(api.isAdmin(by), 'Réservé à l’administrateur'); return Object.values(db.users).filter(u => u.sanction && (u.sanction.type !== 'suspend' || u.sanction.until > now())).map(u => ({ name: u.name, sanction: u.sanction })); },
       // ---- communautés thématiques : publiques (lisibles par tous, adhésion libre) ou privées (sur demande ou invitation) ----
@@ -707,6 +744,7 @@
       users, posts: db.posts.filter(p => !p.group || readable.has(p.group)), groups, reposts: db.reposts, seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), attempts: {},
       messages: db.messages.filter(m => m.from === me.name || m.to === me.name),
       notifs: db.notifs.filter(n => n.to === me.name),
+      audit: me.admin ? (db.audit || []).slice(-300) : [], totals: me.admin ? { hiddenPosts: db.posts.filter(p => !p.replyTo && p.group && !readable.has(p.group)).length, hiddenMessages: db.messages.filter(m => m.from !== me.name && m.to !== me.name).length } : undefined,
       reports: me.admin ? db.reports : db.reports.filter(r => r.by === me.name).map(r => ({ id: r.id, postId: r.postId, by: r.by, status: r.status })),
     };
   }

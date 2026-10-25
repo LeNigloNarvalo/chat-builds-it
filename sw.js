@@ -1,5 +1,5 @@
 // Service worker Cornichon : coque de l'appli en cache, fil et état servis hors-ligne (réseau d'abord), notifications.
-const SHELL = 'cornichon-shell-v3', DATA = 'cornichon-data-v1';
+const SHELL = 'cornichon-shell-v4', DATA = 'cornichon-data-v1';
 const FILES = ['/', '/style.css', '/a11y.js', '/i18n.js', '/theme.js', '/social.js', '/sync.js', '/qrcode.js', '/stats.js', '/diag.js', '/app.js', '/manifest.webmanifest', '/icon.svg'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(SHELL).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== SHELL && k !== DATA).map(k => caches.delete(k)))).then(() => self.clients.claim())); });

@@ -273,6 +273,31 @@ function modPage(e) {
   `<div class="card"><b>Comptes sanctionnés</b>${sl.map(x => `<div class="row"><span>@${esc(x.name)} · ${sancLabel(x.sanction)}</span><button data-lift="${esc(x.name)}">Lever</button></div>`).join('') || '<p class="mut">Aucun.</p>'}</div>
   <div class="card"><b>Historique</b>${hist.map(r => `<div class="mut">#${r.postId} @${esc(r.target)} · ${esc(R[r.reason] || r.reason)} → ${({ dismiss: 'sans suite', delete: 'post supprimé', warn: 'avertissement', suspend: 'suspension', ban: 'bannissement' })[r.action]} (${ago(r.closedAt)})</div>`).join('') || '<p class="mut">Vide.</p>'}</div>`;
 }
+// ---- tableau de bord d'administration : vue d'ensemble, utilisateurs, signalements, journal d'audit ----
+const adm = { tab: 'overview', q: '', del: null };
+const AUDIT = { 'report-dismiss': '✅ signalement classé', 'report-delete': '🗑 post supprimé', 'report-warn': '⚠️ avertissement (signalement)', 'report-suspend': '⏸ suspension (signalement)', 'report-ban': '⛔ bannissement (signalement)', 'user-warn': '⚠️ avertissement', 'user-suspend': '⏸ suspension', 'user-ban': '⛔ bannissement', 'user-delete': '🗑 compte supprimé', lift: '🔓 sanction levée' };
+function adminPage(e) {
+  const S = net.adminStats(me), nq = net.queue(me).length;
+  const tabs = [['overview', '📊 Vue d’ensemble'], ['users', `👥 Utilisateurs (${S.users})`], ['reports', `🚩 Signalements${nq ? ' (' + nq + ')' : ''}`], ['audit', '📜 Journal d’audit']];
+  const head = `<div class="card"><h2>🛠 Tableau de bord d’administration</h2><p class="mut">Réservé aux administrateurs : toute action de modération est inscrite au journal d’audit.</p>
+    <div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${adm.tab === k}" data-atab="${k}" class="${adm.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>${e}`;
+  if (adm.tab === 'reports') return head + modPage('');
+  if (adm.tab === 'audit') {
+    const log = net.auditLog(me, 200);
+    return head + `<div class="card"><b>Journal d’audit</b> <span class="mut">· ${log.length} dernière${log.length > 1 ? 's' : ''} action${log.length > 1 ? 's' : ''}</span>` + (log.length ? `<div class="scroll"><table class="dvlog"><thead><tr><th>Quand</th><th>Admin</th><th>Action</th><th>Cible</th><th>Détail</th></tr></thead><tbody>${log.map(a => `<tr><td title="${esc(I.dateTime(a.at))}">${ago(a.at)}</td><td>@${esc(a.by)}</td><td>${AUDIT[a.type] || esc(a.type)}</td><td>${a.target ? '@' + esc(a.target) : ''}</td><td>${esc(a.detail)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="mut">Aucune action de modération pour l’instant.</p>') + '</div>';
+  }
+  if (adm.tab === 'users') {
+    const q = adm.q.trim().toLowerCase().replace(/^@/, ''), list = net.adminUsers(me).filter(u => !q || u.name.toLowerCase().includes(q) || u.display.toLowerCase().includes(q));
+    return head + `<div class="card"><label>Rechercher un utilisateur <input id="adm-q" type="search" value="${esc(adm.q)}" placeholder="@pseudo" maxlength="40"></label>
+      <label class="inl">Durée de suspension (h) <input id="adm-h" type="number" min="1" max="2160" value="24"></label> <label class="inl">Motif <input id="adm-r" maxlength="200" placeholder="Motif (inscrit au journal)"></label></div>` +
+      (list.map(u => `<div class="card person"><div>${av(u.name)}<b>${esc(u.display)}</b> <span class="mut">@${esc(u.name)} · inscrit ${ago(u.joined)} · ${u.posts} post${u.posts > 1 ? 's' : ''}${u.reports ? ` · 🚩 ${u.reports}` : ''}${u.warnings ? ` · ${u.warnings} sanction${u.warnings > 1 ? 's' : ''} passée${u.warnings > 1 ? 's' : ''}` : ''}</span>${u.admin ? ' <span class="badge">👑 admin</span>' : ''}
+        ${u.sanction ? `<div class="err">${sancLabel(u.sanction)}</div>` : ''}</div>
+        ${u.admin ? '' : adm.del === u.name ? `<div class="row" role="alert"><b>Supprimer définitivement @${esc(u.name)} et tout son contenu ?</b><button data-adel="${esc(u.name)}">Oui, supprimer</button><button data-adelno>Annuler</button></div>`
+        : `<div class="row"><button data-asanc="${esc(u.name)}:suspend">⏸ Suspendre</button><button data-asanc="${esc(u.name)}:warn">⚠️ Avertir</button><button data-asanc="${esc(u.name)}:ban">⛔ Bannir</button>${u.sanction ? `<button data-lift="${esc(u.name)}">🔓 Lever</button>` : ''}<button data-adelask="${esc(u.name)}">🗑 Supprimer</button></div>`}</div>`).join('') || '<p class="mut">Aucun utilisateur ne correspond.</p>');
+  }
+  const tile = (n, l) => `<div class="card tile"><b>${I.num(n)}</b><span class="mut">${l}</span></div>`;
+  return head + `<div class="tiles">${tile(S.users, 'utilisateurs')}${tile(S.newUsers7, 'nouveaux (7 j)')}${tile(S.posts, 'posts')}${tile(S.posts24, 'posts / 24 h')}${tile(S.replies, 'réponses')}${tile(S.likes, 'likes')}${tile(S.messages, 'messages privés')}${tile(S.groups, 'communautés')}${tile(S.openReports, 'signalements ouverts')}${tile(S.closedReports, 'signalements traités')}${tile(S.suspended, 'comptes suspendus')}${tile(S.banned, 'comptes bannis')}</div>`;
+}
 let curDraft = null, draftMsg = '';
 const dtimers = {};
 const localInput = ms => { const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60000); return d.toISOString().slice(0, 16); };
@@ -378,7 +403,7 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  nav.innerHTML = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['search', t('nav.search')], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['theme', t('nav.theme')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['mod', `${t('nav.mod')} ${net.queue(me).length || ''}`]] : [])
+  nav.innerHTML = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['search', t('nav.search')], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['theme', t('nav.theme')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${net.queue(me).length || ''}`]] : [])
     .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
   // onglets du fil : global + une entrée par liste (les siennes)
@@ -427,8 +452,8 @@ function render() {
       <p class="stats"><button data-sub="followers:${u.name}" class="${view.sub === 'followers' ? 'on' : ''}"><b>${I18n.num(fl.length)}</b> ${t('followers')}</button> <button data-sub="following:${u.name}" class="${view.sub === 'following' ? 'on' : ''}"><b>${I18n.num(u.following.length)}</b> ${t('following')}</button></p>` +
       (self ? `<button data-page="settings">⚙️ Modifier le profil</button>` : `<button data-follow="${u.name}">${fl.includes(me) ? t('unfollow') : t('follow')}</button> <button data-chat="${u.name}">${t('message')}</button>` + (u.admin ? '' : ` <button data-mute="${u.name}" aria-pressed="${net.isMuted(me, u.name)}">${net.isMuted(me, u.name) ? '🔊 Ne plus masquer' : '🔇 Masquer'}</button> <button data-block="${u.name}" aria-pressed="${net.isBlocked(me, u.name)}">${net.isBlocked(me, u.name) ? '✅ Débloquer' : '🚫 Bloquer'}</button>`)) + (net.sanctionOf(u.name) && net.isAdmin(me) ? ` <span class="err">${sancLabel(net.sanctionOf(u.name))}</span>` : '') + `</div></div>${e}` + profileLists(u.name, self) +
       (view.sub ? `<div class="card"><b>${view.sub === 'followers' ? 'Abonnés' : 'Abonnements'}</b> <button data-sub="">✕</button></div>` + peopleList(view.sub === 'followers' ? fl : u.following) : (net.timeline(name, me).map(t => (t.by ? `<p class="mut rt">🔁 ${esc(shown(t.by))} a repartagé</p>` : '') + postHTML(t.post)).join('') || '<p class="mut">Rien ici pour l’instant.</p>'));
-  } else if (view.page === 'mod' && net.isAdmin(me)) {
-    h = modPage(e);
+  } else if ((view.page === 'admin' || view.page === 'mod') && net.isAdmin(me)) {
+    h = adminPage(e);
   } else if (view.page === 'blocks') {
     const row = (n, kind) => `<div class="card person">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)}</span> <button data-${kind}="${esc(n)}">${kind === 'unblock' ? 'Débloquer' : 'Ne plus masquer'}</button></div>`;
     h = `<div class="card"><h2>🚫 Comptes bloqués et masqués</h2><p class="mut">Leurs posts, réponses et messages disparaissent de ton fil. Bloquer coupe aussi les abonnements et les empêche de te répondre, te suivre ou t’écrire ; masquer reste discret.</p></div>${e}
@@ -583,6 +608,7 @@ function groupsPage(e) {
     + `<div class="card"><b>Mes communautés (${mine.length})</b></div>` + (mine.map(row).join('') || '<p class="mut">Tu n’es dans aucune communauté : crée la première ou rejoins-en une ci-dessous.</p>')
     + `<div class="card"><b>Découvrir</b> <input id="g-q" placeholder="Filtrer par nom ou sujet" value="${esc(view.q || '')}" aria-label="Filtrer les communautés"></div>` + (rest.map(row).join('') || '<p class="mut">Rien à découvrir pour l’instant.</p>');
 }
+document.addEventListener('input', ev => { if (ev.target.id === 'adm-q') { adm.q = ev.target.value; const p = ev.target.selectionStart; refresh(); const x = document.getElementById('adm-q'); if (x) { x.focus(); x.setSelectionRange(p, p); } } });
 document.addEventListener('input', ev => { if (ev.target.id === 'g-q') { view.q = ev.target.value; const p = ev.target.selectionStart; refresh(); const x = document.getElementById('g-q'); if (x) { x.focus(); x.setSelectionRange(p, p); } } });
 function groupPage(e, paged) {
   let g; try { g = net.group(view.arg); } catch (x) { return '<div class="card"><p class="mut">Cette communauté n’existe pas ou a été supprimée.</p><button data-page="groups">Communautés</button></div>'; }
@@ -746,7 +772,7 @@ document.addEventListener('click', async ev => {
   } else if ('notiftest' in b.dataset) Notif.show({ id: 'test' + Date.now(), type: 'mention' }, 'Le bocal');
 });
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-tr],*[data-trclose],*[data-lang],*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-mfago],*[data-mfaback],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
+  const d = ev.target.closest('*[data-atab],*[data-asanc],*[data-adelask],*[data-adelno],*[data-adel],*[data-tr],*[data-trclose],*[data-lang],*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-mfago],*[data-mfaback],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
   if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
@@ -846,6 +872,11 @@ document.addEventListener('click', ev => {
   else if ('mute' in D) attempt(() => net.toggleMute(me, D.mute));
   else if ('unmute' in D) attempt(() => net.toggleMute(me, D.unmute));
   else if ('lift' in D) attempt(() => net.liftSanction(me, D.lift));
+  else if ('atab' in D) { adm.tab = D.atab; adm.del = null; err = ''; render(); }
+  else if ('asanc' in D) attempt(async () => { const i = D.asanc.lastIndexOf(':'); await net.adminSanction(me, D.asanc.slice(0, i), D.asanc.slice(i + 1), v('#adm-h'), v('#adm-r')); });
+  else if ('adelask' in D) { adm.del = D.adelask; render(); }
+  else if ('adelno' in D) { adm.del = null; render(); }
+  else if ('adel' in D) attempt(async () => { await net.adminDeleteUser(me, D.adel, v('#adm-r')); adm.del = null; });
   else if ('mod' in D) attempt(async () => { const [pid, act] = D.mod.split(':'); await net.moderate(me, +pid, act, { hours: v('#mh-' + pid) }); });
   else if ('del' in D) attempt(() => net.deletePost(me, +D.del));
   else if ('open' in D) go('thread', +D.open);
@@ -916,7 +947,7 @@ render();
   if (me && Notif.supported() && Notif.seenGet(store, me) === null) Notif.seenSet(store, me, net.notifications(me).reduce((m, n) => Math.max(m, n.id), 0));
   if (new URLSearchParams(location.search).get('notif') && me) view = { page: 'notifs' };
   if (linkMsg && me) { /✔/.test(linkMsg) ? view = { page: 'security', ok: linkMsg } : err = linkMsg; linkMsg = ''; LINK = null; }
-  if (STREAM) await attempt(async () => { if (me !== 'Streamer') openSession(await net.ensureStreamer()); view = { page: 'stats' }; }); else render();
+  if (STREAM) await attempt(async () => { if (me !== 'Streamer') openSession(await net.ensureStreamer()); view = { page: 'admin' }; }); else render();
   // temps réel : le serveur annonce chaque changement (SSE) ; l'interrogation ne sert plus que de secours
   setInterval(() => { if (!sync.connected()) sync.poll().then(feedFresh); }, 2000);
   setInterval(() => { if (sync.connected()) sync.poll().then(feedFresh); }, 20000);
