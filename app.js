@@ -1,5 +1,9 @@
-const net = Social.Net(localStorage);
-let me = localStorage.getItem('twitchgram.me');
+// Vue stream (?stream=1) : session démo admin en mémoire, sans toucher aux vraies données
+const STREAM = new URLSearchParams(location.search).get('stream') === '1';
+const mem = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; }, removeItem(k) { delete this.d[k]; } };
+const store = STREAM ? mem : localStorage;
+const net = Social.Net(store);
+let me = STREAM ? net.seedDemo() : localStorage.getItem('twitchgram.me');
 if (me) { try { net.profile(me); } catch (e) { me = null; } }
 let view = { page: 'feed' };
 const $ = s => document.querySelector(s);
@@ -16,13 +20,13 @@ function postHTML(p, thread) {
   const liked = me && p.likes.includes(me), n = net.replies(p.id).length;
   return `<div class="card post">${av(p.author)}<span class="who" data-user="${p.author}">${esc(p.author)}</span> <span class="mut">· ${ago(p.at)}</span>
   <p>${rich(p.text)}</p><div class="acts"><button data-like="${p.id}" class="${liked ? 'on' : ''}">♥ ${p.likes.length}</button>
-  <button data-open="${p.id}">💬 ${n}</button>${p.author === me ? `<button data-del="${p.id}">🗑</button>` : ''}</div></div>`;
+  <button data-open="${p.id}">💬 ${n}</button>${p.author === me || net.isAdmin(me) ? `<button data-del="${p.id}">🗑</button>` : ''}</div></div>`;
 }
 const composer = (ph, reply) => `<div class="card"><textarea id="txt" maxlength="280" placeholder="${ph}"></textarea><button data-send="${reply || ''}">Publier</button></div>`;
 
 function render() {
   const nav = $('#nav'), app = $('#app');
-  $('#me').innerHTML = me ? `@${esc(me)} <button data-logout>Quitter</button>` : '';
+  $('#me').innerHTML = me ? `${STREAM ? '<b>🔴 STREAM</b> ' : ''}@${esc(me)}${net.isAdmin(me) ? ' 👑 admin' : ''} <button data-logout>Quitter</button>` : '';
   if (!me) {
     nav.innerHTML = '';
     app.innerHTML = `<div class="card"><h2>Bienvenue sur TwitchGram</h2><input id="u" placeholder="Pseudo"><input id="pw" type="password" placeholder="Mot de passe"><input id="bio" placeholder="Bio (inscription)">
@@ -65,9 +69,9 @@ document.addEventListener('click', ev => {
   const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch]');
   if (!d) return;
   const D = d.dataset, v = id => ($(id) || {}).value;
-  if ('login' in D) attempt(() => { me = net.login(v('#u'), v('#pw')); localStorage.setItem('twitchgram.me', me); });
-  else if ('signup' in D) attempt(() => { me = net.signup(v('#u'), v('#pw'), v('#bio')); localStorage.setItem('twitchgram.me', me); });
-  else if ('logout' in D) { me = null; localStorage.removeItem('twitchgram.me'); go('feed'); }
+  if ('login' in D) attempt(() => { me = net.login(v('#u'), v('#pw')); store.setItem('twitchgram.me', me); });
+  else if ('signup' in D) attempt(() => { me = net.signup(v('#u'), v('#pw'), v('#bio')); store.setItem('twitchgram.me', me); });
+  else if ('logout' in D) { me = null; store.removeItem('twitchgram.me'); if (STREAM) me = net.seedDemo(); go('feed'); }
   else if ('page' in D) { err = ''; go(D.page); }
   else if ('send' in D) attempt(() => net.post(me, v('#txt'), D.send ? +D.send : null));
   else if ('like' in D) attempt(() => net.toggleLike(me, +D.like));

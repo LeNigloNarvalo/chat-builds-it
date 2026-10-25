@@ -21,4 +21,9 @@ assert.throws(() => n.deletePost('alice', p.id));
 // persistance : « redémarrage »
 n = Net(mem); assert.strictEqual(n.explore().length, 1); assert.strictEqual(n.followers('bob')[0], 'alice');
 n.deletePost('Bob', p.id); assert.strictEqual(n.db().posts.length, 0);
+// session démo du stream
+const d = Net({ d: {}, getItem(k) { return this.d[k] || null; }, setItem(k, v) { this.d[k] = v; } });
+assert.strictEqual(d.seedDemo(), 'Admin'); assert.strictEqual(d.seedDemo(), 'Admin');
+assert.ok(d.isAdmin('admin') && d.explore().length >= 4 && d.feed('Admin').length > 0 && d.notifications('Admin').length > 0);
+d.deletePost('Admin', d.explore().find(x => x.author === 'Luna').id);
 console.log('ok');

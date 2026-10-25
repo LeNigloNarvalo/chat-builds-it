@@ -46,7 +46,7 @@
       },
       deletePost(by, postId) {
         const p = db.posts.find(x => x.id === postId);
-        need(p && p.author === by, 'Suppression interdite');
+        need(p && (p.author === by || (db.users[by.toLowerCase()] || {}).admin), 'Suppression interdite');
         db.posts = db.posts.filter(x => x.id !== postId && x.replyTo !== postId);
         save();
       },
@@ -85,6 +85,27 @@
       },
       followers: n => Object.values(db.users).filter(u => u.following.includes(user(n).name)).map(u => u.name),
       profile: n => user(n),
+      isAdmin: n => !!(db.users[(n || '').toLowerCase()] || {}).admin,
+      // session démo du stream (?stream=1) : compte admin + données d'exemple, idempotent
+      seedDemo() {
+        if (db.users.admin) return 'Admin';
+        const t = now();
+        const mk = (name, bio, extra) => (db.users[name.toLowerCase()] = Object.assign({ name, pass: hash('demo'), bio, following: [], joined: t - 864e5 * 30 }, extra));
+        mk('Admin', 'Compte de démonstration administrateur 👑', { admin: true });
+        mk('Luna', 'Streameuse & fan de pixel art 🎨', {}); mk('Pixel', 'Je code en direct sur Twitch 💻', {}); mk('Neo', 'Open source, café et chat 🐱', {});
+        db.users.admin.following = ['Luna', 'Pixel', 'Neo']; db.users.luna.following = ['Admin', 'Pixel']; db.users.pixel.following = ['Admin']; db.users.neo.following = ['Admin', 'Luna'];
+        const mkPost = (author, text, mins, likes, replyTo) => { const p = { id: id(), author, text, at: t - mins * 60000, likes, replyTo: replyTo || null }; db.posts.push(p); return p; };
+        const a = mkPost('Luna', 'Bienvenue sur TwitchGram ! 🎉 #twitch #opensource', 120, ['Admin', 'Pixel', 'Neo']);
+        mkPost('Pixel', 'Ce réseau social a été voté par le chat en direct 🔥 #twitch', 90, ['Admin', 'Luna']);
+        const c = mkPost('Neo', 'Qui est là pour le stream de ce soir ? @Admin', 45, ['Luna']);
+        mkPost('Admin', 'En tant qu’admin, je peux modérer tous les posts 👑 #admin', 30, ['Luna', 'Neo']);
+        mkPost('Luna', 'Merci le chat, vous êtes incroyables ! #opensource', 15, ['Admin']);
+        mkPost('Pixel', 'Bravo, super idée !', 100, ['Luna'], a.id);
+        mkPost('Admin', 'Oui, on est là ! 🙌', 40, [], c.id);
+        db.messages.push({ id: id(), from: 'Luna', to: 'Admin', text: 'Salut ! Prêt pour le live ?', at: t - 600000 }, { id: id(), from: 'Admin', to: 'Luna', text: 'Toujours 😎', at: t - 540000 });
+        db.notifs.push({ id: id(), to: 'Admin', from: 'Luna', type: 'like', postId: db.posts[3].id, at: t - 300000, read: false }, { id: id(), to: 'Admin', from: 'Neo', type: 'mention', postId: c.id, at: t - 2700000, read: false }, { id: id(), to: 'Admin', from: 'Pixel', type: 'follow', postId: null, at: t - 3600000, read: false });
+        save(); return 'Admin';
+      },
       send(from, to, text) {
         text = (text || '').trim(); need(text && text.length <= 500, 'Message invalide');
         user(from); const t = user(to);
