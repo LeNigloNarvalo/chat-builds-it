@@ -157,13 +157,20 @@ function Net(storage, now) {
         db.messages = db.messages.filter(m => m.from !== n && m.to !== n);
         for (const r of db.rooms) { r.members = r.members.filter(x => x !== n); r.msgs = r.msgs.filter(m => m.from !== n); delete r.read[lc(n)]; if (r.owner === n) r.owner = r.members[0]; }
         db.rooms = db.rooms.filter(r => r.members.length >= 2); db.msgReports = db.msgReports.filter(r => r.by !== n && r.target !== n);
-        db.questions = (db.questions || []).filter(q => q.to !== n && q.from !== n); db.drafts = db.drafts.filter(d => d.author !== n); db.media = (db.media || []).filter(m => m.owner !== n);
+        db.questions = (db.questions || []).filter(q => q.to !== n && q.from !== n); for (const g of db.orgs || []) { g.members = g.members.filter(m => lc(m.user) !== lc(n)); g.invites = (g.invites || []).filter(i => lc(i.user) !== lc(n)); if (g.transfer && lc(g.transfer.to) === lc(n)) g.transfer = null; } db.orgs = (db.orgs || []).filter(g => g.members.length); db.orgPosts = (db.orgPosts || []).filter(p => db.orgs.some(g => g.id === p.org)); db.drafts = db.drafts.filter(d => d.author !== n); db.media = (db.media || []).filter(m => m.owner !== n);
         db.reposts = db.reposts.filter(r => r.by !== n && !gone.has(r.postId));
         db.reports = db.reports.filter(r => r.by !== n && r.target !== n); db.appeals = (db.appeals || []).filter(a => a.user !== n); db.tickets = (db.tickets || []).filter(x => x.user !== n);
         for (const x of Object.values(db.users)) { if (x.blocked) x.blocked = x.blocked.filter(f => f !== n); if (x.muted) x.muted = x.muted.filter(f => f !== n); }
         db.notifs = db.notifs.filter(x => x.from !== n && x.to !== n && !gone.has(x.postId));
         delete db.users[n.toLowerCase()]; delete db.attempts[n.toLowerCase()];
     };
+    const ORG_KINDS = { brand: 'Marque', asso: 'Association', media: 'Média' }, ORG_ROLES = { owner: 'Propriétaire', reviewer: 'Relecteur', editor: 'Rédacteur' }, ORG_RANK = { editor: 1, reviewer: 2, owner: 3 };
+    const ORG_MAX_OWNED = 5, ORG_TEAM_MAX = 25, ORG_TEXT_MAX = 1000, ORG_DRAFTS_MAX = 50, ORG_LOG_MAX = 500;
+    const orgOf = oid => { const g = (db.orgs || []).find(x => x.id === +oid); need(g, 'Page introuvable'); return g; };
+    const orgNeed = (g, by, min) => { const m = g.members.find(x => lc(x.user) === lc(by)); need(m && ORG_RANK[m.role] >= ORG_RANK[min], min === 'owner' ? 'Réservé au propriétaire de la page' : min === 'reviewer' ? 'Réservé aux relecteurs de la page' : 'Réservé à l’équipe de la page'); return m.role; };
+    const orgLog = (g, by, action, detail) => { (g.log = g.log || []).push({ id: id(), at: now(), by, action, detail }); if (g.log.length > ORG_LOG_MAX) g.log.splice(0, g.log.length - ORG_LOG_MAX); };
+    const orgPublish = (g, p, by, why) => { p.status = 'published'; p.publishedAt = now(); p.publishedBy = by; p.note = ''; orgLog(g, by, 'publish', `${why} · publication #${p.id}`); };
+    const ownedCount = n => (db.orgs || []).filter(x => x.owner === n).length;
     const QA_MAX = 280, QA_PER_ASKER = 3, QA_INBOX_MAX = 200;
     const blockedBy = (author, target) => has((db.users[lc(target)] || {}).blocked, author);
     const ROOM_MAX = 8;
@@ -1255,6 +1262,120 @@ function Net(storage, now) {
         const me = user(by), qs = db.questions || [], i = qs.findIndex(x => x.id === +qid && x.from === me.name && x.status === 'open'); need(i >= 0, 'Question introuvable ou déjà traitée');
         qs.splice(i, 1); save(); return true;
       },
+      // ---- pages d'organisation (marque, asso, média) : équipe de rédacteurs, brouillons partagés, file de validation, journal, transfert ----
+      // rôles : owner (tout), reviewer (valide et publie), editor (rédige et soumet). Journal et brouillons ne sont visibles que de l'équipe.
+      createOrg(by, o) {
+        const me = user(by); o = o || {}; const handle = String(o.handle || '').trim(), title = String(o.title || '').replace(/\s+/g, ' ').trim();
+        need(/^[A-Za-z0-9_]{3,24}$/.test(handle), 'Identifiant de la page : 3 à 24 lettres, chiffres ou _');
+        need(title && title.length <= 60, 'Nom de la page : 1 à 60 caractères');
+        need(ORG_KINDS[o.kind], 'Type de page inconnu');
+        const orgs = db.orgs = db.orgs || [];
+        need(!orgs.some(x => lc(x.handle) === lc(handle)) && !db.users[lc(handle)], 'Cet identifiant est déjà pris');
+        need(orgs.filter(x => x.owner === me.name).length < ORG_MAX_OWNED, `${ORG_MAX_OWNED} pages maximum par compte`);
+        const g = { id: id(), handle, title, kind: o.kind, bio: String(o.bio || '').trim().slice(0, 300), owner: me.name, review: o.review !== false, at: now(), members: [{ user: me.name, role: 'owner', at: now() }], invites: [], transfer: null, log: [] };
+        orgLog(g, me.name, 'create', `Création de la page « ${title} »`); orgs.push(g); save(); return g;
+      },
+      orgs() { return (db.orgs || []).slice().sort((a, b) => a.title.localeCompare(b.title)); },
+      org(oid) { return orgOf(oid); },
+      myOrgs(by) { const me = user(by); return (db.orgs || []).filter(g => g.members.some(m => m.user === me.name)); },
+      orgInvites(by) { const me = user(by); return (db.orgs || []).filter(g => (g.invites || []).some(i => i.user === me.name)).map(g => ({ id: g.id, title: g.title, handle: g.handle, ...g.invites.find(i => i.user === me.name) })); },
+      orgRole(by, oid) { const g = orgOf(oid), m = g.members.find(x => lc(x.user) === lc(by)); return m ? m.role : null; },
+      updateOrg(by, oid, p) {
+        const g = orgOf(oid); orgNeed(g, by, 'owner'); p = p || {};
+        if (p.title !== undefined) { const t = String(p.title).replace(/\s+/g, ' ').trim(); need(t && t.length <= 60, 'Nom de la page : 1 à 60 caractères'); g.title = t; }
+        if (p.bio !== undefined) g.bio = String(p.bio).trim().slice(0, 300);
+        if (p.kind !== undefined) { need(ORG_KINDS[p.kind], 'Type de page inconnu'); g.kind = p.kind; }
+        if (p.review !== undefined) g.review = !!p.review;
+        orgLog(g, user(by).name, 'settings', `Réglages modifiés${p.review !== undefined ? ` · validation ${g.review ? 'obligatoire' : 'facultative'}` : ''}`); save(); return g;
+      },
+      deleteOrg(by, oid) {
+        const g = orgOf(oid); orgNeed(g, by, 'owner');
+        db.orgs = db.orgs.filter(x => x !== g); db.orgPosts = (db.orgPosts || []).filter(p => p.org !== g.id); save(); return true;
+      },
+      inviteToOrg(by, oid, who, role) {
+        const g = orgOf(oid); orgNeed(g, by, 'owner'); const t = user(who); need(ORG_ROLES[role] && role !== 'owner', 'Rôle inconnu');
+        need(!g.members.some(m => m.user === t.name), `@${t.name} fait déjà partie de l’équipe`);
+        need(!has(t.blocked, user(by).name) && !has(user(by).blocked, t.name), 'Impossible d’inviter ce compte');
+        g.invites = (g.invites || []).filter(i => i.user !== t.name); need(g.members.length + g.invites.length < ORG_TEAM_MAX, `Équipe limitée à ${ORG_TEAM_MAX} personnes`);
+        g.invites.push({ user: t.name, role, by: user(by).name, at: now() }); orgLog(g, user(by).name, 'invite', `Invitation de @${t.name} comme ${ORG_ROLES[role].toLowerCase()}`); save(); return true;
+      },
+      cancelOrgInvite(by, oid, who) { const g = orgOf(oid); orgNeed(g, by, 'owner'); g.invites = (g.invites || []).filter(i => lc(i.user) !== lc(who)); orgLog(g, user(by).name, 'invite', `Invitation de @${who} annulée`); save(); return true; },
+      respondOrgInvite(by, oid, accept) {
+        const g = orgOf(oid), me = user(by), i = (g.invites || []).find(x => x.user === me.name); need(i, 'Invitation introuvable');
+        g.invites = g.invites.filter(x => x !== i);
+        if (accept) { g.members.push({ user: me.name, role: i.role, at: now() }); orgLog(g, me.name, 'join', `@${me.name} rejoint l’équipe comme ${ORG_ROLES[i.role].toLowerCase()}`); }
+        else orgLog(g, me.name, 'invite', `@${me.name} a refusé l’invitation`);
+        save(); return !!accept;
+      },
+      setOrgRole(by, oid, who, role) {
+        const g = orgOf(oid); orgNeed(g, by, 'owner'); need(ORG_ROLES[role] && role !== 'owner', 'Rôle inconnu');
+        const m = g.members.find(x => lc(x.user) === lc(who)); need(m && m.role !== 'owner', 'Membre introuvable');
+        orgLog(g, user(by).name, 'role', `@${m.user} : ${ORG_ROLES[m.role].toLowerCase()} → ${ORG_ROLES[role].toLowerCase()}`); m.role = role; save(); return true;
+      },
+      removeFromOrg(by, oid, who) {
+        const g = orgOf(oid), me = user(by), self = lc(who) === lc(me.name); if (!self) orgNeed(g, by, 'owner');
+        const m = g.members.find(x => lc(x.user) === lc(who)); need(m, 'Membre introuvable'); need(m.role !== 'owner', 'Le propriétaire doit d’abord transférer la page');
+        g.members = g.members.filter(x => x !== m); // ses brouillons restent à l'équipe ; ses posts en attente retournent en brouillon
+        for (const p of db.orgPosts || []) if (p.org === g.id && p.status === 'pending' && p.by === m.user) p.status = 'draft';
+        orgLog(g, me.name, 'leave', self ? `@${m.user} a quitté l’équipe` : `@${m.user} retiré de l’équipe`); save(); return true;
+      },
+      // ---- rédaction : brouillons partagés → file de validation → publication au nom de la page ----
+      orgPosts(by, oid, status) {
+        const g = orgOf(oid), member = g.members.some(m => lc(m.user) === lc(by));
+        return (db.orgPosts || []).filter(p => p.org === g.id && (p.status === 'published' || member) && (!status || p.status === status)).sort((a, b) => (b.publishedAt || b.updatedAt) - (a.publishedAt || a.updatedAt));
+      },
+      orgLog(by, oid) { const g = orgOf(oid); orgNeed(g, by, 'editor'); return (g.log || []).slice().reverse(); },
+      saveOrgDraft(by, oid, pid, text) {
+        const g = orgOf(oid); orgNeed(g, by, 'editor'); const me = user(by); text = String(text || '').trim();
+        need(text && text.length <= ORG_TEXT_MAX, `Texte vide ou > ${ORG_TEXT_MAX} caractères`);
+        const ps = db.orgPosts = db.orgPosts || [];
+        if (pid) {
+          const p = ps.find(x => x.id === +pid && x.org === g.id); need(p, 'Brouillon introuvable'); need(p.status === 'draft', 'Seul un brouillon peut être modifié');
+          if (p.text !== text) { p.text = text; p.updatedAt = now(); p.editors = [...new Set([...(p.editors || []), me.name])]; orgLog(g, me.name, 'edit', `Brouillon #${p.id} modifié`); }
+          save(); return p;
+        }
+        need(ps.filter(x => x.org === g.id && x.status !== 'published').length < ORG_DRAFTS_MAX, `${ORG_DRAFTS_MAX} brouillons en cours maximum`);
+        const p = { id: id(), org: g.id, by: me.name, editors: [me.name], text, status: 'draft', at: now(), updatedAt: now(), note: '' };
+        ps.push(p); orgLog(g, me.name, 'draft', `Brouillon #${p.id} créé`); save(); return p;
+      },
+      deleteOrgDraft(by, oid, pid) {
+        const g = orgOf(oid), r = orgNeed(g, by, 'editor'), p = (db.orgPosts || []).find(x => x.id === +pid && x.org === g.id); need(p && p.status !== 'published', 'Brouillon introuvable');
+        need(p.by === user(by).name || r !== 'editor', 'Seuls l’auteur ou un relecteur peuvent supprimer ce brouillon');
+        db.orgPosts = db.orgPosts.filter(x => x !== p); orgLog(g, user(by).name, 'delete', `Brouillon #${p.id} supprimé`); save(); return true;
+      },
+      // un rédacteur soumet à validation ; un relecteur / propriétaire (ou toute l'équipe si la validation est facultative) publie directement
+      submitOrgPost(by, oid, pid) {
+        const g = orgOf(oid), r = orgNeed(g, by, 'editor'), me = user(by), p = (db.orgPosts || []).find(x => x.id === +pid && x.org === g.id); need(p && p.status === 'draft', 'Brouillon introuvable');
+        if (r !== 'editor' || !g.review) { orgPublish(g, p, me.name, 'Publié directement'); save(); return p; }
+        p.status = 'pending'; p.submittedBy = me.name; p.submittedAt = now(); p.note = ''; orgLog(g, me.name, 'submit', `Brouillon #${p.id} soumis à validation`); save(); return p;
+      },
+      decideOrgPost(by, oid, pid, approve, note) {
+        const g = orgOf(oid); orgNeed(g, by, 'reviewer'); const me = user(by), p = (db.orgPosts || []).find(x => x.id === +pid && x.org === g.id); need(p && p.status === 'pending', 'Rien à valider');
+        need(p.submittedBy !== me.name || lc(g.owner) === lc(me.name), 'Un relecteur ne valide pas son propre texte');
+        note = String(note || '').trim().slice(0, 200);
+        if (approve) orgPublish(g, p, me.name, `Validé par @${me.name}`);
+        else { need(note, 'Indiquez un motif pour renvoyer le texte'); p.status = 'draft'; p.note = `@${me.name} : ${note}`; orgLog(g, me.name, 'reject', `Brouillon #${p.id} renvoyé en rédaction · ${note}`); }
+        save(); return p;
+      },
+      retractOrgPost(by, oid, pid) { // retire de la publication (relecteur+) : repasse en brouillon
+        const g = orgOf(oid); orgNeed(g, by, 'reviewer'); const p = (db.orgPosts || []).find(x => x.id === +pid && x.org === g.id && x.status === 'published'); need(p, 'Publication introuvable');
+        p.status = 'draft'; p.updatedAt = now(); orgLog(g, user(by).name, 'retract', `Publication #${p.id} dépubliée`); save(); return p;
+      },
+      // transfert de propriété en deux temps : proposition par le propriétaire, acceptation par un membre de l'équipe
+      proposeOrgTransfer(by, oid, to) {
+        const g = orgOf(oid); orgNeed(g, by, 'owner'); const t = user(to); need(t.name !== user(by).name, 'Vous êtes déjà propriétaire');
+        need(g.members.some(m => m.user === t.name), 'Le futur propriétaire doit déjà faire partie de l’équipe');
+        need(ownedCount(t.name) < ORG_MAX_OWNED, `@${t.name} possède déjà ${ORG_MAX_OWNED} pages`);
+        g.transfer = { to: t.name, by: user(by).name, at: now() }; orgLog(g, user(by).name, 'transfer', `Transfert de propriété proposé à @${t.name}`); save(); return true;
+      },
+      cancelOrgTransfer(by, oid) { const g = orgOf(oid); orgNeed(g, by, 'owner'); need(g.transfer, 'Aucun transfert en cours'); orgLog(g, user(by).name, 'transfer', 'Transfert de propriété annulé'); g.transfer = null; save(); return true; },
+      respondOrgTransfer(by, oid, accept) {
+        const g = orgOf(oid), me = user(by); need(g.transfer && g.transfer.to === me.name, 'Aucun transfert à accepter');
+        if (!accept) { orgLog(g, me.name, 'transfer', `@${me.name} a refusé la propriété`); g.transfer = null; save(); return false; }
+        need(ownedCount(me.name) < ORG_MAX_OWNED, `Vous possédez déjà ${ORG_MAX_OWNED} pages`);
+        const old = g.members.find(m => m.user === g.owner), nu = g.members.find(m => m.user === me.name);
+        if (old) old.role = 'reviewer'; nu.role = 'owner'; orgLog(g, me.name, 'transfer', `Propriété transférée de @${g.owner} à @${me.name}`); g.owner = me.name; g.transfer = null; save(); return true;
+      },
       // masquer : tout disparaît du fil sans prévenir la personne, qui peut toujours écrire
       toggleMute(by, target) {
         const me = user(by), t = user(target);
@@ -1643,6 +1764,8 @@ function Net(storage, now) {
       messages: db.messages.filter(m => m.from === me.name || m.to === me.name),
       notifs: db.notifs.filter(n => n.to === me.name),
       rooms: db.rooms.filter(r => r.members.includes(me.name)).map(r => ({ ...r, msgs: r.msgs.slice(-200) })),
+      orgs: (db.orgs || []).map(g => { const mem = g.members.some(m => m.user === me.name); return mem || me.admin ? g : { ...g, log: [], invites: (g.invites || []).filter(i => i.user === me.name), transfer: g.transfer && g.transfer.to === me.name ? g.transfer : null }; }),
+      orgPosts: (db.orgPosts || []).filter(p => p.status === 'published' || (db.orgs || []).some(g => g.id === p.org && g.members.some(m => m.user === me.name))),
       questions: (db.questions || []).filter(q => q.to === me.name || q.from === me.name).map(q => ({ ...qView(q, q.to === me.name), mine: q.from === me.name })),
       msgReports: me.admin ? db.msgReports.filter(r => r.status === 'open') : db.msgReports.filter(r => r.by === me.name && r.status === 'open').map(r => ({ id: r.id, room: r.room, msgId: r.msgId, by: r.by, status: r.status })),
       peerReadAt: Object.fromEntries(Object.values(db.users).filter(u => u.name !== me.name && !(u.blocked || []).includes(me.name) && !(me.blocked || []).includes(u.name) && (u.dmReadAt || {})[lcm]).map(u => [u.name.toLowerCase(), u.dmReadAt[lcm]])),

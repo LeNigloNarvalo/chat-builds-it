@@ -1115,7 +1115,7 @@ function renderPage() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['fts', '⚡ Recherche rapide'], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['media', `🖼 Médias ${net.media(me).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['qa', `❓ Questions ${net.questions(me, 'open').length || ''}`], ['profile', t('nav.profile')], ['help', '❓ Aide'], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
+  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['fts', '⚡ Recherche rapide'], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['media', `🖼 Médias ${net.media(me).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['qa', `❓ Questions ${net.questions(me, 'open').length || ''}`], ['orgs', `🏢 Pages ${net.orgInvites(me).length + net.myOrgs(me).filter(g => net.orgPosts(me, g.id, 'pending').length && net.orgRole(me, g.id) !== 'editor').length || ''}`], ['profile', t('nav.profile')], ['help', '❓ Aide'], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
   const MAIN = ['feed', 'explore', 'fts', 'dm', 'profile'], btn = ([k, l]) => { const [ic, ...rest] = String(l).split(' '); return `<button data-page="${k}" class="${view.page === k ? 'on' : ''}" aria-label="${esc(rest.join(' ').trim() || l)}">${ic}<span class="lt"> ${rest.join(' ')}</span></button>`; };
   const main = MAIN.map(k => items.find(x => x[0] === k)), more = items.filter(x => !MAIN.includes(x[0]));
   const moreOn = more.some(x => x[0] === view.page), badge = more.some(x => /\d/.test(x[1].replace(/^\S+\s*/, ''))) ? ' •' : '';
@@ -1153,6 +1153,8 @@ function renderPage() {
   else if (view.page === 'groups') h = groupsPage(e);
   else if (view.page === 'events') h = eventsPage(e);
   else if (view.page === 'qa') h = qaPage(e);
+  else if (view.page === 'orgs') h = orgsPage(e);
+  else if (view.page === 'org') h = orgPage(e);
   else if (view.page === 'group') h = groupPage(e, paged);
   else if (view.page === 'lists') h = listsPage(e);
   else if (view.page === 'list') h = listPage(e, paged);
@@ -1473,6 +1475,78 @@ document.addEventListener('click', ev => {
   else if (act === 'withdraw') attempt(() => net.withdrawQuestion(me, +a));
 });
 let qaSent = '';
+// ---- pages d'organisation : création, équipe, brouillons partagés / validation, journal, transfert ----
+const ORG_KINDS = { brand: '🏷 Marque', asso: '🤝 Association', media: '📰 Média' }, ORG_ROLES = { owner: 'Propriétaire', reviewer: 'Relecteur', editor: 'Rédacteur' };
+const ORG_LOG_ICON = { create: '✨', settings: '⚙️', invite: '✉️', join: '👋', role: '🎭', leave: '🚪', draft: '📝', edit: '✏️', delete: '🗑', submit: '📤', reject: '↩️', publish: '📣', retract: '⏪', transfer: '🔑' };
+function orgsPage(e) {
+  const mine = net.myOrgs(me), invites = net.orgInvites(me), others = net.orgs().filter(g => !mine.some(m => m.id === g.id));
+  const card = g => `<div class="card org-card"><b>${esc(g.title)}</b> <span class="badge">${ORG_KINDS[g.kind]}</span> <span class="mut">@${esc(g.handle)} · ${g.members.length} membre${g.members.length > 1 ? 's' : ''}</span><p>${esc(g.bio) || ''}</p><button data-org="open:${g.id}">Ouvrir</button></div>`;
+  return `<div class="card"><h2>🏢 Pages et organisations</h2><p class="mut">Une page de marque, d’association ou de média, distincte de votre profil, où plusieurs rédacteurs publient au nom de la page.</p></div>${e}
+    ${invites.map(i => `<div class="card" role="status"><b>✉️ Invitation</b> : @${esc(i.by)} vous invite dans l’équipe de « ${esc(i.title)} » comme ${ORG_ROLES[i.role].toLowerCase()}. <button class="on" data-org="inv-yes:${i.id}">Accepter</button> <button data-org="inv-no:${i.id}">Refuser</button></div>`).join('')}
+    ${net.myOrgs(me).flatMap(g => g.transfer && g.transfer.to === me ? [`<div class="card" role="status"><b>🔑 Transfert de propriété</b> : @${esc(g.transfer.by)} vous propose de devenir propriétaire de « ${esc(g.title)} ». <button class="on" data-org="tr-yes:${g.id}">Accepter</button> <button data-org="tr-no:${g.id}">Refuser</button></div>`] : []).join('')}
+    <div class="card"><b>＋ Créer une page</b>
+      <label>Nom de la page <input id="org-title" maxlength="60" placeholder="Les Cornichons Réunis"></label>
+      <label>Identifiant <input id="org-handle" maxlength="24" placeholder="cornichons_reunis" autocapitalize="off"></label>
+      <label>Type <select id="org-kind">${Object.entries(ORG_KINDS).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></label>
+      <label>Présentation <textarea id="org-bio" maxlength="300" rows="2"></textarea></label>
+      <label class="inl"><input id="org-review" type="checkbox" checked> Validation obligatoire avant publication pour les rédacteurs</label>
+      <button class="on" data-org="create">Créer la page</button></div>
+    <h3>Mes pages</h3>${mine.map(card).join('') || '<p class="mut">Vous ne faites partie d’aucune équipe.</p>'}
+    ${others.length ? `<h3>Pages publiques</h3>${others.map(card).join('')}` : ''}`;
+}
+function orgPage(e) {
+  let g; try { g = net.org(view.arg); } catch (x) { return '<div class="card"><p class="mut">Cette page n’existe pas ou a été supprimée.</p><button data-page="orgs">← Pages</button></div>'; }
+  const r = net.orgRole(me, g.id), owner = r === 'owner', rev = r === 'owner' || r === 'reviewer', tab = view.tab || (r ? 'drafts' : 'public');
+  const posts = net.orgPosts(me, g.id), by = s => posts.filter(p => p.status === s);
+  const tabs = r ? [['drafts', `📝 Brouillons partagés ${by('draft').length || ''}`], ['queue', `✅ File de validation ${by('pending').length || ''}`], ['published', '📣 Publications'], ['team', `👥 Équipe ${g.members.length}`], ['journal', '📜 Journal'], ['settings', owner ? '⚙️ Réglages et propriété' : '⚙️ Réglages']] : [['public', '📣 Publications'], ['team', `👥 Équipe ${g.members.length}`]];
+  const who = n => `<span class="who" data-user="${esc(n)}">@${esc(n)}</span>`;
+  const pub = p => `<div class="card org-post" data-opid="${p.id}"><span class="mut"><b>${esc(g.title)}</b> · publié ${ago(p.publishedAt)} par ${who(p.by)}${p.publishedBy && p.publishedBy !== p.by ? ` · validé par ${who(p.publishedBy)}` : ''}</span><p>${rich(p.text)}</p>${rev ? `<button class="lnk" data-org="retract:${g.id}:${p.id}">⏪ Dépublier</button>` : ''}</div>`;
+  const draft = p => `<div class="card org-post" data-opid="${p.id}"><span class="mut">#${p.id} · ${who(p.by)} · modifié ${ago(p.updatedAt)}${(p.editors || []).length > 1 ? ' · avec ' + p.editors.filter(x => x !== p.by).map(who).join(', ') : ''}</span>
+    ${p.note ? `<p class="err" role="status">↩️ Renvoyé : ${esc(p.note)}</p>` : ''}<textarea id="org-d-${p.id}" maxlength="1000" rows="3" aria-label="Brouillon ${p.id}">${esc(p.text)}</textarea>
+    <div class="row"><button data-org="save:${g.id}:${p.id}">💾 Enregistrer</button><button class="on" data-org="submit:${g.id}:${p.id}">${r === 'editor' && g.review ? '📤 Soumettre à validation' : '📣 Publier'}</button><button data-org="deldraft:${g.id}:${p.id}">🗑</button></div></div>`;
+  const pend = p => `<div class="card org-post" data-opid="${p.id}"><span class="mut">#${p.id} · ${who(p.by)} · soumis ${ago(p.submittedAt)}</span><p>${rich(p.text)}</p>${rev ? (p.submittedBy === me && !owner ? '<p class="mut">Vous ne pouvez pas valider votre propre texte.</p>' : `<textarea id="org-n-${p.id}" maxlength="200" rows="1" placeholder="Motif (obligatoire pour renvoyer)" aria-label="Motif"></textarea><div class="row"><button class="on" data-org="approve:${g.id}:${p.id}">✅ Valider et publier</button><button data-org="reject:${g.id}:${p.id}">↩️ Renvoyer en rédaction</button></div>`) : '<p class="mut">En attente d’un relecteur.</p>'}</div>`;
+  let body = '';
+  if (tab === 'drafts') body = `<div class="card"><b>＋ Nouveau brouillon partagé</b> <span class="mut">visible et modifiable par toute l’équipe</span><textarea id="org-new" maxlength="1000" rows="3" placeholder="Texte à publier au nom de ${esc(g.title)}…"></textarea><button class="on" data-org="newdraft:${g.id}">Créer le brouillon</button></div>${by('draft').map(draft).join('') || '<p class="mut">Aucun brouillon en cours.</p>'}`;
+  else if (tab === 'queue') body = `<p class="mut">${g.review ? 'Les rédacteurs soumettent leurs textes ici ; un relecteur ou le propriétaire valide.' : 'La validation est facultative sur cette page : seuls les textes déjà soumis apparaissent ici.'}</p>${by('pending').map(pend).join('') || '<p class="mut">Rien à valider.</p>'}`;
+  else if (tab === 'published' || tab === 'public') body = posts.filter(p => p.status === 'published').map(pub).join('') || '<p class="mut">Aucune publication pour l’instant.</p>';
+  else if (tab === 'team') body = `<div class="card">${g.members.map(m => `<p>${av(m.user)} ${who(m.user)} <span class="badge">${ORG_ROLES[m.role]}</span>${owner && m.role !== 'owner' ? ` <select data-orgrole="${g.id}:${esc(m.user)}" aria-label="Rôle de ${esc(m.user)}">${['editor', 'reviewer'].map(k => `<option value="${k}" ${m.role === k ? 'selected' : ''}>${ORG_ROLES[k]}</option>`).join('')}</select> <button class="lnk" data-org="kick:${g.id}:${esc(m.user)}">retirer</button>` : ''}${m.user === me && m.role !== 'owner' ? ` <button class="lnk" data-org="kick:${g.id}:${esc(m.user)}">quitter</button>` : ''}</p>`).join('')}</div>
+    ${owner ? `<div class="card"><b>✉️ Inviter un rédacteur</b><label>Pseudo <input id="org-inv-user" maxlength="30" autocapitalize="off"></label><label>Rôle <select id="org-inv-role"><option value="editor">Rédacteur (rédige, soumet)</option><option value="reviewer">Relecteur (valide, publie)</option></select></label><button class="on" data-org="invite:${g.id}">Inviter</button>
+      ${(g.invites || []).map(i => `<p class="mut">En attente : ${who(i.user)} (${ORG_ROLES[i.role].toLowerCase()}) <button class="lnk" data-org="uninvite:${g.id}:${esc(i.user)}">annuler</button></p>`).join('')}</div>` : ''}`;
+  else if (tab === 'journal') body = `<div class="card"><b>📜 Journal des auteurs</b><p class="mut">Qui a écrit, validé ou publié quoi, et quand. Visible de l’équipe uniquement.</p>${net.orgLog(me, g.id).map(l => `<p>${ORG_LOG_ICON[l.action] || '•'} ${who(l.by)} — ${esc(l.detail)} <span class="mut">· ${ago(l.at)}</span></p>`).join('') || '<p class="mut">Journal vide.</p>'}</div>`;
+  else if (tab === 'settings') body = owner ? `<div class="card"><b>⚙️ Réglages</b><label>Nom <input id="org-s-title" maxlength="60" value="${esc(g.title)}"></label><label>Type <select id="org-s-kind">${Object.entries(ORG_KINDS).map(([k, l]) => `<option value="${k}" ${g.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label><label>Présentation <textarea id="org-s-bio" maxlength="300" rows="2">${esc(g.bio)}</textarea></label>
+      <label class="inl"><input id="org-s-review" type="checkbox" ${g.review ? 'checked' : ''}> Validation obligatoire pour les rédacteurs</label><button class="on" data-org="settings:${g.id}">Enregistrer</button></div>
+    <div class="card"><b>🔑 Transfert de propriété</b>${g.transfer ? `<p>Proposé à ${who(g.transfer.to)} ${ago(g.transfer.at)}. En attente d’acceptation. <button data-org="trcancel:${g.id}">Annuler le transfert</button></p>` : `<p class="mut">Choisissez un membre de l’équipe ; il devra accepter. Vous deviendrez relecteur.</p><label>Nouveau propriétaire <select id="org-tr-to">${g.members.filter(m => m.role !== 'owner').map(m => `<option>${esc(m.user)}</option>`).join('')}</select></label><button data-org="transfer:${g.id}" ${g.members.length < 2 ? 'disabled' : ''}>Proposer le transfert</button>`}</div>
+    <div class="card"><b>🗑 Supprimer la page</b><p class="mut">Supprime la page, ses brouillons et ses publications.</p><button data-org="delete:${g.id}">Supprimer définitivement</button></div>` : '<div class="card"><p>Seul le propriétaire peut modifier les réglages et la propriété de la page.</p></div>';
+  return `<div class="card"><p><button data-page="orgs">← Pages</button></p><h2>🏢 ${esc(g.title)}</h2><p class="mut"><span class="badge">${ORG_KINDS[g.kind]}</span> @${esc(g.handle)} · propriétaire ${who(g.owner)}${r ? ' · vous êtes ' + ORG_ROLES[r].toLowerCase() : ''}</p><p>${esc(g.bio)}</p></div>
+    <div class="card tabs" role="tablist" aria-label="Sections de la page">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${tab === k}" class="${tab === k ? 'on' : ''}" data-org="tab:${k}">${l}</button>`).join('')}</div>${e}${body}`;
+}
+document.addEventListener('change', ev => { const d = ev.target.closest('[data-orgrole]'); if (!d || !me) return; const [id, who] = d.dataset.orgrole.split(':'); attempt(() => net.setOrgRole(me, +id, who, d.value)); });
+document.addEventListener('click', ev => {
+  const d = ev.target.closest('[data-org]'); if (!d || !me) return;
+  const [act, a, b] = d.dataset.org.split(':'), v = id => ($(id) || {}).value, chk = id => !!($(id) || {}).checked;
+  if (act === 'open') { go('org', +a); }
+  else if (act === 'tab') { view.tab = a; err = ''; render(); }
+  else if (act === 'create') attempt(async () => { const g = await net.createOrg(me, { title: v('#org-title'), handle: v('#org-handle'), kind: v('#org-kind'), bio: v('#org-bio'), review: chk('#org-review') }); go('org', g.id); });
+  else if (act === 'inv-yes') attempt(() => net.respondOrgInvite(me, +a, true));
+  else if (act === 'inv-no') attempt(() => net.respondOrgInvite(me, +a, false));
+  else if (act === 'tr-yes') attempt(() => net.respondOrgTransfer(me, +a, true));
+  else if (act === 'tr-no') attempt(() => net.respondOrgTransfer(me, +a, false));
+  else if (act === 'newdraft') attempt(async () => { await net.saveOrgDraft(me, +a, null, v('#org-new')); });
+  else if (act === 'save') attempt(() => net.saveOrgDraft(me, +a, +b, v('#org-d-' + b)));
+  else if (act === 'submit') attempt(async () => { await net.saveOrgDraft(me, +a, +b, v('#org-d-' + b)); await net.submitOrgPost(me, +a, +b); view.tab = net.orgRole(me, +a) === 'editor' && net.org(+a).review ? 'queue' : 'published'; });
+  else if (act === 'deldraft') { if (confirm('Supprimer ce brouillon partagé ?')) attempt(() => net.deleteOrgDraft(me, +a, +b)); }
+  else if (act === 'approve') attempt(() => net.decideOrgPost(me, +a, +b, true, ''));
+  else if (act === 'reject') attempt(() => net.decideOrgPost(me, +a, +b, false, v('#org-n-' + b)));
+  else if (act === 'retract') { if (confirm('Dépublier ce texte ? Il repasse en brouillon.')) attempt(() => net.retractOrgPost(me, +a, +b)); }
+  else if (act === 'invite') attempt(async () => { await net.inviteToOrg(me, +a, v('#org-inv-user').replace(/^@/, '').trim(), v('#org-inv-role')); $('#org-inv-user').value = ''; });
+  else if (act === 'uninvite') attempt(() => net.cancelOrgInvite(me, +a, b));
+  else if (act === 'kick') { if (confirm(b === me ? 'Quitter l’équipe de cette page ?' : `Retirer @${b} de l’équipe ?`)) attempt(async () => { await net.removeFromOrg(me, +a, b); if (b === me) go('orgs'); }); }
+  else if (act === 'settings') attempt(() => net.updateOrg(me, +a, { title: v('#org-s-title'), kind: v('#org-s-kind'), bio: v('#org-s-bio'), review: chk('#org-s-review') }));
+  else if (act === 'transfer') { const to = v('#org-tr-to'); if (to && confirm(`Proposer la propriété à @${to} ? Vous deviendrez relecteur s’il accepte.`)) attempt(() => net.proposeOrgTransfer(me, +a, to)); }
+  else if (act === 'trcancel') attempt(() => net.cancelOrgTransfer(me, +a));
+  else if (act === 'delete') { if (confirm('Supprimer définitivement cette page, ses brouillons et ses publications ?')) attempt(async () => { await net.deleteOrg(me, +a); go('orgs'); }); }
+});
+
 document.addEventListener('click', ev => {
   const d = ev.target.closest('[data-ev]'); if (!d || !me) return;
   const [act, a, b] = d.dataset.ev.split(':'), v = id => ($(id) || {}).value;
