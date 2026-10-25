@@ -176,6 +176,22 @@
     return !!v && (v === u || !!v.admin || (lv === 'followers' || priv) && v.following.includes(u.name));
   }
 
+  // ---- annonces de l'équipe, page de statut et mode maintenance ----
+  const ANN_LEVELS = { info: 'ℹ️ Info', success: '🎉 Nouveauté', warning: '⚠️ Attention', critical: '🚨 Urgent' };
+  const COMPONENTS = { feed: '📰 Fil et publications', dm: '✉️ Messages privés', media: '🖼 Médias et vidéos', login: '🔑 Connexion', api: '🔌 API et webhooks' };
+  const IMPACTS = { degraded: '🟠 Service dégradé', outage: '🔴 Panne', maintenance: '🛠 Maintenance' }, INC_STATES = { investigating: '🔎 Analyse en cours', identified: '🎯 Cause identifiée', monitoring: '👀 Surveillance', resolved: '✅ Résolu' };
+  const MAINT_BLOCK = new Set(['post', 'editPost', 'quote', 'react', 'toggleLike', 'toggleRepost', 'send', 'sendRoom', 'editMessage', 'createRoom', 'createGroup', 'createEvent', 'createList', 'ask', 'answerQuestion', 'vote', 'addMedia', 'publishDraft', 'createOrg', 'submitOrgPost', 'toggleFollow', 'joinGroup', 'updateProfile']);
+  const MAX_ANN = 50, MAX_INC = 100, SEV = { ok: 0, maintenance: 1, degraded: 2, outage: 3 };
+  const activeMaint = (st, t) => { const m = st && st.maintenance; return m && m.on && (!m.until || m.until > t) ? m : null; };
+  const liveAnn = (st, t) => ((st && st.announcements) || []).filter(a => !a.expires || a.expires > t).sort((a, b) => (b.pinned - a.pinned) || (b.at - a.at));
+  // état de chaque composant : le pire entre la maintenance en cours et les incidents ouverts
+  const statusOf = (st, t) => {
+    const out = {}, m = activeMaint(st, t) ? 'maintenance' : 'ok';
+    for (const k of Object.keys(COMPONENTS)) out[k] = (st.incidents || []).filter(i => i.state !== 'resolved' && i.component === k).reduce((w, i) => SEV[i.impact] > SEV[w] ? i.impact : w, m);
+    return out;
+  };
+  const statusView = (db, t) => { const st = db.status || {}; return { announcements: liveAnn(st, t), incidents: (st.incidents || []).slice().sort((x, y) => y.at - x.at || y.id - x.id).slice(0, 30), maintenance: activeMaint(st, t), components: statusOf(st, t), now: t }; };
+
 function Net(storage, now) {
     now = now || Date.now;
     let db;
@@ -2028,6 +2044,51 @@ function Net(storage, now) {
         const g = grp(gid); need(canRead(g, by), 'Communauté privée : demandez à la rejoindre');
         return db.posts.filter(p => p.group === g.id && !p.replyTo && !hiddenFor(by, p.author) && amPostVisible(p, by)).sort((a, b) => b.id - a.id);
       },
+      // ---- annonces de l'équipe, page de statut, maintenance (écriture : administrateurs ; lecture : tout le monde) ----
+      statusBoard() { return statusView(db, now()); },
+      announce(by, o) {
+        need(api.isAdmin(by), 'Réservé à l’équipe'); o = o || {};
+        const title = String(o.title || '').replace(/\s+/g, ' ').trim(), text = String(o.text || '').trim(), hours = Math.floor(Number(o.hours) || 0);
+        need(title.length >= 3 && title.length <= 80, 'Titre : 3 à 80 caractères'); need(text.length <= 600, 'Message : 600 caractères maximum');
+        need(ANN_LEVELS[o.level], 'Niveau inconnu'); need(hours >= 0 && hours <= 720, 'Durée : 0 (illimitée) à 720 heures');
+        const st = db.status = db.status || { announcements: [], incidents: [], maintenance: null };
+        need(liveAnn(st, now()).length < MAX_ANN, 'Trop d’annonces actives : supprimez-en une');
+        const a = { id: id(), title, text, level: o.level, pinned: !!o.pinned, at: now(), by: user(by).name, expires: hours ? now() + hours * 3600000 : null };
+        st.announcements.push(a); audit(by, 'announce', null, `annonce « ${title} » (${o.level})`); save(); return a;
+      },
+      deleteAnnouncement(by, aid) {
+        need(api.isAdmin(by), 'Réservé à l’équipe'); const st = db.status || {}, a = (st.announcements || []).find(x => x.id === aid); need(a, 'Annonce introuvable');
+        st.announcements = st.announcements.filter(x => x !== a); audit(by, 'announce-delete', null, `annonce « ${a.title} » retirée`); save();
+      },
+      // un membre masque une annonce non urgente pour lui seul
+      dismissAnnouncement(by, aid) {
+        const u = user(by), a = ((db.status || {}).announcements || []).find(x => x.id === aid); need(a, 'Annonce introuvable'); need(a.level !== 'critical', 'Une annonce urgente ne peut pas être masquée');
+        u.annSeen = u.annSeen || []; if (!u.annSeen.includes(aid)) u.annSeen.push(aid); if (u.annSeen.length > 200) u.annSeen = u.annSeen.slice(-200); save();
+      },
+      reportIncident(by, o) {
+        need(api.isAdmin(by), 'Réservé à l’équipe'); o = o || {};
+        const title = String(o.title || '').replace(/\s+/g, ' ').trim(), text = String(o.text || '').trim();
+        need(title.length >= 3 && title.length <= 80, 'Titre : 3 à 80 caractères'); need(COMPONENTS[o.component], 'Composant inconnu'); need(IMPACTS[o.impact], 'Impact inconnu'); need(text.length <= 600, 'Message : 600 caractères maximum');
+        const st = db.status = db.status || { announcements: [], incidents: [], maintenance: null };
+        const i = { id: id(), title, component: o.component, impact: o.impact, state: 'investigating', at: now(), by: user(by).name, updates: [{ state: 'investigating', text: text || 'Nous enquêtons.', at: now(), by: user(by).name }] };
+        st.incidents.push(i); if (st.incidents.length > MAX_INC) st.incidents.splice(0, st.incidents.length - MAX_INC);
+        audit(by, 'incident', null, `incident « ${title} » (${o.component} · ${o.impact})`); save(); return i;
+      },
+      updateIncident(by, iid, state, text) {
+        need(api.isAdmin(by), 'Réservé à l’équipe'); const i = ((db.status || {}).incidents || []).find(x => x.id === iid); need(i, 'Incident introuvable');
+        need(INC_STATES[state], 'État inconnu'); text = String(text || '').trim(); need(text.length <= 600, 'Message : 600 caractères maximum'); need(i.state !== 'resolved', 'Incident déjà résolu');
+        i.state = state; i.updates.push({ state, text: text || INC_STATES[state].replace(/^\S+\s/, ''), at: now(), by: user(by).name }); if (state === 'resolved') i.resolvedAt = now();
+        audit(by, 'incident-update', null, `incident « ${i.title} » → ${state}`); save(); return i;
+      },
+      setMaintenance(by, o) {
+        need(api.isAdmin(by), 'Réservé à l’équipe'); o = o || {};
+        const st = db.status = db.status || { announcements: [], incidents: [], maintenance: null };
+        if (!o.on) { if (st.maintenance) { audit(by, 'maintenance-off', null, 'mode maintenance désactivé'); st.maintenance = null; save(); } return null; }
+        const message = String(o.message || '').replace(/\s+/g, ' ').trim(), min = Math.floor(Number(o.minutes) || 0);
+        need(message.length <= 200, 'Message : 200 caractères maximum'); need(min >= 0 && min <= 7 * 1440, 'Durée : 0 (jusqu’à désactivation) à 10080 minutes');
+        st.maintenance = { on: true, message, at: now(), by: user(by).name, until: min ? now() + min * 60000 : null };
+        audit(by, 'maintenance-on', null, 'mode maintenance activé' + (message ? ' · ' + message : '') + (min ? ` · ${min} min` : '')); save(); return st.maintenance;
+      },
       notifications(by, markRead) {
         const bell = normPrefs(user(by).notifPrefs).types;
         const l = db.notifs.filter(n => n.to === user(by).name && !hiddenFor(by, n.from) && !(bell[n.type] && !bell[n.type].bell)).sort((a, b) => b.id - a.id);
@@ -2036,7 +2097,16 @@ function Net(storage, now) {
       },
     };
     // chaque méthode relit d'abord le storage partagé (jamais de cache périmé)
-    for (const k of Object.keys(api)) { const f = api[k]; api[k] = function () { load(); return f.apply(api, arguments); }; }
+    for (const k of Object.keys(api)) {
+      const f = api[k];
+      api[k] = function () {
+        load();
+        // mode maintenance : lecture seule pour tout le monde sauf l'équipe (administrateurs)
+        const m = MAINT_BLOCK.has(k) && activeMaint(db.status, now());
+        if (m && !(db.users[lc(arguments[0])] || {}).admin) throw new Error('🛠 Maintenance en cours : le site est en lecture seule.' + (m.message ? ' ' + m.message : '') + (m.until ? ' Retour prévu à ' + new Date(m.until).toISOString().slice(11, 16) + ' UTC.' : ''));
+        return f.apply(api, arguments);
+      };
+    }
     load();
     return api;
   }
@@ -2048,12 +2118,12 @@ function Net(storage, now) {
     if (!me) throw new Error('Utilisateur introuvable');
     const lcm = me.name.toLowerCase(), users = Object.create(null);
     for (const [k, u] of Object.entries(db.users)) {
-      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, notifPrefs, privacy, deleteAt, onboarding, fy, ...pub } = u;
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, notifPrefs, privacy, deleteAt, onboarding, fy, annSeen, ...pub } = u;
       if (lists) pub.lists = k === lcm ? lists : lists.filter(l => l.public || (l.share && (me.sharedLists || []).some(r => r.owner.toLowerCase() === k && r.id === l.id && r.token === l.share))).map(l => ({ ...l, share: null }));
       if (k !== lcm && !privOk(db, me.name, u.name, 'profile')) Object.assign(pub, { bio: '', link: '', banner: '', display: '', photo: '', locked: true });
       if (k !== lcm && !privOk(db, me.name, u.name, 'posts')) pub.lockedPosts = true;
       pub.followReq = k === lcm ? (u.followReq || []).slice() : (u.followReq || []).filter(x => x === me.name);
-      if (k === lcm) Object.assign(pub, { privacy: normPrivacy(privacy), deleteAt, onboarding, fy, dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
+      if (k === lcm) Object.assign(pub, { annSeen, privacy: normPrivacy(privacy), deleteAt, onboarding, fy, dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
       else if (me.admin) Object.assign(pub, { sanction, sanctions });
       users[k] = JSON.parse(JSON.stringify(pub));
     }
@@ -2080,6 +2150,7 @@ function Net(storage, now) {
       msgReports: me.admin ? db.msgReports.filter(r => r.status === 'open') : db.msgReports.filter(r => r.by === me.name && r.status === 'open').map(r => ({ id: r.id, room: r.room, msgId: r.msgId, by: r.by, status: r.status })),
       peerReadAt: Object.fromEntries(Object.values(db.users).filter(u => u.name !== me.name && !(u.blocked || []).includes(me.name) && !(me.blocked || []).includes(u.name) && (u.dmReadAt || {})[lcm]).map(u => [u.name.toLowerCase(), u.dmReadAt[lcm]])),
       peerRead: Object.fromEntries(Object.values(db.users).filter(u => u.name !== me.name && !(u.blocked || []).includes(me.name) && !(me.blocked || []).includes(u.name) && (u.dmRead || {})[lcm]).map(u => [u.name.toLowerCase(), u.dmRead[lcm]])),
+      status: statusView(db, Date.now()),
       audit: me.admin ? (db.audit || []).slice(-300) : [], totals: me.admin ? { hiddenPosts: db.posts.filter(p => !p.replyTo && p.group && !readable.has(p.group)).length, hiddenMessages: db.messages.filter(m => m.from !== me.name && m.to !== me.name).length } : undefined,
       verifs: me.admin ? (db.verifs || []).slice(-200) : (db.verifs || []).filter(v => v.user === me.name),
       badgeLog: me.admin ? (db.badgeLog || []).slice(-500) : (db.badgeLog || []).filter(e => e.user === me.name),
@@ -2089,6 +2160,6 @@ function Net(storage, now) {
     };
   }
 
-  const exported = { AM, normImport, MSG_EMOJIS, Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
+  const exported = { ANN_LEVELS, COMPONENTS, IMPACTS, INC_STATES, MAINT_BLOCK, AM, normImport, MSG_EMOJIS, Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
   if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);

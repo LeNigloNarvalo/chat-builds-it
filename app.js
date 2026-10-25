@@ -1188,13 +1188,13 @@ function renderPage() {
   }
   if (!me) {
     nav.innerHTML = ''; if (!cap && !capBusy && !STREAM) loadCaptcha();
-    app.innerHTML = `<div class="card"><h2>${t('auth.welcome')}</h2><input id="u" placeholder="${t('auth.user')}"><input id="pw" type="password" placeholder="${t('auth.password')}"><input id="bio" placeholder="${t('auth.bio')}">
+    app.innerHTML = teamBanner() + `<div class="card"><h2>${t('auth.welcome')}</h2><input id="u" placeholder="${t('auth.user')}"><input id="pw" type="password" placeholder="${t('auth.password')}"><input id="bio" placeholder="${t('auth.bio')}">
     <div class="captcha" role="group" aria-labelledby="cap-q"><b>🤖 Défi anti-robot (inscription)</b><p id="cap-q">${esc(cap ? cap.question : 'Chargement du défi…')}</p><input id="cap-a" inputmode="numeric" autocomplete="off" placeholder="Ta réponse" aria-label="Réponse au défi anti-robot"><input id="cap-w" name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0"> <button class="lnk" type="button" data-capnew>↻ Autre question</button></div>
     <button data-login>${t('auth.login')}</button> <button data-signup>${t('auth.signup')}</button> <button class="lnk" data-forgot>${t('auth.forgot')}</button><br><button data-pklogin ${window.PublicKeyCredential ? '' : 'disabled title="Clés d’accès non prises en charge par ce navigateur"'}>🔑 Se connecter avec une clé d’accès</button><br>${oaButtons()}<p class="err">${esc(err)}</p>${linkMsg ? `<p class="ok" role="status">${esc(linkMsg)}</p>` : ''}</div>`;
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['fts', '⚡ Recherche rapide'], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['media', `🖼 Médias ${net.media(me).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['fpriv', `🔒 Compte privé ${net.followRequests(me).length || ''}`], ['qa', `❓ Questions ${net.questions(me, 'open').length || ''}`], ['migrate', '🧳 Import et archives'], ['orgs', `🏢 Pages ${net.orgInvites(me).length + net.myOrgs(me).filter(g => net.orgPosts(me, g.id, 'pending').length && net.orgRole(me, g.id) !== 'editor').length || ''}`], ['profile', t('nav.profile')], ['help', '❓ Aide'], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')], ['quality', `🧪 Qualité ${Quality.errors(store).length || ''}`]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
+  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['fts', '⚡ Recherche rapide'], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['media', `🖼 Médias ${net.media(me).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['fpriv', `🔒 Compte privé ${net.followRequests(me).length || ''}`], ['qa', `❓ Questions ${net.questions(me, 'open').length || ''}`], ['migrate', '🧳 Import et archives'], ['orgs', `🏢 Pages ${net.orgInvites(me).length + net.myOrgs(me).filter(g => net.orgPosts(me, g.id, 'pending').length && net.orgRole(me, g.id) !== 'editor').length || ''}`], ['profile', t('nav.profile')], ['help', '❓ Aide'], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')], ['status', `📡 Statut${(() => { const b = net.statusBoard(); return b.maintenance || Object.values(b.components).some(v => v !== 'ok') ? ' •' : ''; })()}`], ['quality', `🧪 Qualité ${Quality.errors(store).length || ''}`]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
   const MAIN = ['feed', 'explore', 'fts', 'dm', 'profile'], btn = ([k, l]) => { const [ic, ...rest] = String(l).split(' '); return `<button data-page="${k}" class="${view.page === k ? 'on' : ''}" aria-label="${esc(rest.join(' ').trim() || l)}">${ic}<span class="lt"> ${rest.join(' ')}</span></button>`; };
   const main = MAIN.map(k => items.find(x => x[0] === k)), more = items.filter(x => !MAIN.includes(x[0]));
   const moreOn = more.some(x => x[0] === view.page), badge = more.some(x => /\d/.test(x[1].replace(/^\S+\s*/, ''))) ? ' •' : '';
@@ -1235,6 +1235,7 @@ function renderPage() {
   else if (view.page === 'fpriv') h = fprivPage(e);
   else if (view.page === 'migrate') h = migratePage(e);
   else if (view.page === 'quality') h = qualityPage(e);
+  else if (view.page === 'status') h = statusPage(e);
   else if (view.page === 'orgs') h = orgsPage(e);
   else if (view.page === 'org') h = orgPage(e);
   else if (view.page === 'group') h = groupPage(e, paged);
@@ -1371,7 +1372,7 @@ function renderPage() {
   if (view.page === 'dm' && isRoom(view.arg) && unreadDm.rooms[+view.arg.slice(1)] && document.hasFocus()) net.markRoomRead(me, +view.arg.slice(1)).catch(() => {});
   else if (view.page === 'dm' && view.arg && unreadDm.peers[view.arg] && document.hasFocus()) net.markDmRead(me, view.arg).catch(() => {}); // conversation ouverte : lue
   if (!h) h = States.notFound();
-  app.innerHTML = loginBanner() + delBanner() + (mySanc ? `<div class="card err" role="alert">Mesure de modération : ${sancLabel(mySanc)} ${net.hasAppealed(me, 'sanction') ? '<span class="mut">· appel en cours d’examen</span>' : '<button data-appeal="sanction:">📨 Faire appel</button>'}</div>${view.appealing === 'sanction:' ? appealForm('sanction') : ''}` : '') + (!net.isAdmin(me) ? myAppeals() : '') + h;
+  app.innerHTML = teamBanner() + loginBanner() + delBanner() + (mySanc ? `<div class="card err" role="alert">Mesure de modération : ${sancLabel(mySanc)} ${net.hasAppealed(me, 'sanction') ? '<span class="mut">· appel en cours d’examen</span>' : '<button data-appeal="sanction:">📨 Faire appel</button>'}</div>${view.appealing === 'sanction:' ? appealForm('sanction') : ''}` : '') + (!net.isAdmin(me) ? myAppeals() : '') + h;
   a11yPass();
   ensureLive();
   const m = $('#more'); if (m) more.observe(m);
@@ -1842,6 +1843,57 @@ document.addEventListener('click', ev => {
   else if (verb === 'reject') { if (confirm('Refuser définitivement ce post ?')) attempt(() => net.automodReject(me, gid, +a1)); }
 });
 window.addEventListener('storage', ev => { if (view.page === 'group' && view.tab === 'automod' && ev.key === Social.KEY) refresh(); });
+// ---- annonces de l'équipe, page de statut et mode maintenance ----
+// connecté : données de la vue du serveur ; déconnecté : état public (GET /api/status), rafraîchi toutes les 30 s
+const pubStatus = { data: null };
+async function pubStatusLoad() { try { const r = await fetch('/api/status'); if (r.ok) { pubStatus.data = await r.json(); if (!me) render(); } } catch (e) { /* hors-ligne : on garde l'état précédent */ } }
+pubStatusLoad(); setInterval(() => { if (!me && !document.hidden) pubStatusLoad(); }, 30000);
+const stBoard = () => me ? net.statusBoard() : pubStatus.data || { announcements: [], incidents: [], maintenance: null, components: {} };
+const ST_ICON = { ok: '🟢', maintenance: '🛠', degraded: '🟠', outage: '🔴' }, ST_TXT = { ok: 'Opérationnel', maintenance: 'En maintenance', degraded: 'Dégradé', outage: 'Panne' };
+const stTime = ms => I18n.date(ms, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+function teamBanner() {
+  const b = stBoard(), seen = me ? ((net.db().users[me.toLowerCase()] || {}).annSeen || []) : [], m = b.maintenance;
+  const list = b.announcements.filter(a => a.level === 'critical' || !seen.includes(a.id));
+  const mh = m ? `<div class="card err" role="alert"><b>🛠 Maintenance en cours — lecture seule</b>${m.message ? `<br>${esc(m.message)}` : ''}${m.until ? `<br><span class="mut">Fin prévue ${stTime(m.until)}</span>` : ''} <button data-page="status">📡 Page de statut</button></div>` : '';
+  return mh + list.map(a => `<div class="card ann ann-${a.level}" role="${a.level === 'critical' ? 'alert' : 'status'}"><b>${esc(Social.ANN_LEVELS[a.level])} ${a.pinned ? '📌 ' : ''}${esc(a.title)}</b>${a.text ? `<p>${esc(a.text)}</p>` : ''}<span class="mut">Équipe Agora · ${ago(a.at)}</span>${me && a.level !== 'critical' ? ` <button data-st="dismiss:${a.id}" aria-label="Masquer l’annonce ${esc(a.title)}">✕ Masquer</button>` : ''}</div>`).join('');
+}
+const stDraft = { ann: { level: 'info' }, inc: { component: 'feed', impact: 'degraded' }, maint: {} };
+function statusPage(e) {
+  const b = net.statusBoard(), adm = net.isAdmin(me), worst = Object.values(b.components).reduce((w, v) => (['ok', 'maintenance', 'degraded', 'outage'].indexOf(v) > ['ok', 'maintenance', 'degraded', 'outage'].indexOf(w) ? v : w), 'ok');
+  const headline = { ok: '🟢 Tous les systèmes fonctionnent', maintenance: '🛠 Maintenance en cours', degraded: '🟠 Certains services sont dégradés', outage: '🔴 Panne en cours' }[worst];
+  const comps = Object.entries(Social.COMPONENTS).map(([k, l]) => `<li>${esc(l)} <b class="${b.components[k] === 'ok' ? 'ok' : b.components[k] === 'outage' ? 'err' : ''}">${ST_ICON[b.components[k]]} ${ST_TXT[b.components[k]]}</b></li>`).join('');
+  const incs = b.incidents.map(i => `<div class="card"><b>${esc(Social.IMPACTS[i.impact])} · ${esc(i.title)}</b> <span class="mut">${esc(Social.COMPONENTS[i.component])} · ${esc(Social.INC_STATES[i.state])} · ouvert ${ago(i.at)}</span>
+    <ul class="diag">${i.updates.slice().reverse().map(u => `<li><b>${esc(Social.INC_STATES[u.state])}</b> <span class="mut">${stTime(u.at)}</span><br>${esc(u.text)}</li>`).join('')}</ul>
+    ${adm && i.state !== 'resolved' ? `<div class="row"><select id="st-ist-${i.id}" aria-label="Nouvel état">${Object.entries(Social.INC_STATES).map(([k, l]) => `<option value="${k}" ${k === 'resolved' ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select><input id="st-itx-${i.id}" maxlength="600" placeholder="Message de mise à jour" aria-label="Message de mise à jour"><button data-st="upd:${i.id}">Publier la mise à jour</button></div>` : ''}</div>`).join('') || '<div class="card mut">Aucun incident récent. 🎉</div>';
+  const anns = b.announcements.map(a => `<div class="row"><span><b>${esc(Social.ANN_LEVELS[a.level])} ${a.pinned ? '📌 ' : ''}${esc(a.title)}</b> <span class="mut">${ago(a.at)}${a.expires ? ' · expire ' + stTime(a.expires) : ''}</span>${a.text ? `<br>${esc(a.text)}` : ''}</span>${adm ? `<button data-st="annrm:${a.id}">🗑 Retirer</button>` : ''}</div>`).join('') || '<p class="mut">Aucune annonce active.</p>';
+  const d = stDraft, m = b.maintenance;
+  const admin = !adm ? '' : `<div class="card"><h3>🛠 Mode maintenance</h3>${m ? `<p class="err"><b>Activé</b> par @${esc(m.by)} ${ago(m.at)}${m.until ? ' · fin ' + stTime(m.until) : ' · jusqu’à désactivation'}${m.message ? '<br>' + esc(m.message) : ''}</p><button data-st="maint:off">✅ Terminer la maintenance</button>`
+      : `<p class="mut">Le site passe en lecture seule pour les membres (publier, écrire, réagir… sont bloqués). L’équipe garde la main. Un bandeau s’affiche pour tout le monde, même sans connexion.</p><label>Message pour les membres<input id="st-mmsg" maxlength="200" placeholder="ex. Mise à jour de la base de données" value="${esc(d.maint.message || '')}"></label>
+      <label>Durée (minutes, 0 = jusqu’à désactivation)<input id="st-mmin" type="number" min="0" max="10080" value="${esc(d.maint.minutes == null ? 30 : d.maint.minutes)}"></label><button data-st="maint:on">🛠 Activer la maintenance</button>`}</div>
+    <div class="card"><h3>📣 Nouvelle annonce</h3><label>Titre<input id="st-atitle" maxlength="80" value="${esc(d.ann.title || '')}"></label><label>Message<textarea id="st-atext" maxlength="600">${esc(d.ann.text || '')}</textarea></label>
+      <div class="row"><label>Niveau <select id="st-alevel">${Object.entries(Social.ANN_LEVELS).map(([k, l]) => `<option value="${k}" ${d.ann.level === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label><label>Durée (heures, 0 = illimitée)<input id="st-ahours" type="number" min="0" max="720" value="${esc(d.ann.hours == null ? 0 : d.ann.hours)}"></label><label><input id="st-apin" type="checkbox" ${d.ann.pinned ? 'checked' : ''}> 📌 Épingler</label></div><button data-st="ann">📣 Publier l’annonce</button></div>
+    <div class="card"><h3>🚨 Signaler un incident</h3><label>Titre<input id="st-ititle" maxlength="80" value="${esc(d.inc.title || '')}"></label><label>Détails<textarea id="st-itext" maxlength="600">${esc(d.inc.text || '')}</textarea></label>
+      <div class="row"><label>Composant <select id="st-icomp">${Object.entries(Social.COMPONENTS).map(([k, l]) => `<option value="${k}" ${d.inc.component === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label><label>Impact <select id="st-iimp">${Object.entries(Social.IMPACTS).map(([k, l]) => `<option value="${k}" ${d.inc.impact === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label></div><button data-st="inc">🚨 Ouvrir l’incident</button></div>`;
+  return `<div class="card"><h2>📡 État du service</h2><p class="${worst === 'ok' ? 'ok' : worst === 'outage' ? 'err' : ''}" role="status"><b>${headline}</b></p><ul class="diag">${comps}</ul>${notice ? `<p class="ok" role="status">${esc(notice)}</p>` : ''}${e}</div>
+    <div class="card"><h3>📣 Annonces de l’équipe</h3>${anns}</div>${admin}<div class="card"><h3>🧾 Incidents</h3></div>${incs}`;
+}
+function stRead() { // relit les champs du formulaire dans les brouillons (jamais perdus au rafraîchissement)
+  const v = id => { const x = document.getElementById(id); return x ? x.value : undefined; }, c = id => { const x = document.getElementById(id); return x ? x.checked : undefined; };
+  if (v('st-atitle') !== undefined) stDraft.ann = { title: v('st-atitle'), text: v('st-atext'), level: v('st-alevel'), hours: v('st-ahours'), pinned: c('st-apin') };
+  if (v('st-ititle') !== undefined) stDraft.inc = { title: v('st-ititle'), text: v('st-itext'), component: v('st-icomp'), impact: v('st-iimp') };
+  if (v('st-mmsg') !== undefined) stDraft.maint = { message: v('st-mmsg'), minutes: v('st-mmin') };
+}
+document.addEventListener('click', ev => {
+  const b = ev.target.closest('[data-st]'); if (!b || !me) return;
+  const [verb, a1] = b.dataset.st.split(':'); stRead();
+  if (verb === 'dismiss') attempt(() => net.dismissAnnouncement(me, +a1));
+  else if (verb === 'ann') attempt(async () => { await net.announce(me, stDraft.ann); stDraft.ann = { level: 'info' }; notice = 'Annonce publiée ✔'; });
+  else if (verb === 'annrm') { if (confirm('Retirer cette annonce pour tout le monde ?')) attempt(() => net.deleteAnnouncement(me, +a1)); }
+  else if (verb === 'inc') attempt(async () => { await net.reportIncident(me, stDraft.inc); stDraft.inc = { component: 'feed', impact: 'degraded' }; notice = 'Incident ouvert ✔'; });
+  else if (verb === 'upd') attempt(async () => { await net.updateIncident(me, +a1, document.getElementById('st-ist-' + a1).value, document.getElementById('st-itx-' + a1).value); notice = 'Mise à jour publiée ✔'; });
+  else if (verb === 'maint') attempt(async () => { await net.setMaintenance(me, a1 === 'on' ? { on: true, message: stDraft.maint.message, minutes: stDraft.maint.minutes } : { on: false }); stDraft.maint = {}; notice = a1 === 'on' ? 'Maintenance activée 🛠' : 'Maintenance terminée ✔'; });
+});
+window.addEventListener('storage', ev => { if (ev.key === Social.KEY && (view.page === 'status' || !me)) refresh(); });
 // ---- listes de comptes ----
 function listsPage(e) {
   const mine = net.lists(me, me), rec = net.sharedLists(me);
