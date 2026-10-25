@@ -30,7 +30,29 @@
   // mot de passe : jamais en clair, « sel$SHA-256(sel + mot de passe) »
   async function hashPw(pw, salt) { salt = salt || randHex(16); return salt + '$' + await sha(salt + pw); }
 
-  function Net(storage, now) {
+    // ---- préférences de notifications (par compte) : pour chaque type, cloche / push / e-mail ; heures calmes ; résumé quotidien ----
+  const NP_TYPES = ['mention', 'dm', 'reply', 'follow'], NP_CHANNELS = ['bell', 'push', 'email'];
+  const NP_DEFAULT = { mention: { bell: true, push: true, email: false }, dm: { bell: false, push: true, email: false }, reply: { bell: true, push: true, email: false }, follow: { bell: true, push: true, email: false } };
+  const hhmm = v => { const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(v || '')); return m ? m[0] : null; };
+  const toMin = v => +v.slice(0, 2) * 60 + +v.slice(3);
+  function normPrefs(o) {
+    o = o || {}; const types = {};
+    for (const t of NP_TYPES) { types[t] = {}; for (const c of NP_CHANNELS) types[t][c] = o.types && o.types[t] && typeof o.types[t][c] === 'boolean' ? o.types[t][c] : NP_DEFAULT[t][c]; }
+    const q = o.quiet || {}, d = o.digest || {};
+    return { types, quiet: { on: !!q.on, from: hhmm(q.from) || '22:00', to: hhmm(q.to) || '08:00' }, digest: { on: !!d.on, hour: Math.min(23, Math.max(0, Math.floor(+d.hour))) || (d.hour === 0 ? 0 : 8) },
+      tz: Math.abs(+o.tz) <= 840 ? Math.round(+o.tz) || 0 : 0, since: +o.since || 0, last: +o.last || 0 };
+  }
+  // minutes écoulées depuis minuit, à l'heure de l'utilisateur (tz = Date.getTimezoneOffset() de son navigateur)
+  const localMin = (at, tz) => ((Math.floor(at / 60000) - tz) % 1440 + 1440) % 1440;
+  // heures calmes : fenêtre [from, to[ qui peut passer minuit
+  function inQuiet(p, at) {
+    if (!p.quiet.on) return false;
+    const a = toMin(p.quiet.from), b = toMin(p.quiet.to), m = localMin(at == null ? Date.now() : at, p.tz);
+    return a === b ? false : a < b ? m >= a && m < b : m >= a || m < b;
+  }
+  const NP_LABEL = { mention: 'vous a mentionné', dm: 'vous a écrit', reply: 'a répondu à votre post', follow: 'vous suit maintenant', like: 'a aimé votre post', repost: 'a repartagé votre post', quote: 'a cité votre post', react: 'a réagi à votre post', poll: 'sondage terminé', group: 'activité dans une communauté', search: 'nouveaux résultats d’une recherche enregistrée', sanction: 'mesure de modération', hide: 'post masqué', appeal: 'appel de modération' };
+
+function Net(storage, now) {
     now = now || Date.now;
     let db;
     const load = () => {
@@ -500,6 +522,44 @@
         }
         if (n) save(); return n;
       },
+      // ---- préférences de notifications ----
+      notifPrefs(by) { return normPrefs(user(by).notifPrefs); },
+      setNotifPrefs(by, p) {
+        const u = user(by), old = normPrefs(u.notifPrefs), n = normPrefs(p);
+        need(p && typeof p === 'object', 'Préférences invalides');
+        if (n.quiet.on) need(hhmm(p.quiet && p.quiet.from) && hhmm(p.quiet.to), 'Heures calmes invalides (HH:MM)');
+        const mailOn = x => NP_TYPES.some(t => x.types[t].email);
+        n.since = mailOn(n) ? (mailOn(old) && old.since ? old.since : now()) : 0; // seuls les événements postérieurs à l'activation partent par e-mail
+        n.last = old.last; if (n.digest.on && !old.digest.on) n.last = 0;
+        u.notifPrefs = n; save(); return n;
+      },
+      // travail d'envoi pour le serveur : e-mails immédiats (hors heures calmes) et résumé quotidien ; marque ce qui part, renvoie [{ to, subject, text }]
+      mailJobs(base, at) {
+        at = at || now(); const jobs = [], link = (base || '') + '/?notif=1'; let dirty = false;
+        for (const u of Object.values(db.users)) {
+          if (!u.email) continue;
+          const p = normPrefs(u.notifPrefs), mine = db.notifs.filter(n => n.to === u.name && !n.read && !n.mailed && !hiddenFor(u.name, n.from));
+          const line = n => `• ${n.from ? '@' + n.from + ' ' : ''}${NP_LABEL[n.type] || n.type}${n.count > 1 ? ' (×' + n.count + ')' : ''}`;
+          const live = p.since ? mine.filter(n => NP_TYPES.includes(n.type) && p.types[n.type].email && n.at >= p.since) : [];
+          if (live.length && !inQuiet(p, at)) {
+            live.forEach(n => (n.mailed = true)); dirty = true;
+            jobs.push({ to: u.email, subject: `Cornichon : ${live.length} nouvelle${live.length > 1 ? 's' : ''} notification${live.length > 1 ? 's' : ''}`, text: `Bonjour @${u.name},\n\n${live.map(line).join('\n')}\n\nOuvrir Cornichon : ${link}\n\nVos préférences : onglet « Alertes » de l'appli.` });
+          }
+          if (p.digest.on) {
+            const today = Math.floor((at / 60000 - p.tz) / 1440), lastDay = p.last ? Math.floor((p.last / 60000 - p.tz) / 1440) : -1;
+            if (lastDay < today && localMin(at, p.tz) >= p.digest.hour * 60 && !inQuiet(p, at)) {
+              const missed = mine.filter(n => n.at > Math.max(p.last, at - 86400000) && !(n.mailed));
+              u.notifPrefs = Object.assign({}, p, { last: at }); dirty = true;
+              if (missed.length) {
+                missed.forEach(n => (n.mailed = true));
+                const by = {}; for (const n of missed) by[n.type] = (by[n.type] || 0) + (n.count || 1);
+                jobs.push({ to: u.email, subject: `Cornichon : votre résumé du jour (${missed.length} activité${missed.length > 1 ? 's' : ''} manquée${missed.length > 1 ? 's' : ''})`, text: `Bonjour @${u.name},\n\nVoici ce que vous avez manqué :\n${Object.entries(by).map(([t, c]) => `• ${c} × ${NP_LABEL[t] || t}`).join('\n')}\n\nDétail :\n${missed.slice(-15).map(line).join('\n')}\n\nOuvrir Cornichon : ${link}` });
+              }
+            }
+          }
+        }
+        if (dirty) save(); return jobs;
+      },
       trending() {
         const c = {};
         for (const p of db.posts) if (!p.group) for (const t of p.text.match(/#\w+/g) || []) c[t.toLowerCase()] = (c[t.toLowerCase()] || 0) + 1;
@@ -613,6 +673,9 @@
         const m = { id: id(), from: user(from).name, to: t.name, text, at: now() };
         if (images.length) m.images = images;
         db.messages.push(m);
+        // entrée « dm » (une par expéditeur tant qu'elle n'est pas lue) : visible dans la cloche selon les préférences, base des e-mails et du résumé
+        const open = db.notifs.find(n => n.type === 'dm' && n.to === t.name && n.from === m.from && !n.read);
+        if (open) { open.count = (open.count || 1) + 1; open.at = m.at; } else if (t.name !== m.from) db.notifs.push({ id: id(), to: t.name, from: m.from, type: 'dm', postId: null, at: m.at, read: false, count: 1 });
         save();
       },
       // ---- messages non lus : curseur « dernier message lu » par interlocuteur, stocké sur le compte ----
@@ -621,7 +684,7 @@
         const last = db.messages.filter(m => m.from === t.name && m.to === me.name).reduce((a, m) => Math.max(a, m.id), 0);
         const r = me.dmRead = me.dmRead || {};
         if ((r[k] || 0) >= last) return false;
-        r[k] = last; save(); return true;
+        r[k] = last; for (const n of db.notifs) if (n.type === 'dm' && n.to === me.name && lc(n.from) === k) n.read = true; save(); return true;
       },
       // { total, peers: { pseudo: n } } : messages reçus après le curseur de lecture, hors comptes bloqués/masqués
       unreadDm(by) {
@@ -918,7 +981,8 @@
         return db.posts.filter(p => p.group === g.id && !p.replyTo && !hiddenFor(by, p.author)).sort((a, b) => b.id - a.id);
       },
       notifications(by, markRead) {
-        const l = db.notifs.filter(n => n.to === user(by).name && !hiddenFor(by, n.from)).sort((a, b) => b.id - a.id);
+        const bell = normPrefs(user(by).notifPrefs).types;
+        const l = db.notifs.filter(n => n.to === user(by).name && !hiddenFor(by, n.from) && !(bell[n.type] && !bell[n.type].bell)).sort((a, b) => b.id - a.id);
         if (markRead) { l.forEach(n => (n.read = true)); save(); }
         return l;
       },
@@ -936,9 +1000,9 @@
     if (!me) throw new Error('Utilisateur introuvable');
     const lcm = me.name.toLowerCase(), users = Object.create(null);
     for (const [k, u] of Object.entries(db.users)) {
-      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, ...pub } = u;
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, notifPrefs, ...pub } = u;
       if (lists) pub.lists = k === lcm ? lists : lists.filter(l => l.public || (l.share && (me.sharedLists || []).some(r => r.owner.toLowerCase() === k && r.id === l.id && r.token === l.share))).map(l => ({ ...l, share: null }));
-      if (k === lcm) Object.assign(pub, { dismissed, topics, searches, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
+      if (k === lcm) Object.assign(pub, { dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
       else if (me.admin) Object.assign(pub, { sanction });
       users[k] = JSON.parse(JSON.stringify(pub));
     }
@@ -961,6 +1025,6 @@
     };
   }
 
-  const exported = { Net, snapshot, KEY, MAX_IMAGES, cleanImages, REASONS };
+  const exported = { Net, snapshot, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, REASONS };
   if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);

@@ -151,18 +151,19 @@ const clearOffline = () => { if ('serviceWorker' in navigator && navigator.servi
 // à chaque changement de données : affiche les nouvelles mentions / réponses / abonnés selon les réglages
 // nouveaux messages privés reçus (via le flux temps réel) : notification système si l'appli est en arrière-plan
 let dmSeen = null;
+const acct = () => ({ prefs: net.notifPrefs(me), inQuiet: Social.inQuiet });
 function dmNotify() {
   const ids = net.db().messages.filter(m => m.to === me).map(m => m.id), top = ids.reduce((a, b) => Math.max(a, b), 0);
   if (dmSeen === null) { dmSeen = top; return; }
   const fresh = net.db().messages.filter(m => m.to === me && m.id > dmSeen && !net.isHidden(me, m.from)); dmSeen = Math.max(dmSeen, top);
-  if (!fresh.length || typeof Notification === 'undefined' || Notification.permission !== 'granted' || !Notif.load(store).enabled) return;
+  if (!fresh.length || typeof Notification === 'undefined' || Notification.permission !== 'granted' || !Notif.load(store).enabled || !Notif.allowed(acct(), 'dm')) return;
   if (!document.hidden && view.page === 'dm' && fresh.every(m => m.from === view.arg)) return;
   const m = fresh[fresh.length - 1];
   try { new Notification('✉️ ' + shown(m.from), { body: (m.text || '📷 image').slice(0, 100), icon: 'icon.svg', tag: 'dm-' + m.from }); } catch (e) {}
 }
 function notifyNew() {
   if (!me || !Notif.supported()) return;
-  const list = net.notifications(me), r = Notif.pick(list, Notif.load(store), Notif.seenGet(store, me));
+  const list = net.notifications(me), r = Notif.pick(list, Notif.load(store), Notif.seenGet(store, me), acct());
   Notif.seenSet(store, me, r.seen);
   dmNotify();
   if (Notification.permission !== 'granted') return;
@@ -261,6 +262,30 @@ function langCard() {
   return `<div class="card" role="group" aria-labelledby="h-lang"><h2 id="h-lang">${t('lang.title')}</h2>
     <b id="l-lang">${t('lang.label')}</b><div class="row" role="group" aria-labelledby="l-lang"><button data-lang="auto" aria-pressed="${langPref === 'auto'}" class="${langPref === 'auto' ? 'on' : ''}">${t('lang.auto', { n: langName(I18n.detect(browserLangs())) })}</button>${Object.entries(I18n.LANGS).map(([k, l]) => `<button data-lang="${k}" lang="${k}" aria-pressed="${langPref === k}" class="${langPref === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <p class="mut" role="status">${t('lang.sample', { date: I18n.dateTime(now, { dateStyle: 'full', timeStyle: 'short' }), num: I18n.num(1234567.89) })}</p><p class="mut">${t('lang.help')}</p></div>`;
+}
+// ---- centre de préférences de notifications : par type, cloche / push / e-mail, heures calmes, résumé quotidien (enregistrés sur le compte) ----
+const NP_LABELS = { mention: '@ Mentions', dm: '✉️ Messages privés', reply: '💬 Réponses', follow: '👤 Nouveaux abonnés' }, NP_CH = [['bell', '🔔 Cloche'], ['push', '📲 Push'], ['email', '📧 E-mail']];
+function prefsPage() {
+  const p = net.notifPrefs(me), mail = net.profile(me).email, np = Notif.load(store), quiet = Social.inQuiet(p), hours = Array.from({ length: 24 }, (_, i) => i);
+  return `<div class="card" role="group" aria-labelledby="h-np"><h2 id="h-np">🎛️ Préférences de notifications</h2>
+    <p class="mut">Choisis, pour chaque type d’activité, où elle t’alerte. Les réglages sont enregistrés sur ton compte${quiet ? ' · <b>🌙 heures calmes en cours</b>' : ''}.</p>
+    <table class="np" style="width:100%;border-collapse:collapse"><thead><tr><th scope="col" style="text-align:left">Type</th>${NP_CH.map(([, l]) => `<th scope="col">${l}</th>`).join('')}</tr></thead><tbody>
+    ${Social.NP_TYPES.map(k => `<tr><th scope="row" style="text-align:left">${NP_LABELS[k]}</th>${NP_CH.map(([c, l]) => `<td style="text-align:center"><input type="checkbox" data-np="${k}:${c}" aria-label="${NP_LABELS[k]} · ${l}" ${p.types[k][c] ? 'checked' : ''}></td>`).join('')}</tr>`).join('')}</tbody></table>
+    <p class="mut">${np.enabled && perm === 'granted' ? '📲 Push actif sur cet appareil.' : '📲 Le push demande d’activer les notifications de cet appareil dans les <button data-page="settings">Réglages</button>.'} ${mail ? `📧 E-mails envoyés à ${esc(mail)}.` : '📧 Pas d’adresse vérifiée : ajoute-la dans <button data-page="security">Sécurité</button> pour recevoir des e-mails.'}</p></div>
+  <div class="card" role="group" aria-labelledby="h-nq"><h2 id="h-nq">🌙 Heures calmes</h2>
+    <label class="inl"><input type="checkbox" id="np-qon" data-npq ${p.quiet.on ? 'checked' : ''}> Ne pas m’alerter (push et e-mail) pendant cette plage</label>
+    <div class="row"><label class="inl">De <input type="time" id="np-qfrom" data-npq value="${p.quiet.from}"></label> <label class="inl">à <input type="time" id="np-qto" data-npq value="${p.quiet.to}"></label></div>
+    <p class="mut">La cloche continue de se remplir ; ce qui arrive la nuit reste dans le résumé ou part en une fois à la fin de la plage.</p></div>
+  <div class="card" role="group" aria-labelledby="h-nd"><h2 id="h-nd">📰 Résumé quotidien par e-mail</h2>
+    <label class="inl"><input type="checkbox" id="np-don" data-npq ${p.digest.on ? 'checked' : ''} ${mail ? '' : 'disabled'}> Recevoir chaque jour un résumé des activités manquées (non lues)</label>
+    <label class="inl">vers <select id="np-dhour" data-npq>${hours.map(i => `<option value="${i}" ${p.digest.hour === i ? 'selected' : ''}>${String(i).padStart(2, '0')} h</option>`).join('')}</select></label>
+    <p class="mut">${mail ? 'Un seul e-mail par jour, seulement s’il y a du nouveau.' : 'Nécessite une adresse e-mail vérifiée.'}</p></div>`;
+}
+async function savePrefs() {
+  const p = { types: {}, quiet: { on: document.getElementById('np-qon').checked, from: document.getElementById('np-qfrom').value, to: document.getElementById('np-qto').value }, digest: { on: document.getElementById('np-don').checked, hour: +document.getElementById('np-dhour').value }, tz: new Date().getTimezoneOffset() };
+  for (const k of Social.NP_TYPES) p.types[k] = {}; document.querySelectorAll('[data-np]').forEach(i => { const [k, c] = i.dataset.np.split(':'); p.types[k][c] = i.checked; });
+  if (p.quiet.on && (!p.quiet.from || !p.quiet.to)) { err = 'Heures calmes : choisis une heure de début et de fin'; return render(); }
+  await attempt(async () => { await net.setNotifPrefs(me, p); });
 }
 function notifCard() {
   const np = Notif.load(store), ok = Notif.supported(), on = np.enabled && perm === 'granted';
@@ -492,7 +517,7 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  nav.innerHTML = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['theme', t('nav.theme')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : [])
+  nav.innerHTML = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : [])
     .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
   // onglets du fil : global + une entrée par liste (les siennes)
@@ -549,9 +574,9 @@ function render() {
       (bare ? `<p class="mut">${r.posts.length} post${r.posts.length > 1 ? 's' : ''}${r.users.length ? ` · ${r.users.length} compte${r.users.length > 1 ? 's' : ''}` : ''} · tri : ${o.sort === 'popular' ? 'populaire' : 'récent'}</p>` : '') +
       r.users.map(u => `<div class="card">${av(u.name)}<span class="who" data-user="${u.name}">${esc(shown(u.name))}</span> <span class="mut">${esc(u.bio)}</span></div>`).join('') + list(r.posts);
   } else if (view.page === 'notifs') {
-    const L = { sanction: 'a pris une mesure de modération contre votre compte', like: 'a aimé votre post', reply: 'a répondu à votre post', mention: 'vous a mentionné', follow: 'vous suit', repost: 'a repartagé votre post', quote: 'a cité votre post', react: 'a réagi à votre post', group: Notif.TEXT.group, poll: 'Votre sondage est terminé : voir les résultats', search: 'a de nouveaux résultats' };
+    const L = { dm: 'vous a écrit', sanction: 'a pris une mesure de modération contre votre compte', like: 'a aimé votre post', reply: 'a répondu à votre post', mention: 'vous a mentionné', follow: 'vous suit', repost: 'a repartagé votre post', quote: 'a cité votre post', react: 'a réagi à votre post', group: Notif.TEXT.group, poll: 'Votre sondage est terminé : voir les résultats', search: 'a de nouveaux résultats' };
     const gname = id => { try { return net.group(id).name; } catch (x) { return 'une communauté supprimée'; } };
-    h = net.notifications(me, true).map(n => `<div class="card" ${n.type === 'search' ? `data-ssopen="${n.search}"` : n.type === 'group' ? `data-cmopen="${n.group}"` : n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}>${n.type === 'search' ? `🔎 <b>${esc(n.name)}</b> : ${n.count} nouveau${n.count > 1 ? 'x' : ''} résultat${n.count > 1 ? 's' : ''}` : ''}${n.type === 'search' ? '' : n.from ? `<b>${esc(n.from)}</b> ` : '📊 '}${n.type === 'react' && n.emoji ? n.emoji + ' ' : ''}${n.type === 'group' ? `${L.group[n.what] || 'communauté'} · 👥 ${esc(gname(n.group))}` : n.type === 'search' ? '' : n.type === 'sanction' ? ({ warn: 'vous a averti', suspend: 'a suspendu votre compte', ban: 'a banni votre compte' })[n.what] || L.sanction : n.type === 'hide' ? 'a masqué votre post (vous pouvez faire appel)' : n.type === 'appeal' ? ({ new: 'a fait appel d’une décision', accepted: 'a accepté votre appel', rejected: 'a rejeté votre appel' })[n.what] + (n.answer ? ' : « ' + esc(n.answer) + ' »' : '') : L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') || '<p class="mut">Aucune notification.</p>';
+    h = net.notifications(me, true).map(n => `<div class="card" ${n.type === 'dm' ? `data-chat="${esc(n.from)}"` : n.type === 'search' ? `data-ssopen="${n.search}"` : n.type === 'group' ? `data-cmopen="${n.group}"` : n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}>${n.type === 'search' ? `🔎 <b>${esc(n.name)}</b> : ${n.count} nouveau${n.count > 1 ? 'x' : ''} résultat${n.count > 1 ? 's' : ''}` : ''}${n.type === 'search' ? '' : n.from ? `<b>${esc(n.from)}</b> ` : '📊 '}${n.type === 'react' && n.emoji ? n.emoji + ' ' : ''}${n.type === 'dm' && n.count > 1 ? `(×${n.count}) ` : ''}${n.type === 'group' ? `${L.group[n.what] || 'communauté'} · 👥 ${esc(gname(n.group))}` : n.type === 'search' ? '' : n.type === 'sanction' ? ({ warn: 'vous a averti', suspend: 'a suspendu votre compte', ban: 'a banni votre compte' })[n.what] || L.sanction : n.type === 'hide' ? 'a masqué votre post (vous pouvez faire appel)' : n.type === 'appeal' ? ({ new: 'a fait appel d’une décision', accepted: 'a accepté votre appel', rejected: 'a rejeté votre appel' })[n.what] + (n.answer ? ' : « ' + esc(n.answer) + ' »' : '') : L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') || '<p class="mut">Aucune notification.</p>';
   } else if (view.page === 'thread') {
     const p = net.db().posts.find(x => x.id === view.arg);
     h = p ? postHTML(p) + composer(t('composer.reply'), p.id) + e + net.replies(p.id, me).map(r => postHTML(r)).join('') : '<p class="mut">Post supprimé.</p>';
@@ -564,6 +589,8 @@ function render() {
       (view.sub ? `<div class="card"><b>${view.sub === 'followers' ? 'Abonnés' : 'Abonnements'}</b> <button data-sub="">✕</button></div>` + peopleList(view.sub === 'followers' ? fl : u.following) : (net.timeline(name, me).map(t => (t.by ? `<p class="mut rt">🔁 ${esc(shown(t.by))} a repartagé</p>` : '') + postHTML(t.post)).join('') || '<p class="mut">Rien ici pour l’instant.</p>'));
   } else if ((view.page === 'admin' || view.page === 'mod') && net.isAdmin(me)) {
     h = adminPage(e);
+  } else if (view.page === 'prefs') {
+    h = prefsPage() + e;
   } else if (view.page === 'blocks') {
     const row = (n, kind) => `<div class="card person">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)}</span> <button data-${kind}="${esc(n)}">${kind === 'unblock' ? 'Débloquer' : 'Ne plus masquer'}</button></div>`;
     h = `<div class="card"><h2>🚫 Comptes bloqués et masqués</h2><p class="mut">Leurs posts, réponses et messages disparaissent de ton fil. Bloquer coupe aussi les abonnements et les empêche de te répondre, te suivre ou t’écrire ; masquer reste discret.</p></div>${e}
@@ -851,6 +878,7 @@ document.addEventListener('input', ev => {
   if (t.type === 'checkbox') render(); else livePreview();
 });
 document.addEventListener('change', ev => {
+  if (ev.target.dataset && ('np' in ev.target.dataset || 'npq' in ev.target.dataset)) return void savePrefs();
   const t = ev.target, path = t.dataset && t.dataset.tf; if (!path || t.tagName !== 'SELECT') return;
   editTheme(x => setPath(x, path, t.value)); render(); const n = document.querySelector(`[data-tf="${path}"]`); if (n) n.focus();
 });

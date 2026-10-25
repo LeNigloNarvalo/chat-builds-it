@@ -410,4 +410,44 @@ console.log('ok');
   r.deleteSearch('zoe', s.id); assert.strictEqual(r.searches('zoe').length, 0);
   console.log('ok recherche avancée : filtres, tri, recherches enregistrées, alertes');
 }
+{ // centre de préférences : cloche / push / e-mail par type, heures calmes, e-mails et résumé quotidien
+  const Social = require('./social.js'), assert = require('assert'), Notif = require('./notif.js');
+  const mem = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = String(v); } };
+  const r = Social.Net(mem);
+  (async () => {
+    await r.signup('npa', 'secret1'); await r.signup('npb', 'secret1');
+    r.setEmail('npa', 'npa@x.org'); r.confirmEmail('npa', 'npa@x.org');
+    assert.strictEqual(r.notifPrefs('npa').types.mention.bell, true);
+    r.follow ? 0 : 0; r.post('npb', 'salut @npa'); r.send('npb', 'npa', 'coucou');
+    assert.ok(r.notifications('npa').some(n => n.type === 'mention') && !r.notifications('npa').some(n => n.type === 'dm'), 'DM absent de la cloche par défaut');
+    const p = r.notifPrefs('npa'); p.types.mention.bell = false; p.types.dm.bell = true; p.tz = 0;
+    r.setNotifPrefs('npa', p);
+    assert.ok(!r.notifications('npa').some(n => n.type === 'mention') && r.notifications('npa').some(n => n.type === 'dm'));
+    // heures calmes, y compris à cheval sur minuit
+    const q = Social.normPrefs({ quiet: { on: true, from: '22:00', to: '08:00' }, tz: 0 });
+    assert.ok(Social.inQuiet(q, Date.UTC(2026, 0, 1, 23, 0)) && Social.inQuiet(q, Date.UTC(2026, 0, 1, 7, 59)) && !Social.inQuiet(q, Date.UTC(2026, 0, 1, 12, 0)));
+    assert.ok(Social.inQuiet(Social.normPrefs({ quiet: { on: true, from: '22:00', to: '08:00' }, tz: -120 }), Date.UTC(2026, 0, 1, 21, 0)), 'fuseau pris en compte (UTC 21h = 23h à UTC+2)');
+    // push : seulement si le type est activé pour le push et hors heures calmes
+    const L = [{ id: 1, type: 'mention', read: false }, { id: 2, type: 'reply', read: false }];
+    const base = { enabled: true, types: { mention: true, reply: true } }, ac = prefs => ({ prefs: Social.normPrefs(prefs), inQuiet: Social.inQuiet });
+    assert.deepStrictEqual(Notif.pick(L, base, 0, ac({ types: { mention: { push: false } } })).show.map(n => n.id), [2]);
+    assert.strictEqual(Notif.pick(L, base, 0, ac({ quiet: { on: true, from: '00:00', to: '23:59' } })).show.length, 0);
+    // e-mails : seulement pour les types cochés, après activation, hors heures calmes ; une seule fois
+    const e = r.notifPrefs('npa'); e.types.reply.email = true; e.types.mention.bell = true; r.setNotifPrefs('npa', e);
+    const before = r.mailJobs('http://x', Date.now()); assert.strictEqual(before.length, 0, 'rien d’ancien');
+    r.post('npb', 'ah @npa encore'); const pid = r.explore('npb')[0].id; r.post('npa', 'mon post'); const mine = r.explore('npa').find(x => x.text === 'mon post');
+    r.post('npb', 'une réponse', mine.id);
+    let jobs = r.mailJobs('http://x', Date.now()); assert.strictEqual(jobs.length, 1); assert.ok(/a répondu/.test(jobs[0].text) && !/mentionné/.test(jobs[0].text) && jobs[0].to === 'npa@x.org');
+    assert.strictEqual(r.mailJobs('http://x', Date.now()).length, 0, 'jamais deux fois');
+    // résumé quotidien : activités manquées non déjà envoyées, une fois par jour, à l'heure choisie
+    const d = r.notifPrefs('npa'); d.types.reply.email = false; d.digest = { on: true, hour: 8 }; d.tz = 0; r.setNotifPrefs('npa', d);
+    r.post('npb', 'encore @npa'); r.send('npb', 'npa', 'et un MP');
+    const d9 = new Date(); d9.setUTCHours(9, 0, 0, 0); if (d9.getTime() < Date.now() + 3600000) d9.setUTCDate(d9.getUTCDate() + 1); const t9 = d9.getTime();
+    assert.strictEqual(r.mailJobs('http://x', t9 - 2 * 3600000).length, 0, 'trop tôt');
+    jobs = r.mailJobs('http://x', t9); assert.strictEqual(jobs.length, 1); assert.ok(/résumé/.test(jobs[0].subject) && /mentionné/.test(jobs[0].text));
+    assert.strictEqual(r.mailJobs('http://x', t9 + 3600000).length, 0, 'un seul résumé par jour');
+    assert.throws(() => r.setNotifPrefs('npa', { quiet: { on: true, from: 'x', to: '08:00' } }), /invalides/);
+    console.log('ok préférences de notifications');
+  })().catch(e => { console.error(e); process.exit(1); });
+}
 })();

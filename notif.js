@@ -4,11 +4,13 @@
   const TEXT = { mention: 'vous a mentionné', reply: 'a répondu à votre post', follow: 'vous suit maintenant', poll: 'Votre sondage est terminé', search: 'a de nouveaux résultats', group: { invite: 'vous invite dans une communauté', request: 'demande à rejoindre votre communauté', accepted: 'vous a accepté dans une communauté', mod: 'vous a nommé modérateur', removed: 'vous a retiré d’une communauté', banned: 'vous a banni d’une communauté' } };
   const load = store => { let o = {}; try { o = JSON.parse(store.getItem(KEY) || '{}') || {}; } catch (e) {} return { enabled: !!o.enabled, types: Object.assign({ mention: true, reply: true, follow: true, poll: true, group: true, search: true }, o.types) }; };
   const save = (store, p) => store.setItem(KEY, JSON.stringify(p));
+  // préférences du compte (centre de notifications) : canal « push » du type activé et hors heures calmes
+  const allowed = (account, type, at) => !account || ((!account.prefs.types[type] || account.prefs.types[type].push) && !account.inQuiet(account.prefs, at));
   // notifications à afficher : plus récentes que la dernière vue, non lues, du type activé ; renvoie aussi le nouveau repère
-  function pick(list, prefs, lastSeen) {
+  function pick(list, prefs, lastSeen, account) {
     const max = list.reduce((m, n) => Math.max(m, n.id), 0);
     if (lastSeen == null) return { show: [], seen: max };
-    const show = prefs.enabled ? list.filter(n => n.id > lastSeen && !n.read && TYPES[n.type] && prefs.types[n.type]).sort((a, b) => a.id - b.id) : [];
+    const show = prefs.enabled ? list.filter(n => n.id > lastSeen && !n.read && TYPES[n.type] && prefs.types[n.type] && allowed(account, n.type)).sort((a, b) => a.id - b.id) : [];
     return { show, seen: Math.max(max, lastSeen) };
   }
   const seenGet = (store, me) => { const v = store.getItem(SEEN + me); return v === null ? null : +v; };
@@ -18,6 +20,6 @@
     const o = { body: n.type === 'group' ? `${name} ${TEXT.group[n.what] || 'communauté'}` : n.type === 'poll' ? TEXT.poll + ' : voir les résultats' : n.type === 'search' ? `🔎 « ${n.name} » : ${n.count} nouveau${n.count > 1 ? 'x' : ''} résultat${n.count > 1 ? 's' : ''}` : `${name} ${TEXT[n.type]}`, icon: 'icon.svg', badge: 'icon.svg', tag: 'cornichon-' + n.id, data: { id: n.id } };
     try { const reg = await navigator.serviceWorker.ready; return await reg.showNotification('🥒 Cornichon', o); } catch (e) { new Notification('🥒 Cornichon', o); }
   }
-  const api = { KEY, TYPES, TEXT, load, save, pick, seenGet, seenSet, supported, show };
+  const api = { KEY, TYPES, TEXT, load, save, pick, seenGet, seenSet, supported, show, allowed };
   if (typeof module !== 'undefined') module.exports = api; else root.Notif = api;
 })(this);
