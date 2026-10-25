@@ -9,7 +9,7 @@ const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
 const ACTIONS = new Set(['addMedia', 'setMediaAlt', 'deleteMedia', 'post', 'deletePost', 'editPost', 'toggleBookmark', 'togglePin', 'addMutedWord', 'removeMutedWord', 'toggleLess', 'resetLess', 'setWarning', 'toggleTopic', 'toggleRepost', 'toggleLike', 'react', 'quote', 'toggleFollow', 'updateProfile', 'setOnboarding', 'importUser', 'send', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'appeal', 'decideAppeal', 'adminSanction', 'adminDeleteUser', 'requestVerification', 'decideVerification', 'grantBadge', 'revokeBadge', 'exportUser', 'markDmRead', 'deleteConversation', 'saveDraft', 'deleteDraft', 'publishDraft', 'createList', 'updateList', 'deleteList', 'toggleListMember', 'saveSharedList', 'forgetSharedList', 'dismissSuggestion', 'saveSearch', 'deleteSearch', 'markSearchSeen', 'checkSearches', 'setNotifPrefs', 'setPrivacy', 'requestDeletion', 'cancelDeletion', 'vote', 'createGroup', 'updateGroup', 'deleteGroup', 'joinGroup', 'leaveGroup', 'handleRequest', 'inviteToGroup', 'respondInvite', 'cancelInvite', 'removeFromGroup', 'unbanFromGroup', 'setGroupMod', 'createRoom', 'sendRoom', 'markRoomRead', 'addToRoom', 'renameRoom', 'removeFromRoom', 'setRoomAdmin', 'setRoomMute', 'leaveRoom', 'reportMessage', 'resolveMessageReport', 'createEvent', 'updateEvent', 'deleteEvent', 'rsvp', 'openTicket', 'replyTicket', 'closeTicket']);
 const States = require('./states.js');
-const STATIC = new Set(['index.html', 'states.js', 'help.js', 'i18n.js', 'style.css', 'a11y.js', 'theme.js', 'social.js', 'sync.js', 'diag.js', 'app.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'notif.js', 'qrcode.js', 'stats.js']);
+const STATIC = new Set(['index.html', 'states.js', 'help.js', 'i18n.js', 'style.css', 'a11y.js', 'theme.js', 'social.js', 'sync.js', 'diag.js', 'app.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'notif.js', 'qrcode.js', 'stats.js', 'calls.js']);
 const TYPES = { html: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', webmanifest: 'application/manifest+json; charset=utf-8', svg: 'image/svg+xml' };
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 
@@ -44,6 +44,7 @@ function createServer(opts = {}) {
 
   // ---- temps réel (SSE) : chaque changement des données est annoncé aux clients connectés, qui rapatrient alors leur vue ----
   const live = new Set(); // { res, name }
+  const calls = new Map(); // appels en cours : paire de pseudos -> { from, to, kind, at, at2 (décroché) }
   let announced = false;
   const emit = (c, event, data) => { try { c.res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch (e) { live.delete(c); } };
   function announce() { // regroupe les écritures d'un même tour de boucle en une seule annonce
@@ -334,7 +335,11 @@ function createServer(opts = {}) {
     // flux temps réel : la session reste authentifiée par l'en-tête Authorization (le client lit le flux avec fetch)
     if (route === 'GET /api/stream') {
       res.writeHead(200, Object.assign({ 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' }, HEAD));
-      const c = { res, name: me.name }; live.add(c); res.on('close', () => live.delete(c));
+      const c = { res, name: me.name }; live.add(c);
+      res.on('close', () => { // dernier onglet fermé en pleine sonnerie ou conversation : l'appel se termine pour l'autre
+        live.delete(c); if ([...live].some(x => x.name === c.name)) return;
+        for (const [k, x] of calls) if (x.from === c.name || x.to === c.name) { calls.delete(k); clearTimeout(x.timer); const peer = x.from === c.name ? x.to : x.from; for (const l of live) if (l.name === peer) emit(l, 'call', { type: 'end', from: c.name }); try { net.logCall(x.from, x.to, x.kind, x.at2 ? 'ended' : 'missed', x.at2 ? (Date.now() - x.at2) / 1000 : 0); } catch (e) {} }
+      });
       emit(c, 'hello', { version: version(), me: me.name }); return;
     }
     // pagination côté serveur du fil (scope=feed|explore) : ?limit=&before=<id> pour la suite, ?after=<id> pour compter les nouveaux posts
@@ -363,6 +368,33 @@ function createServer(opts = {}) {
     if (route === 'GET /api/search/suggest') {
       const r = store.ftsSuggest(url.searchParams.get('q') || '', 5);
       return send(res, 200, { words: r.words, tags: r.tags, users: net.ftsMembers(me.name, r.users).map(u => ({ name: u.name, display: u.display })) });
+    }
+    // appels audio/vidéo 1-à-1 : le serveur ne fait que relayer la signalisation WebRTC (SDP/ICE) au destinataire connecté ; rien n'est stocké hormis l'historique
+    if (route === 'POST /api/rtc') {
+      const b = await body(req), to = net.profile(String(b.to || '')).name, type = String(b.type || '');
+      if (!['invite', 'accept', 'decline', 'cancel', 'end', 'offer', 'answer', 'ice'].includes(type)) throw new Http(400, 'Signal inconnu');
+      if (to === me.name) throw new Http(400, 'Impossible de vous appeler vous-même');
+      const key = [me.name, to].map(n => n.toLowerCase()).sort().join('|'), relay = (extra) => { let n = 0; for (const c of live) if (c.name === to) { emit(c, 'call', Object.assign({ type, from: me.name }, extra)); n++; } return n; };
+      const finish = (status, who) => { const c = calls.get(key); if (!c) return; calls.delete(key); clearTimeout(c.timer); try { net.logCall(c.from, c.to, c.kind, status, c.at2 ? (Date.now() - c.at2) / 1000 : 0); } catch (e) {} };
+      if (type === 'invite') {
+        const kind = b.kind === 'video' ? 'video' : 'audio';
+        if (net.isHidden(to, me.name) || net.isBlocked(me.name, to) || net.isBlocked(to, me.name)) throw new Http(403, 'Appel impossible avec ce compte (blocage)');
+        if (net.profile(to).admin) throw new Http(400, 'Le compte Streamer ne peut pas être appelé');
+        if (calls.has(key)) throw new Http(409, 'Un appel est déjà en cours avec ce compte');
+        for (const c of calls.values()) if (c.to === to || c.from === to || c.to === me.name || c.from === me.name) throw new Http(409, c.from === me.name || c.to === me.name ? 'Vous êtes déjà en appel' : 'Ce compte est déjà en ligne');
+        const c = { from: me.name, to, kind, at: Date.now(), at2: 0 }; calls.set(key, c);
+        if (!relay({ kind })) { calls.delete(key); net.logCall(me.name, to, kind, 'missed', 0); return send(res, 200, { ok: true, ringing: false }); }
+        c.timer = setTimeout(() => { if (calls.get(key) === c && !c.at2) { for (const l of live) if (l.name === c.from || l.name === c.to) emit(l, 'call', { type: 'timeout', from: c.from === l.name ? c.to : c.from }); finish('missed'); } }, opts.ringMs || 45000); c.timer.unref();
+        return send(res, 200, { ok: true, ringing: true });
+      }
+      const c = calls.get(key); if (!c) return send(res, 200, { ok: true, gone: true });
+      if (type === 'accept') { if (c.to !== me.name || c.at2) throw new Http(409, 'Appel indisponible'); c.at2 = Date.now(); clearTimeout(c.timer); }
+      else if (type === 'decline') { if (c.to !== me.name || c.at2) throw new Http(409, 'Appel indisponible'); finish('declined'); }
+      else if (type === 'cancel') { if (c.from !== me.name || c.at2) throw new Http(409, 'Appel indisponible'); finish('missed'); }
+      else if (type === 'end') finish(c.at2 ? 'ended' : c.from === me.name ? 'missed' : 'declined');
+      else if (!c.at2 && type !== 'ice') throw new Http(409, 'Appel pas encore accepté');
+      relay(type === 'offer' || type === 'answer' ? { sdp: b.sdp && typeof b.sdp === 'object' ? { type: String(b.sdp.type || ''), sdp: String(b.sdp.sdp || '').slice(0, 20000) } : null } : type === 'ice' ? { cand: b.cand && typeof b.cand === 'object' ? (JSON.stringify(b.cand).length < 2000 ? b.cand : null) : null } : {});
+      return send(res, 200, { ok: true });
     }
     // « X est en train d'écrire » : éphémère, jamais stocké, transmis seulement au destinataire connecté
     if (route === 'POST /api/typing') {

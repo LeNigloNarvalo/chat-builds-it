@@ -944,6 +944,16 @@ function Net(storage, now) {
         if (open) { open.count = (open.count || 1) + 1; open.at = m.at; } else if (t.name !== m.from) db.notifs.push({ id: id(), to: t.name, from: m.from, type: 'dm', postId: null, at: m.at, read: false, count: 1 });
         save();
       },
+      // historique des appels audio/vidéo : une ligne dans la conversation (manqué, refusé, terminé) ; l'appel manqué alerte comme un message
+      logCall(from, to, kind, status, secs) {
+        need(['audio', 'video'].includes(kind) && ['missed', 'declined', 'ended'].includes(status), 'Appel invalide');
+        const f = user(from), t = user(to); secs = Math.max(0, Math.min(86400, Math.round(+secs) || 0));
+        const label = { audio: 'audio', video: 'vidéo' }[kind], m = { id: id(), from: f.name, to: t.name, at: now(), call: { kind, status, secs } };
+        m.text = status === 'missed' ? `📞 Appel ${label} manqué` : status === 'declined' ? `📞 Appel ${label} refusé` : `📞 Appel ${label} · ${Math.floor(secs / 60)} min ${String(secs % 60).padStart(2, '0')} s`;
+        db.messages.push(m);
+        if (status === 'missed') { const open = db.notifs.find(n => n.type === 'dm' && n.to === t.name && n.from === f.name && !n.read); if (open) { open.count = (open.count || 1) + 1; open.at = m.at; } else db.notifs.push({ id: id(), to: t.name, from: f.name, type: 'dm', postId: null, at: m.at, read: false, count: 1 }); }
+        save(); return m;
+      },
       // ---- messages non lus : curseur « dernier message lu » par interlocuteur, stocké sur le compte ----
       markDmRead(by, peer) {
         const me = user(by), t = user(peer), k = lc(t.name);
