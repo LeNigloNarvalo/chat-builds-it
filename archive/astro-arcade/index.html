@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Astro Arcade</title>
+<style>
+body{margin:0;background:#0a0a1a;color:#eee;font:16px monospace;display:flex;flex-direction:column;align-items:center;min-height:100vh;justify-content:center}
+h1{margin:8px;color:#ffd23f;text-shadow:0 0 12px #ff4d6d;letter-spacing:4px}
+canvas{background:radial-gradient(#1b1b4a,#05050f);border:3px solid #6c5ce7;box-shadow:0 0 30px #6c5ce7;max-width:100vw;max-height:80vh}
+p{opacity:.7}
+#hs{box-sizing:border-box;position:fixed;top:10px;left:10px;z-index:5;width:max(120px,min(230px,calc((100vw - 490px)/2 - 20px)));margin:0;border:2px solid #6c5ce7;box-shadow:0 0 20px #6c5ce755;padding:8px 10px;background:#0d0d26;font-size:12px}
+#hs h2{margin:0 0 6px;color:#ffd23f;text-align:center;letter-spacing:2px;font-size:14px}
+#hs table{width:100%;border-collapse:collapse}#hs td{padding:2px 4px}#hs td:last-child{text-align:right}
+#hs tr.me{color:#00e5ff;font-weight:bold}#hs .row{display:flex;flex-direction:column;gap:5px;margin-bottom:6px}
+#hs input{min-width:0;background:#05050f;color:#fff;border:1px solid #6c5ce7;padding:6px;font:inherit}
+#hs button{background:#6c5ce7;color:#fff;border:0;padding:6px 10px;font:inherit;cursor:pointer}
+#fx{position:fixed;inset:0;width:100vw;height:100vh;max-width:none;max-height:none;pointer-events:none;z-index:99;background:none;border:0;box-shadow:none}
+#boss{position:fixed;left:50%;transform:translateX(-50%);bottom:8px;z-index:98;display:none;gap:8px;background:#1a0010ee;border:2px solid #ff4d6d;padding:8px;box-shadow:0 0 24px #ff4d6d}
+#boss button{background:#2a0a20;color:#fff;border:1px solid #ff4d6d;padding:6px 8px;font:inherit;cursor:pointer;position:relative;overflow:hidden;min-width:96px}
+#boss button i{position:absolute;left:0;bottom:0;height:4px;background:#ffd23f;width:0}
+#boss.on{display:flex}
+body.bossmode{animation:bg 0.6s infinite alternate}@keyframes bg{to{background:#25051a}}
+#defi{color:#ff9f43;text-align:center;margin:6px 0;display:none}
+#secret{position:fixed;top:10px;right:10px;z-index:6;background:#0d0d26;border:2px solid #6c5ce7;padding:8px 10px;display:flex;flex-direction:column;gap:6px;width:170px;font-size:12px}#secret[hidden]{display:none}
+#secret input{min-width:0;background:#05050f;color:#fff;border:1px solid #6c5ce7;padding:5px;font:inherit}#secret .pad{display:grid;grid-template-columns:repeat(6,1fr);gap:3px}#secret .pad button{background:#6c5ce7;color:#fff;border:0;padding:6px 0;font:inherit;cursor:pointer}#secret small{color:#8a85d6}
+h1{cursor:default;user-select:none}
+#rp{position:fixed;inset:0;z-index:200;background:#000d;display:none;flex-direction:column;align-items:center;justify-content:center;gap:8px}#rp.on{display:flex}
+#rp canvas{max-height:76vh;border-color:#ff4d6d;box-shadow:0 0 30px #ff4d6d}#rp .bar{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+#rp button{background:#6c5ce7;color:#fff;border:0;padding:8px 12px;font:inherit;cursor:pointer}#rp small{color:#aaa}
+html.stream #hs,html.stream #rpb,html.stream #rp{display:none!important}
+</style></head><body>
+<script>if (/[?&]stream=1/.test(location.search)) document.documentElement.classList.add('stream');</script>
+<h1>ASTRO ARCADE</h1>
+<div id="secret" hidden><input id="sc" placeholder="code secret…" autocomplete="off" maxlength="60" aria-label="code secret"><div class="pad"><button data-c="ArrowUp">↑</button><button data-c="ArrowDown">↓</button><button data-c="ArrowLeft">←</button><button data-c="ArrowRight">→</button><button data-c="KeyB">B</button><button data-c="KeyA">A</button></div><small id="scn"></small></div>
+<canvas id="c" width="480" height="640"></canvas>
+<p id="demo" style="display:none;color:#00e5ff;opacity:1;margin:4px">🤖 MODE DÉMO — l'IA joue (window.setAutoplay(false) pour reprendre)</p>
+<p>← → / Q D : bouger · Espace : tirer · Entrée : (re)lancer · tactile : glisser · <small>↑↑↓↓←→←→BA ?</small> · <button id="storm" style="background:#ff6b35;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">☄ Tempête (M)</button> · <button id="rpb" style="background:#ff4d6d;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🎬 Replay (R)</button> · <button id="disco" style="background:#a55eea;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🪩 Disco (J)</button> · <button id="grav" style="background:#a55eea;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🙃 Gravité inversée (G)</button> · <button id="volc" style="background:#e8431a;color:#fff;border:0;padding:4px 8px;font:inherit;cursor:pointer">🌋 Éruption (V)</button> · <a href="versus.html" style="color:#ff4d6d">⚔ Mode 2 joueurs</a></p>
+<section id="hs">
+<h2>🏆 CLASSEMENT</h2>
+<div id="defi"></div>
+<div class="row"><input id="pseudo" maxlength="12" placeholder="Ton pseudo" autocomplete="off"><button id="share">Défier un ami</button></div>
+<table id="board"></table>
+</section>
+<div id="rp"><b style="color:#ff4d6d">🎬 REPLAY DU CHAT</b><canvas id="rc" width="480" height="640"></canvas><div class="bar"><button id="rp-again">↻ Revoir</button><button id="rp-link">🔗 Copier le lien</button><button id="rp-vid">⏺ Enregistrer la vidéo</button><button id="rp-x">✕ Fermer</button></div><small id="rp-info"></small></div>
+<div id="boss"></div>
+<canvas id="fx"></canvas>
+<script src="logic.js"></script>
+<script src="boss.js"></script>
+<script src="ai.js"></script>
+<script src="meteors.js"></script>
+<script src="replay.js"></script>
+<script src="disco.js"></script>
+<script src="gravity.js"></script>
+<script src="volcano.js"></script>
+<script>
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+const keys = {}; let s = Logic.newState(), running = false, last = 0;
+let best = +(localStorage.getItem('astro-best') || 0);
+const stars = Array.from({length: 60}, () => ({x: Math.random()*480, y: Math.random()*640, v: 20+Math.random()*80}));
+const fxCv = document.getElementById('fx'), fg = fxCv.getContext('2d'), fx = Logic.newFx();
+const storm = Meteors.newStorm(); function startStorm() { Meteors.start(storm, 8); }
+document.getElementById('storm').addEventListener('click', e => { startStorm(); e.target.blur(); });
+let prevLevel = 1, runBase = best, recordFired = false;
+function fxResize() { fxCv.width = innerWidth; fxCv.height = innerHeight; }
+addEventListener('resize', fxResize); fxResize();
+function celebrate(k) { Logic.celebrate(fx, k, fxCv.width, fxCv.height); }
+function drawFx() {
+  fg.clearRect(0, 0, fxCv.width, fxCv.height);
+  if (fx.flash > 0) { fg.fillStyle = `rgba(255,235,160,${fx.flash * 0.35})`; fg.fillRect(0, 0, fxCv.width, fxCv.height); }
+  Meteors.draw(fg, storm);
+  fg.globalCompositeOperation = 'lighter';
+  fx.sparks.forEach(p => { fg.globalAlpha = Math.max(0, Math.min(1, p.life / 0.8)); fg.fillStyle = p.color; fg.fillRect(p.x - 2.5, p.y - 2.5, 5, 5); });
+  fx.rockets.forEach(r => { fg.globalAlpha = 1; fg.fillStyle = '#fff'; fg.fillRect(r.x - 2, r.y, 4, 14); });
+  fg.globalCompositeOperation = 'source-over'; fg.shadowBlur = 0; fg.globalAlpha = 1;
+  fx.confetti.forEach(c => { fg.save(); fg.translate(c.x, c.y); fg.rotate(c.rot); fg.scale(1, Math.cos(c.rot * 2)); fg.fillStyle = c.color; fg.fillRect(-c.size / 2, -c.size / 4, c.size, c.size / 2); fg.restore(); });
+}
+// --- Mode Boss Secret : Konami Code -> boss géant, le chat vote ses attaques ---
+let boss = null; const konami = Boss.konamiTracker();
+let actx = null;
+function beep(freq, dur, type, vol, slide) {
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), v = actx.createGain(), t = actx.currentTime;
+    o.type = type || 'square'; o.frequency.setValueAtTime(freq, t);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(20, slide), t + dur);
+    v.gain.setValueAtTime(vol || 0.05, t); v.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(v); v.connect(actx.destination); o.start(t); o.stop(t + dur);
+  } catch (e) {}
+}
+function jingle(notes) { notes.forEach((f, i) => setTimeout(() => beep(f, 0.12, 'square', 0.05), i * 110)); }
+const SFX = {
+  start: () => jingle([262, 330, 392, 523, 392, 523, 659, 784]),
+  shoot: () => beep(880, 0.08, 'square', 0.025, 300),
+  'boss-hit': () => beep(160, 0.1, 'sawtooth', 0.05, 60),
+  hit: () => beep(220, 0.35, 'sawtooth', 0.08, 40),
+  laser: () => beep(1200, 0.5, 'square', 0.04, 90),
+  attack: () => { beep(110, 0.4, 'sawtooth', 0.07, 55); setTimeout(() => beep(98, 0.4, 'sawtooth', 0.07, 49), 150); },
+  'vote-start': () => jingle([523, 659]),
+  vote: () => beep(990, 0.05, 'triangle', 0.05),
+  win: () => jingle([523, 659, 784, 1047, 784, 1047, 1319, 1568]),
+};
+const bossEl = document.getElementById('boss');
+function buildBossUi() {
+  bossEl.innerHTML = Boss.ATTACKS.map((a, i) => `<button data-k="${a.key}">${i + 1}. ${a.emoji} ${a.label}<br><small class="n">0</small><i></i></button>`).join('');
+  bossEl.querySelectorAll('button').forEach(b => b.addEventListener('click', () => vote(b.dataset.k, 'toi')));
+}
+buildBossUi();
+function vote(k, who) { if (boss && Boss.castVote(boss, k, who)) SFX.vote(); }
+// Faux "chat Twitch" : des spectateurs virtuels votent en direct (le vrai chat peut aussi cliquer / taper 1-4).
+const FAKE_VIEWERS = ['kevin_42', 'LaMouette', 'xX_Pixel_Xx', 'Zoé', 'MrBaguette', 'Tonton_Dev', 'neko', 'GigaChad', 'Lulu', 'ArcadeFan'];
+const FAKE_MSGS = ['!laser', '!pluie', '!spirale', '!chaos', '!chaos', '!laser'];
+setInterval(() => {
+  if (!boss || boss.defeated || boss.phase !== 'vote') return;
+  const who = FAKE_VIEWERS[Math.floor(Math.random() * FAKE_VIEWERS.length)];
+  const k = Boss.parseVote(FAKE_MSGS[Math.floor(Math.random() * FAKE_MSGS.length)]);
+  if (k) vote(k, who);
+}, 350);
+function startBoss() {
+  if (boss && !boss.defeated && !s.over) return;
+  if (!running || s.over) { rec = Replay.newRecorder(); recDone = false; s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); }
+  s.enemies = []; s.bombs = []; boss = Boss.newBoss();
+  document.body.classList.add('bossmode'); bossEl.classList.add('on');
+  SFX.start(); celebrate(1);
+}
+function endBoss() { document.body.classList.remove('bossmode'); bossEl.classList.remove('on'); if (!s.over) { s.enemies = Logic.makeWave(s.level); s.dir = 1; } boss = null; }
+function drawBoss() {
+  const b = boss, cx = b.x + b.w / 2;
+  g.save();
+  if (!b.defeated) {
+    g.shadowColor = '#ff4d6d'; g.shadowBlur = 25; g.fillStyle = b.hurt > 0 ? '#fff' : (b.phase === 'attack' ? '#ff2d55' : '#8e44ad');
+    g.fillRect(b.x, b.y + 20, b.w, b.h - 20); g.fillRect(b.x + 20, b.y, b.w - 40, 30);
+    g.fillRect(b.x - 18, b.y + 40, 18, 50); g.fillRect(b.x + b.w, b.y + 40, 18, 50);
+    g.shadowBlur = 0; g.fillStyle = '#000'; g.fillRect(cx - 55, b.y + 38, 34, 22); g.fillRect(cx + 21, b.y + 38, 34, 22);
+    g.fillStyle = b.phase === 'attack' ? '#ffd23f' : '#00e5ff'; g.fillRect(cx - 45 + Math.sin(b.t * 5) * 6, b.y + 44, 12, 10); g.fillRect(cx + 31 + Math.sin(b.t * 5) * 6, b.y + 44, 12, 10);
+    g.fillStyle = '#000'; for (let i = 0; i < 6; i++) g.fillRect(b.x + 40 + i * 24, b.y + 78, 12, 14);
+  }
+  b.shots.forEach(o => {
+    if (o.type === 'beam') {
+      if (o.warn > 0) { g.fillStyle = `rgba(255,255,80,${0.12 + 0.12 * Math.sin(b.t * 40)})`; g.fillRect(o.x + 12, o.y, 12, o.h); }
+      else { g.shadowColor = '#00e5ff'; g.shadowBlur = 25; g.fillStyle = '#fff'; g.fillRect(o.x, o.y, o.w, o.h); g.fillStyle = '#00e5ff88'; g.fillRect(o.x - 6, o.y, o.w + 12, o.h); g.shadowBlur = 0; }
+    } else if (o.type === 'meteor') { g.fillStyle = '#ff9f43'; g.shadowColor = '#ff4d6d'; g.shadowBlur = 14; g.fillRect(o.x, o.y, o.w, o.h); }
+    else { g.fillStyle = '#ff6bd6'; g.shadowColor = '#ff6bd6'; g.shadowBlur = 12; g.fillRect(o.x, o.y, o.w, o.h); }
+  });
+  g.shadowBlur = 0; g.fillStyle = '#fff'; b.bullets.forEach(u => g.fillRect(u.x, u.y, u.w, u.h));
+  g.restore();
+  // barre de vie
+  g.fillStyle = '#300'; g.fillRect(40, 56, 400, 8); g.fillStyle = '#ff4d6d'; g.fillRect(40, 56, 400 * b.hp / b.max, 8);
+  g.textAlign = 'center'; g.font = 'bold 14px monospace'; g.fillStyle = '#ffd23f';
+  g.fillText(b.phase === 'vote' ? `LE CHAT VOTE ! ${Math.ceil(b.timer)}s (touches 1-4)` : `⚠ ${Boss.ATTACKS.find(a => a.key === b.attack).label} ⚠`, 240, 48);
+  const tot = Math.max(1, Object.values(b.votes).reduce((x, y) => x + y, 0));
+  bossEl.querySelectorAll('button').forEach(btn => { const v = b.votes[btn.dataset.k]; btn.querySelector('.n').textContent = v + ' vote' + (v > 1 ? 's' : ''); btn.querySelector('i').style.width = (100 * v / tot) + '%'; btn.style.opacity = b.phase === 'vote' ? 1 : (btn.dataset.k === b.attack || b.attack === 'chaos' ? 1 : .35); });
+}
+const pseudoEl = document.getElementById('pseudo'), boardEl = document.getElementById('board'), defiEl = document.getElementById('defi');
+let board = Logic.loadBoard(localStorage), lastRank = 0, saved = false;
+try { pseudoEl.value = localStorage.getItem('astro-pseudo') || ''; } catch (e) {}
+pseudoEl.addEventListener('change', () => { try { localStorage.setItem('astro-pseudo', Logic.cleanName(pseudoEl.value)); } catch (e) {} });
+function esc(x) { return String(x).replace(/[&<>"]/g, c => '&#' + c.charCodeAt(0) + ';'); }
+function renderBoard() {
+  boardEl.innerHTML = board.length ? board.map((e, i) => `<tr class="${i + 1 === lastRank ? 'me' : ''}"><td>${i + 1}.</td><td>${esc(e.name)}</td><td>niv ${e.level}</td><td>${e.score}</td></tr>`).join('')
+    : '<tr><td>Aucun score pour l\'instant — sois le premier !</td></tr>';
+}
+const challenge = Logic.parseChallenge(location.hash);
+if (challenge) { defiEl.style.display = 'block'; defiEl.textContent = `⚔ ${challenge.name} te défie : bats ${challenge.score} points !`; }
+document.getElementById('share').addEventListener('click', () => {
+  const sc = Math.max(best, board.length ? board[0].score : 0), name = pseudoEl.value;
+  const url = location.href.split('#')[0] + Logic.challengeHash(name, sc);
+  const msg = `Je te défie sur Astro Arcade : bats mes ${sc} points ! ${url}`;
+  (navigator.clipboard ? navigator.clipboard.writeText(msg) : Promise.reject()).then(() => alert('Défi copié !'), () => prompt('Copie ton défi :', msg));
+});
+function submitScore() {
+  if (saved) return; saved = true;
+  if (s.score <= 0) return;
+  const r = Logic.addScore(board, pseudoEl.value, s.score, s.level);
+  board = r.board; lastRank = r.rank; Logic.saveBoard(localStorage, board); renderBoard();
+}
+renderBoard();
+// code secret : clic sur le titre -> champ + pavé (les flèches servent déjà à jouer, on peut donc le saisir ici)
+const secretEl = document.getElementById('secret'), scEl = document.getElementById('sc'), scn = document.getElementById('scn');
+let kProg = 0;
+function secretCode(c) { kProg = c === Boss.KONAMI[kProg] ? kProg + 1 : (c === Boss.KONAMI[0] ? 1 : 0); scn.textContent = kProg ? kProg + ' / ' + Boss.KONAMI.length : ''; if (konami(c)) { kProg = 0; scn.textContent = ''; secretEl.hidden = true; startBoss(); } }
+document.querySelector('h1').addEventListener('click', () => { secretEl.hidden = !secretEl.hidden; if (!secretEl.hidden) scEl.focus(); });
+secretEl.querySelectorAll('.pad button').forEach(b => b.addEventListener('click', () => secretCode(b.dataset.c)));
+scEl.addEventListener('input', () => {
+  const v = scEl.value.toLowerCase().replace(/[\s,;\-_.]+/g, '');
+  if (v === 'konami' || v === '↑↑↓↓←→←→ba' || v === 'hauthautbasbasgauchedroitegauchedroiteba' || v === 'upupdowndownleftrightleftrightba') { scEl.value = ''; secretEl.hidden = true; startBoss(); }
+});
+addEventListener('keydown', e => {
+  if (e.target === pseudoEl || e.target === scEl) return;
+  keys[e.code] = true;
+  if (!e.repeat && konami(e.code)) startBoss();
+  if (e.code === 'KeyM') startStorm();
+  if (boss && /^Digit[1-4]$/.test(e.code)) vote(Boss.ATTACKS[+e.code.slice(5) - 1].key, 'toi');
+  if (e.code === 'Enter' && (!running || s.over)) { rec = Replay.newRecorder(); recDone = false; s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); }
+  if (['Space','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+});
+addEventListener('keyup', e => (keys[e.code] = false));
+cv.addEventListener('touchstart', e => { keys.Touch = true; if (!running || s.over) { rec = Replay.newRecorder(); recDone = false; s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); } });
+cv.addEventListener('touchmove', e => { const r = cv.getBoundingClientRect(); s.player.x = (e.touches[0].clientX - r.left) / r.width * 480 - 16; e.preventDefault(); }, {passive:false});
+cv.addEventListener('touchend', () => (keys.Touch = false));
+
+function text(t, x, y, size, color) { g.fillStyle = color || '#fff'; g.font = `bold ${size}px monospace`; g.textAlign = 'center'; g.fillText(t, x, y); }
+// --- Replay du Chat : meilleure partie en ralenti + zoom sur les exploits, lien et vidéo à partager ---
+let rec = Replay.newRecorder(), bestRun = null, recDone = false;
+const rpEl = document.getElementById('rp'), rc = document.getElementById('rc'), rg = rc.getContext('2d'), rpInfo = document.getElementById('rp-info');
+let play = null, mediaRec = null;
+function frameDt(p) { return p.step; }
+function openReplay(frames, step, title) {
+  if (!frames || frames.length < 2) { alert('Joue (ou lance le mode démo) une partie d\'abord : aucun replay enregistré !'); return false; }
+  play = { frames, step, marks: Replay.markers(frames), idx: 0, t: 0, zoom: 1, cx: 240, cy: 400, last: 0, hold: 0 };
+  rpEl.classList.add('on'); rpInfo.textContent = title || ''; requestAnimationFrame(playTick); return true;
+}
+function playTick(now) {
+  if (!play || !rpEl.classList.contains('on')) return;
+  const p = play, dt = Math.min(0.05, (now - p.last) / 1000 || 0); p.last = now;
+  const foc = Replay.focusAt(p.marks, Math.floor(p.idx), p.step);
+  if (p.idx < p.frames.length - 1) p.idx = Math.min(p.frames.length - 1, p.idx + dt / p.step * foc.speed);
+  else { p.hold += dt; if (p.hold > 1.5) { if (mediaRec) stopVideo(); p.idx = 0; p.hold = 0; } }
+  p.t += dt;
+  const f = p.frames[Math.floor(p.idx)];
+  p.zoom += (foc.zoom - p.zoom) * Math.min(1, dt * 6);
+  p.cx += (f.px + 16 - p.cx) * Math.min(1, dt * 6);
+  const z = p.zoom, ox = Math.max(0, Math.min(480 * (1 - 1 / z), p.cx - 240 / z)), oy = Math.max(0, Math.min(640 * (1 - 1 / z), 440 - 320 / z));
+  rg.setTransform(1, 0, 0, 1, 0, 0); rg.fillStyle = '#05050f'; rg.fillRect(0, 0, 480, 640);
+  rg.save(); rg.scale(z, z); rg.translate(-ox, -oy); Replay.drawFrame(rg, f, p.t); rg.restore();
+  Replay.drawHud(rg, f, foc.mark && foc.speed < 0.95 ? foc.mark.kind : '', foc.speed);
+  requestAnimationFrame(playTick);
+}
+function stopVideo() { if (mediaRec) { const m = mediaRec; mediaRec = null; m.stop(); } }
+function recordVideo() {
+  if (!play || !window.MediaRecorder || !rc.captureStream) { alert('Enregistrement vidéo non supporté par ce navigateur : utilise le lien !'); return; }
+  const chunks = []; mediaRec = new MediaRecorder(rc.captureStream(30));
+  mediaRec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  mediaRec.onstop = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' })); a.download = 'replay-astro-arcade.webm'; a.click(); rpInfo.textContent = 'Vidéo enregistrée ! Envoie le fichier .webm à tes potes.'; };
+  play.idx = 0; play.hold = 0; mediaRec.start(); rpInfo.textContent = '⏺ Enregistrement en cours (une boucle)…';
+}
+const b64 = u8 => btoa(String.fromCharCode(...u8)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64 = t => Uint8Array.from(atob(t.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+async function shareLink() {
+  if (!play) return;
+  const base = bestRun && play.frames === bestRun.frames ? bestRun.frames : play.frames, [a, b] = Replay.bestWindow(base, 15);
+  let txt = Replay.pack(base.slice(a, b), 3), pre = 'j';
+  if (window.CompressionStream) {
+    const cs = new Blob([txt]).stream().pipeThrough(new CompressionStream('gzip'));
+    txt = new Uint8Array(await new Response(cs).arrayBuffer()); pre = 'z';
+  } else txt = new TextEncoder().encode(txt);
+  const url = location.href.split('#')[0] + '#replay=' + pre + b64(txt), msg = 'Regarde mon meilleur moment sur Astro Arcade 🎬 ' + url;
+  (navigator.clipboard ? navigator.clipboard.writeText(msg) : Promise.reject()).then(() => { rpInfo.textContent = 'Lien copié ! (' + Math.round(url.length / 1024) + ' Ko)'; }, () => prompt('Copie le lien :', msg));
+}
+async function loadSharedReplay(hash) {
+  const m = /^#replay=([jz])([\w-]+)$/.exec(hash || ''); if (!m) return;
+  try {
+    let u8 = unb64(m[2]);
+    if (m[1] === 'z') u8 = new Uint8Array(await new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+    const d = Replay.unpack(new TextDecoder().decode(u8)); openReplay(d.frames, d.step, 'Replay partagé par un ami 🎬');
+  } catch (e) { console.warn('replay illisible', e); }
+}
+function endRun() {
+  if (recDone || !s.over) return; recDone = true;
+  if (!bestRun || rec.score > bestRun.score) bestRun = { frames: rec.frames, score: rec.score };
+}
+function openBest() { if (bestRun || rec.frames.length) { const r = bestRun && (!rec.frames.length || bestRun.score >= rec.score || s.over) ? bestRun : { frames: rec.frames, score: rec.score }; openReplay(r.frames, Replay.DT, 'Meilleure partie : ' + r.score + ' pts — ralenti automatique sur les exploits'); } else openReplay(null); }
+document.getElementById('rpb').addEventListener('click', e => { openBest(); e.target.blur(); });
+document.getElementById('rp-x').addEventListener('click', () => { stopVideo(); rpEl.classList.remove('on'); play = null; });
+document.getElementById('rp-again').addEventListener('click', () => { if (play) { play.idx = 0; play.hold = 0; } });
+document.getElementById('rp-link').addEventListener('click', shareLink);
+document.getElementById('rp-vid').addEventListener('click', recordVideo);
+addEventListener('keydown', e => { if (e.code === 'KeyR' && e.target !== pseudoEl && e.target !== scEl && !e.repeat) rpEl.classList.contains('on') ? document.getElementById('rp-x').click() : openBest(); });
+loadSharedReplay(location.hash);
+window.__replay = { get best() { return bestRun; }, open: openBest };
+const disco = Disco.newDisco();
+function setDisco(on) { disco.on = !!on; disco.t = 0; disco.streak = 0; document.getElementById('disco').textContent = disco.on ? '🪩 Disco : ON (J)' : '🪩 Disco (J)'; document.body.style.filter = ''; }
+document.getElementById('disco').addEventListener('click', e => { setDisco(!disco.on); e.target.blur(); });
+addEventListener('keydown', e => { if (e.code === 'KeyJ' && e.target !== pseudoEl && e.target !== scEl && !e.repeat) setDisco(!disco.on); });
+window.setDisco = setDisco;
+const grav = Gravity.newGravity();
+function setGravity(on) { on ? Gravity.start(grav) : Gravity.stop(grav); document.getElementById('grav').textContent = grav.on ? '🙃 Gravité inversée : ON (G)' : '🙃 Gravité inversée (G)'; }
+document.getElementById('grav').addEventListener('click', e => { setGravity(!grav.on); e.target.blur(); });
+addEventListener('keydown', e => { if (e.code === 'KeyG' && e.target !== pseudoEl && e.target !== scEl && !e.repeat) setGravity(!grav.on); });
+window.setGravity = setGravity;
+const volc = Volcano.newVolcano();
+function setVolcano(on) { on ? Volcano.start(volc) : Volcano.stop(volc); document.getElementById('volc').textContent = volc.on ? '🌋 Éruption : ON (V)' : '🌋 Éruption (V)'; }
+document.getElementById('volc').addEventListener('click', e => { setVolcano(!volc.on); e.target.blur(); });
+addEventListener('keydown', e => { if (e.code === 'KeyV' && e.target !== pseudoEl && e.target !== scEl && !e.repeat) setVolcano(!volc.on); });
+window.setVolcano = setVolcano;
+let autoplay = false, idle = 0;
+window.setAutoplay = function (on) { autoplay = !!on; idle = 0; document.getElementById('demo').style.display = autoplay ? 'block' : 'none'; };
+function newGame() { rec = Replay.newRecorder(); recDone = false; s = Logic.newState(); running = true; saved = false; prevLevel = 1; runBase = best; recordFired = false; lastRank = 0; renderBoard(); }
+function frame(t) {
+  const dt = Math.min(0.05, (t - last) / 1000 || 0); last = t;
+  const inp = {
+    left: +!!(keys.ArrowLeft || keys.KeyA || keys.KeyQ), right: +!!(keys.ArrowRight || keys.KeyD),
+    fire: !!(keys.Space || keys.Touch) };
+  if (autoplay) {
+    if (running && !s.over) { Object.assign(inp, Ai.decide(s, boss)); idle = 0; }
+    else if (Ai.shouldRestart(running, s.over, idle += dt)) { idle = 0; newGame(); }
+  }
+  if (boss) {
+    if (running) { Boss.step(boss, s, dt, inp); boss.events.forEach(ev => SFX[ev] && SFX[ev]()); }
+    if (boss.events.includes('win')) { celebrate(2); setTimeout(() => boss && endBoss(), 3500); }
+    if (s.over) endBoss();
+  } else if (running) Logic.step(s, dt, inp);
+  const gWas = grav.on; if (running) Gravity.step(grav, s, dt); if (gWas && !grav.on) setGravity(false);
+  { const vWas = volc.on; Volcano.step(volc, dt); if (vWas && !volc.on) setVolcano(false); }
+  if (disco.on && running) {
+    Disco.step(disco, s, dt, inp.fire && s.cooldown > 0.2);
+    disco.events.forEach(ev => { beep(ev.bass, 0.18, 'triangle', 0.07); beep(ev.lead, 0.1, 'square', ev.onBeat ? 0.045 : 0.025); s.flash = ''; if (ev.onBeat) s.shake = Math.max(s.shake, 0.05); });
+  }
+  if (running && !s.over) Replay.capture(rec, s, boss, dt);
+  if (s.over) endRun();
+  if (s.level > prevLevel) celebrate(1);
+  prevLevel = s.level;
+  if (runBase > 0 && !recordFired && s.score > runBase) { recordFired = true; celebrate(2); }
+  if (s.over && runBase === 0 && !recordFired && s.score > 0) { recordFired = true; celebrate(2); }
+  if (s.over) submitScore();
+  if (s.over && s.score > best) { best = s.score; try { localStorage.setItem('astro-best', best); } catch (e) {} }
+  g.save(); g.clearRect(0, 0, 480, 640);
+  if (disco.on) { g.fillStyle = Disco.color(disco, 3) + Math.round(disco.pulse * 60 + 8).toString(16).padStart(2, '0'); g.fillRect(0, 0, 480, 640); }
+  if (s.shake > 0) g.translate((Math.random()-.5)*10, (Math.random()-.5)*10);
+  grav.waves.forEach(w => { g.globalAlpha = Math.max(0, w.life / 1.6) * 0.7; g.lineWidth = 4; g.strokeStyle = `hsl(${w.hue},100%,60%)`; g.beginPath(); g.arc(w.x, w.y, w.r, 0, Math.PI * 2); g.stroke(); });
+  g.globalAlpha = 1;
+  if (grav.on) { g.fillStyle = `hsla(${grav.hue},100%,60%,0.07)`; g.fillRect(0, 0, 480, 640); }
+  g.fillStyle = '#fff'; stars.forEach(st => { st.y = (st.y + st.v*dt) % 640; g.fillRect(st.x, st.y, 2, 2); });
+  const rowColors = ['#ff4d6d','#ff9f43','#ffd23f','#2ed573','#1e90ff','#a55eea'];
+  const dsc = disco.on ? Disco.scale(disco) : 1;
+  s.enemies.forEach(e => { g.save(); if (disco.on) { g.translate(e.x + e.w / 2, e.y + e.h / 2); g.scale(dsc, dsc); g.translate(-e.x - e.w / 2, -e.y - e.h / 2); } g.fillStyle = disco.on ? Disco.color(disco, e.row + (e.x / 42 | 0)) : rowColors[e.row % 6]; g.shadowColor = g.fillStyle; g.shadowBlur = 10;
+    g.fillRect(e.x, e.y, e.w, e.h); g.fillStyle = '#000'; g.fillRect(e.x+6, e.y+6, 4, 4); g.fillRect(e.x+18, e.y+6, 4, 4); g.restore(); });
+  g.shadowColor = '#00e5ff'; g.shadowBlur = 12; g.fillStyle = '#00e5ff';
+  const p = s.player; g.beginPath(); g.moveTo(p.x+p.w/2, p.y); g.lineTo(p.x+p.w, p.y+p.h); g.lineTo(p.x, p.y+p.h); g.fill();
+  g.fillStyle = '#fff'; s.bullets.forEach(b => g.fillRect(b.x, b.y, b.w, b.h));
+  s.loot.forEach(l => {
+    const cx = l.x + 10, cy = l.y + 10; g.shadowBlur = 14;
+    if (l.type === 'heart') { g.shadowColor = '#ff4d6d'; g.fillStyle = '#ff4d6d'; g.font = 'bold 24px monospace'; g.textAlign = 'center'; g.fillText('♥', cx, cy + 9); }
+    else { g.shadowColor = '#ffe600'; g.fillStyle = '#ffe600'; const m = 0.1 + 0.35 * Math.abs(Math.sin(performance.now() / 120)); g.beginPath(); g.moveTo(cx, cy); g.arc(cx, cy, 11, m, Math.PI * 2 - m); g.fill(); }
+  });
+  if (s.pac > 0) { const m = 0.15 + 0.4 * Math.abs(Math.sin(performance.now() / 90)), cx = p.x + p.w / 2, cy = p.y - 6; g.shadowColor = '#ffe600'; g.shadowBlur = 16; g.fillStyle = '#ffe600'; g.beginPath(); g.moveTo(cx, cy); g.arc(cx, cy, 24, -Math.PI / 2 + m, -Math.PI / 2 + Math.PI * 2 - m); g.fill(); }
+  grav.coins.forEach(c => { const cx = c.x + 10, cy = c.y + 10, k = Math.abs(Math.cos(grav.t * 5 + c.ph)); g.shadowColor = '#ffd23f'; g.shadowBlur = 14; g.fillStyle = '#ffd23f'; g.beginPath(); g.ellipse(cx, cy, 10 * Math.max(0.25, k), 10, 0, 0, Math.PI * 2); g.fill(); g.fillStyle = '#b8860b'; g.fillRect(cx - 1.5, cy - 5, 3, 10); });
+  g.shadowBlur = 0;
+  if (volc.rise > 0) {
+    const vy = 640 - 90 * volc.rise, fl = 0.85 + 0.15 * Math.sin(volc.t * 25);
+    g.save(); g.globalCompositeOperation = 'lighter';
+    const gr = g.createRadialGradient(240, 550, 20, 240, 550, 520); gr.addColorStop(0, `rgba(255,120,30,${0.55 * volc.glow * fl})`); gr.addColorStop(1, 'rgba(255,60,0,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 480, 640); g.restore();
+    g.fillStyle = '#2b1410'; g.beginPath(); g.moveTo(90, 640); g.lineTo(200, vy + 10); g.lineTo(280, vy + 10); g.lineTo(390, 640); g.closePath(); g.fill();
+    g.fillStyle = '#ff5a14'; g.shadowColor = '#ff8a00'; g.shadowBlur = 24; g.beginPath(); g.ellipse(240, vy + 10, 42, 9 + 3 * fl, 0, 0, Math.PI * 2); g.fill(); g.shadowBlur = 0;
+    g.strokeStyle = '#ff7a1a'; g.lineWidth = 3; g.beginPath(); g.moveTo(228, vy + 14); g.lineTo(205, 640); g.moveTo(252, vy + 14); g.lineTo(280, 640); g.stroke();
+    g.save(); g.globalCompositeOperation = 'lighter';
+    volc.lava.forEach(q => { g.fillStyle = `hsla(${q.hue},100%,55%,${Math.min(1, q.life)})`; g.shadowColor = '#ff6a00'; g.shadowBlur = 18; g.beginPath(); g.arc(q.x, q.y, q.r, 0, Math.PI * 2); g.fill(); });
+    volc.sparks.forEach(q => { g.fillStyle = `hsla(${q.hue},100%,75%,${Math.min(1, q.life)})`; g.shadowColor = '#ffd23f'; g.shadowBlur = 8; g.fillRect(q.x, q.y, 3, 3); });
+    g.restore(); g.shadowBlur = 0;
+    if (volc.on) text('🌋 ÉRUPTION COSMIQUE ' + Math.ceil(volc.left) + 's', 240, 560, 13, '#ff9f43');
+  }
+  s.bombs.forEach((b, i) => { g.fillStyle = disco.on ? Disco.color(disco, i) : '#ff4d6d'; const k = dsc, w = b.w * k, h = b.h * k; g.fillRect(b.x - (w - b.w) / 2, b.y - (h - b.h) / 2, w, h); });
+  s.particles.forEach(q => { g.globalAlpha = Math.max(0, q.life/0.6); g.fillStyle = q.color; g.fillRect(q.x, q.y, 3, 3); });
+  g.globalAlpha = 1; g.shadowBlur = 0;
+  if (boss) drawBoss();
+  g.restore();
+  g.textAlign = 'left'; g.fillStyle = '#fff'; g.font = '16px monospace';
+  g.fillText('SCORE ' + s.score, 10, 22); g.fillText('NIV ' + s.level, 200, 22);
+  g.textAlign = 'right'; g.fillText('♥'.repeat(Math.max(0, s.lives)), 470, 22);
+  if (s.pac > 0) { g.fillStyle = '#ffe600'; g.fillText('PAC ' + Math.ceil(s.pac) + 's  bombes ' + (s.pacEaten % 3) + '/3 → ♥', 470, 42); }
+  if (disco.on) { text('🪩 DISCO ♪ ' + Disco.BPM + ' BPM  +' + disco.total + ' pts (tire sur le beat !)', 240, 600, 13, Disco.color(disco, 0)); g.fillStyle = Disco.color(disco, 1); g.fillRect(190, 628, 100 * disco.pulse + 4, 6); }
+  if (grav.on) { text('🙃 GRAVITÉ INVERSÉE ' + Math.ceil(grav.left) + 's — pièces +' + Gravity.COIN_PTS + ' (' + grav.collected + ')', 240, 580, 13, `hsl(${grav.hue},100%,65%)`); }
+  if (s.combo > 2) text('COMBO x' + s.combo, 240, 620, 18, '#ffd23f');
+  g.textAlign = 'left'; g.fillStyle = '#888'; g.fillText('RECORD ' + best, 10, 42);
+  if (boss && boss.defeated) text('BOSS VAINCU ! +5000', 240, 300, 34, '#2ed573');
+  if (s.flash) text(s.flash, 240, 300, 40, '#ffd23f');
+  if (!running) { text('ASTRO ARCADE', 240, 280, 36, '#ffd23f'); text('Appuie sur Entrée', 240, 330, 20); }
+  if (s.over) { text('GAME OVER', 240, 280, 44, '#ff4d6d'); text('Score : ' + s.score, 240, 325, 22); if (lastRank) text('Classement : #' + lastRank + ' (' + Logic.cleanName(pseudoEl.value) + ')', 240, 350, 16, '#00e5ff'); text('Entrée pour rejouer', 240, 385, 18); }
+  if (autoplay && storm.active <= 0 && !storm.meteors.length && Math.random() < dt * 0.1) startStorm();
+  Meteors.step(storm, dt, fxCv.width, fxCv.height);
+  Logic.stepFx(fx, dt, fxCv.height); drawFx();
+  if (recordFired) { g.textAlign = 'center'; text('🎆 NOUVEAU RECORD ! 🎆', 240, 70, 20, '#ffd23f'); }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script></body></html>
