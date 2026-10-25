@@ -167,3 +167,6 @@ console.log('ok');
   if (!/--phi:1\.618/.test(css) || !/aspect-ratio:1\.618\/1/.test(css) || !/max-width:618px/.test(css) || !html.includes('φ 1,618')) throw new Error('nombre d\'or manquant');
   console.log('ok nombre d\'or');
 }
+{ const Diag = require('./diag.js'); const r = require('assert');
+  Diag.run({ store: { d: {}, getItem(k) { return this.d[k] || null; }, setItem(k, v) { this.d[k] = v; }, removeItem(k) { delete this.d[k]; } }, get: async p => p.includes('feed') ? { posts: [] } : p.includes('state') ? { state: { users: {} }, version: 1 } : { ok: true }, me: () => 'a', connected: () => true })
+    .then(res => { r.ok(res.find(x => x.name === 'Serveur joignable').ok); r.ok(res.find(x => x.name === 'Fil paginé').ok); r.ok(/en échec/.test(Diag.summary([{ ok: false }]))); console.log('ok diag'); }); }
