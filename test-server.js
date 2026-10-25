@@ -119,3 +119,9 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   await new Promise(ok => s2.close(ok)); fs.rmSync(dir, { recursive: true });
   console.log('ok serveur');
 })().catch(e => { console.error(e); process.exit(1); });
+(async () => {
+  const s2 = createServer({ db: path.join(dir, 'p.db') }); await new Promise(ok => s2.listen(0, '127.0.0.1', ok));
+  const b2 = 'http://127.0.0.1:' + s2.address().port;
+  for (const [f, t] of [['sw.js', 'javascript'], ['manifest.webmanifest', 'manifest+json'], ['icon.svg', 'svg'], ['notif.js', 'javascript']]) { const r = await fetch(b2 + '/' + f); assert.strictEqual(r.status, 200, f); assert.ok(r.headers.get('content-type').includes(t), f); }
+  s2.close(); console.log('ok fichiers PWA');
+})().catch(e => { console.error(e); process.exit(1); });

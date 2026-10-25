@@ -117,12 +117,44 @@ function refresh() {
   for (const [id, val] of keep) { const x = document.getElementById(id); if (x && !x.value) x.value = val; }
   if (a && a.id && document.getElementById(a.id)) document.getElementById(a.id).focus();
 }
-sync.onChange(() => refresh());
+// ---- appli installable (PWA) + notifications : réglages propres à cet appareil (app.notifprefs) ----
+let installEv = null, perm = typeof Notification !== 'undefined' ? Notification.permission : 'denied';
+const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+  navigator.serviceWorker.addEventListener('message', ev => { if (ev.data && ev.data.openNotifs && me) go('notifs'); });
+}
+window.addEventListener('beforeinstallprompt', ev => { ev.preventDefault(); installEv = ev; if (view.page === 'settings') refresh(); });
+window.addEventListener('appinstalled', () => { installEv = null; notice = 'Cornichon est installé ✔'; if (view.page === 'settings') refresh(); });
+const showOffline = () => { const o = document.getElementById('offline'); if (o) o.hidden = navigator.onLine; };
+window.addEventListener('online', () => { showOffline(); sync.poll().then(feedFresh); }); window.addEventListener('offline', showOffline); showOffline();
+const clearOffline = () => { if ('serviceWorker' in navigator && navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage('clear-data'); };
+// à chaque changement de données : affiche les nouvelles mentions / réponses / abonnés selon les réglages
+function notifyNew() {
+  if (!me || !Notif.supported()) return;
+  const list = net.notifications(me), r = Notif.pick(list, Notif.load(store), Notif.seenGet(store, me));
+  Notif.seenSet(store, me, r.seen);
+  if (Notification.permission !== 'granted') return;
+  if (!document.hidden && view.page === 'notifs') return;
+  for (const n of r.show.slice(-5)) Notif.show(n, shown(n.from));
+}
+sync.onChange(() => { refresh(); notifyNew(); });
 window.addEventListener('storage', ev => { if (ev.key === SESSION) sync.pull(true).then(() => refresh(), () => refresh());  // connexion/déconnexion dans un autre onglet
   if (ev.key === Theme.KEY) { th = Theme.load(store); applyTheme(); if (view.page === 'theme' && me) refresh(); }
   if (ev.key === A11Y_KEY) { prefs = A11y.load(store); applyPrefs(); } if (ev.key === null) refresh(); });
 const openSession = name => { me = name; };
 
+function notifCard() {
+  const np = Notif.load(store), ok = Notif.supported(), on = np.enabled && perm === 'granted';
+  return `<div class="card" role="group" aria-labelledby="h-app"><h2 id="h-app">📲 Application et notifications</h2>
+    <p class="mut">${standalone() ? '✅ Cornichon est installé sur cet appareil.' : 'Installe Cornichon comme une vraie appli : icône, plein écran, fil disponible hors-ligne.'}</p>
+    ${!standalone() && installEv ? '<button data-install>📲 Installer l’application</button>' : ''}
+    <b>🔔 Notifications</b>
+    ${!ok ? '<p class="mut">Ce navigateur ne gère pas les notifications.</p>' : perm === 'denied' ? '<p class="err">Notifications bloquées dans le navigateur : autorise-les dans les réglages du site.</p>'
+      : `<p class="mut">${on ? 'Activées sur cet appareil.' : 'Désactivées sur cet appareil.'}</p><div class="row"><button data-notifmain aria-pressed="${on}">${on ? '🔕 Désactiver' : '🔔 Activer les notifications'}</button>${on ? ' <button data-notiftest>Tester</button>' : ''}</div>`}
+    <div role="group" aria-label="Types de notifications">${Object.entries(Notif.TYPES).map(([k, l]) => `<label class="inl"><input type="checkbox" data-notiftype="${k}" ${np.types[k] ? 'checked' : ''}> ${l}</label>`).join('<br>')}</div>
+    <p class="mut">Réglages enregistrés sur cet appareil. Les notifications s’affichent quand l’appli est ouverte ou installée, même en arrière-plan.</p></div>`;
+}
 function postHTML(p, thread) {
   const liked = me && p.likes.includes(me), n = net.replies(p.id, me).length, editing = view.editing === p.id && net.canEdit(me, p.id);
   const saved = net.isBookmarked(me, p.id), rp = net.hasReposted(me, p.id), rc = net.repostCount(p.id), hist = p.history || [];
@@ -281,6 +313,7 @@ function render() {
       <b id="l-theme">Thème</b><div class="row" role="group" aria-labelledby="l-theme">${[['auto', '🖥 Auto'], ['light', '☀️ Clair'], ['dark', '🌙 Sombre']].map(([k, l]) => `<button data-theme="${k}" aria-pressed="${prefs.theme === k}" class="${prefs.theme === k ? 'on' : ''}">${l}</button>`).join('')}</div>
       <b id="l-size">Taille du texte : ${prefs.size} %</b><div class="row" role="group" aria-labelledby="l-size"><button data-size="-1" aria-label="Réduire le texte" ${prefs.size === A11y.SIZES[0] ? 'disabled' : ''}>A−</button><button data-size="0" aria-label="Taille normale">A</button><button data-size="1" aria-label="Agrandir le texte" ${prefs.size === A11y.SIZES[A11y.SIZES.length - 1] ? 'disabled' : ''}>A+</button></div>
       <p class="mut">Navigation au clavier : Tab / Maj+Tab, Entrée ou Espace pour activer. Ces préférences restent sur cet appareil.</p></div>
+      ${notifCard()}
       <div class="card" role="group" aria-labelledby="h-data"><h2 id="h-data">📦 Mes données</h2><p class="mut">Exporte ton profil, tes posts et tes messages en JSON (sans mot de passe), ou importe un export pour les fusionner dans ton compte.</p>
       <div class="row"><button data-export>⬇️ Exporter en JSON</button><label class="mut">Importer un fichier <input id="imp-file" type="file" accept="application/json,.json"></label></div>
       <label for="imp-txt">Ou colle le JSON ici</label><textarea id="imp-txt" class="json" placeholder='{"format":"cornichon-export",…}'></textarea><button data-import>⬆️ Importer</button>
@@ -404,6 +437,21 @@ function themeClick(D, v) {
   render();
 }
 
+document.addEventListener('change', ev => {
+  const k = ev.target.dataset && ev.target.dataset.notiftype; if (!k) return;
+  const np = Notif.load(store); np.types[k] = ev.target.checked; Notif.save(store, np); refresh();
+});
+window.addEventListener('storage', ev => { if (ev.key === Notif.KEY && view.page === 'settings') refresh(); });
+document.addEventListener('click', async ev => {
+  const b = ev.target.closest('[data-install],[data-notifmain],[data-notiftest]'); if (!b) return;
+  if ('install' in b.dataset && installEv) { installEv.prompt(); await installEv.userChoice.catch(() => {}); installEv = null; refresh(); }
+  else if ('notifmain' in b.dataset) {
+    const np = Notif.load(store);
+    if (np.enabled && perm === 'granted') np.enabled = false;
+    else { perm = await Notification.requestPermission(); np.enabled = perm === 'granted'; if (np.enabled && me) Notif.seenSet(store, me, net.notifications(me).reduce((m, n) => Math.max(m, n.id), 0)); }
+    Notif.save(store, np); refresh();
+  } else if ('notiftest' in b.dataset) Notif.show({ id: 'test' + Date.now(), type: 'mention' }, 'Le bocal');
+});
 document.addEventListener('click', ev => {
   const d = ev.target.closest('*[data-page],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
@@ -412,7 +460,7 @@ document.addEventListener('click', ev => {
   else if ('diag' in D) runDiag();
   else if ('login' in D) attempt(async () => openSession(await net.login(v('#u'), v('#pw'))));
   else if ('signup' in D) attempt(async () => openSession(await net.signup(v('#u'), v('#pw'), v('#bio'))));
-  else if ('logout' in D) { me = null; sync.logout(); if (STREAM) attempt(async () => openSession(await net.ensureStreamer())); go('feed'); }
+  else if ('logout' in D) { me = null; sync.logout(); clearOffline(); if (STREAM) attempt(async () => openSession(await net.ensureStreamer())); go('feed'); }
   else if ('chpw' in D) attempt(async () => {
     if (v('#sec-new') !== v('#sec-new2')) throw new Error('La confirmation ne correspond pas');
     await net.changePassword(me, v('#sec-old'), v('#sec-new')); view = { page: 'security', ok: 'Mot de passe modifié ✔ (autres appareils déconnectés)' };
@@ -427,7 +475,7 @@ document.addEventListener('click', ev => {
   else if ('endlink' in D) { LINK = null; linkMsg = ''; authMode = 'login'; err = ''; render(); }
   else if ('setmail' in D) attempt(async () => { const r = await net.setEmail(me, v('#sec-mail')); view = { page: 'security', ok: r.verified ? 'Cette adresse est déjà vérifiée ✔' : `Lien de confirmation envoyé à ${r.email} ✔` }; });
   else if ('rmmail' in D) attempt(async () => { await net.removeEmail(me); view = { page: 'security', ok: 'Adresse retirée ✔' }; });
-  else if ('logoutall' in D) attempt(async () => { await net.logoutAll(me); me = null; view = { page: 'feed' }; });
+  else if ('logoutall' in D) attempt(async () => { await net.logoutAll(me); clearOffline(); me = null; view = { page: 'feed' }; });
   else if ('delacc' in D) attempt(async () => {
     if (!confirm('Supprimer définitivement votre compte et tous vos posts ?')) return;
     await net.deleteAccount(me, v('#sec-del')); me = null; view = { page: 'feed' };
@@ -523,6 +571,8 @@ render();
   try { await sync.pull(true); } catch (e) { err = e.message; }
   if (LINK && LINK.kind === 'verify') { try { const r = await net.verifyEmail(LINK.token); linkMsg = `Adresse ${r.email} vérifiée pour @${r.name} ✔`; } catch (e) { linkMsg = e.message; } }
   booting = false; checkSession();
+  if (me && Notif.supported() && Notif.seenGet(store, me) === null) Notif.seenSet(store, me, net.notifications(me).reduce((m, n) => Math.max(m, n.id), 0));
+  if (new URLSearchParams(location.search).get('notif') && me) view = { page: 'notifs' };
   if (linkMsg && me) { /✔/.test(linkMsg) ? view = { page: 'security', ok: linkMsg } : err = linkMsg; linkMsg = ''; LINK = null; }
   if (STREAM) await attempt(async () => { if (me !== 'Streamer') openSession(await net.ensureStreamer()); view = { page: 'theme' }; }); else render();
   // temps réel : le serveur annonce chaque changement (SSE) ; l'interrogation ne sert plus que de secours
