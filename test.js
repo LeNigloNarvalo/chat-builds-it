@@ -83,6 +83,19 @@ assert.strictEqual(n2.importUser('fred', evil).messages, 1);
   ck += 15 * 60000; assert.throws(() => z.editPost('hana', hp.id, 'trop tard'), /15 minutes/); assert.strictEqual(z.canEdit('hana', hp.id), false);
   z.deletePost('hana', hp.id); assert.ok(z.bookmarks('igor').length === 0 && z.timeline('igor').length === 0);
 }
+// images dans posts et messages
+{ const px = 'data:image/png;base64,iVBORw0KGgo=', g = { src: px, alt: '  un pixel  ' }, mi = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
+  const z = Net(mi); await z.signup('jade', 'pass10'); await z.signup('kim', 'pass11');
+  const ip = z.post('jade', '', null, [g, g]); assert.strictEqual(ip.images.length, 2); assert.strictEqual(ip.images[0].alt, 'un pixel');
+  assert.throws(() => z.post('jade', 'x', null, [g, g, g, g, g]), /4 images/);
+  assert.throws(() => z.post('jade', 'x', null, [{ src: 'data:text/html;base64,AAAA' }]), /invalide/);
+  assert.throws(() => z.post('jade', 'x', null, [{ src: 'javascript:alert(1)' }]), /invalide/);
+  assert.throws(() => z.post('jade', '', null, []), /vide/);
+  z.send('jade', 'kim', '', [g]); assert.strictEqual(z.conversation('kim', 'jade')[0].images.length, 1);
+  assert.throws(() => z.send('jade', 'kim', ''), /invalide/);
+  const back = Net({ d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } }); await back.signup('jade', 'autre3');
+  assert.strictEqual(back.importUser('jade', z.exportUser('jade')).posts, 1); assert.strictEqual(back.byUser('jade')[0].images.length, 2);
+}
 // préférences d'accessibilité
 const A = require('./a11y.js'), pm = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
 assert.deepStrictEqual(A.load(pm), { theme: 'auto', size: 100 });

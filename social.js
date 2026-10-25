@@ -6,6 +6,19 @@
   const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000;
 
   const RESERVED = 'streamer';
+  // images jointes : jusqu'à 4 par post/message, en data URL (redimensionnées côté navigateur), avec texte alternatif
+  const MAX_IMAGES = 4, MAX_IMG_CHARS = 400000, IMG_RE = /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+\/=]+$/;
+  function cleanImages(list) {
+    list = list == null ? [] : list;
+    if (!Array.isArray(list)) throw new Error('Images invalides');
+    if (list.length > MAX_IMAGES) throw new Error('4 images maximum');
+    return list.map(i => {
+      const src = String((i && i.src) || '');
+      if (!IMG_RE.test(src)) throw new Error('Image invalide (JPEG, PNG, WebP ou GIF)');
+      if (src.length > MAX_IMG_CHARS) throw new Error('Image trop lourde');
+      return { src, alt: String((i && i.alt) || '').trim().slice(0, 200) };
+    });
+  }
   const subtle = () => (root.crypto || require('crypto').webcrypto).subtle;
   const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
   const sha = async s => hex(await subtle().digest('SHA-256', new TextEncoder().encode(s)));
@@ -101,12 +114,13 @@
         db.users[RESERVED] = { name: 'Streamer', pass, bio: 'Compte du stream 🔴', following: [], joined: now(), admin: true, display: 'Streamer', avatar: '#9146ff', banner: 'grad:0' };
         save(); return 'Streamer';
       },
-      post(author, text, replyTo) {
-        text = (text || '').trim();
-        need(text && text.length <= 280, 'Message vide ou > 280 caractères');
+      post(author, text, replyTo, images) {
+        text = (text || '').trim(); images = cleanImages(images);
+        need((text || images.length) && text.length <= 280, 'Message vide ou > 280 caractères');
         user(author);
         if (replyTo) need(db.posts.find(p => p.id === replyTo), 'Post introuvable');
         const p = { id: id(), author: user(author).name, text, at: now(), likes: [], replyTo: replyTo || null };
+        if (images.length) p.images = images;
         db.posts.push(p);
         if (replyTo) notify(db.posts.find(x => x.id === replyTo).author, p.author, 'reply', p.id);
         for (const m of text.match(/@\w+/g) || []) { const t = db.users[m.slice(1).toLowerCase()]; if (t) notify(t.name, p.author, 'mention', p.id); }
@@ -226,8 +240,8 @@
         const u = user(by);
         return { format: 'twitchgram-export', version: 1, exportedAt: now(),
           profile: { name: u.name, display: u.display || '', bio: u.bio || '', avatar: u.avatar || '', banner: u.banner || '', link: u.link || '', following: u.following.slice() },
-          posts: db.posts.filter(p => p.author === u.name).map(p => ({ text: p.text, at: p.at, replyTo: p.replyTo })),
-          messages: db.messages.filter(m => m.from === u.name || m.to === u.name).map(m => ({ from: m.from, to: m.to, text: m.text, at: m.at })) };
+          posts: db.posts.filter(p => p.author === u.name).map(p => ({ text: p.text, at: p.at, replyTo: p.replyTo, images: p.images || [] })),
+          messages: db.messages.filter(m => m.from === u.name || m.to === u.name).map(m => ({ from: m.from, to: m.to, text: m.text, at: m.at, images: m.images || [] })) };
       },
       // import : fusionne profil, abonnements, posts et messages (sans doublons) dans le compte courant
       importUser(by, data) {
@@ -242,21 +256,26 @@
         }
         for (const p of data.posts) {
           const text = String(p.text || '').trim();
-          if (!text || text.length > 280 || p.replyTo || db.posts.some(x => x.author === u.name && x.text === text && x.at === p.at)) continue;
-          db.posts.push({ id: id(), author: u.name, text, at: +p.at || now(), likes: [], replyTo: null }); r.posts++;
+          let imgs; try { imgs = cleanImages(p.images); } catch (e) { continue; }
+          if ((!text && !imgs.length) || text.length > 280 || p.replyTo || db.posts.some(x => x.author === u.name && x.text === text && x.at === p.at)) continue;
+          const np = { id: id(), author: u.name, text, at: +p.at || now(), likes: [], replyTo: null }; if (imgs.length) np.images = imgs; db.posts.push(np); r.posts++;
         }
         for (const m of Array.isArray(data.messages) ? data.messages : []) {
+          let imgs; try { imgs = cleanImages(m.images); } catch (e) { continue; }
           const text = String(m.text || '').trim(), from = db.users[String(m.from).toLowerCase()], to = db.users[String(m.to).toLowerCase()];
-          if (!text || text.length > 500 || !from || !to || (from.name !== u.name && to.name !== u.name)) continue;
+          if ((!text && !imgs.length) || text.length > 500 || !from || !to || (from.name !== u.name && to.name !== u.name)) continue;
           if (db.messages.some(x => x.from === from.name && x.to === to.name && x.text === text && x.at === m.at)) continue;
-          db.messages.push({ id: id(), from: from.name, to: to.name, text, at: +m.at || now() }); r.messages++;
+          const nm = { id: id(), from: from.name, to: to.name, text, at: +m.at || now() }; if (imgs.length) nm.images = imgs; db.messages.push(nm); r.messages++;
         }
         save(); return r;
       },
-      send(from, to, text) {
-        text = (text || '').trim(); need(text && text.length <= 500, 'Message invalide');
+      send(from, to, text, images) {
+        text = (text || '').trim(); images = cleanImages(images);
+        need((text || images.length) && text.length <= 500, 'Message invalide');
         user(from); const t = user(to);
-        db.messages.push({ id: id(), from: user(from).name, to: t.name, text, at: now() });
+        const m = { id: id(), from: user(from).name, to: t.name, text, at: now() };
+        if (images.length) m.images = images;
+        db.messages.push(m);
         save();
       },
       conversation(a, b) {
@@ -275,6 +294,6 @@
     return api;
   }
 
-  const exported = { Net, KEY };
+  const exported = { Net, KEY, MAX_IMAGES, cleanImages };
   if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);

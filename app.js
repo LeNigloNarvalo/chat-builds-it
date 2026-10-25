@@ -29,8 +29,41 @@ const GRADS = ['linear-gradient(135deg,#9146ff,#ff4d8d)', 'linear-gradient(135de
 const bannerCss = b => !b ? GRADS[0] : b.startsWith('grad:') ? GRADS[+b.slice(5)] : `center/cover url("${encodeURI(b).replace(/"/g, '%22')}"), ${GRADS[4]}`;
 const peopleList = names => names.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)} · ${esc(prof(n).bio || '')}</span></div>`).join('') || '<p class="mut">Personne pour l’instant.</p>';
 const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'à l’instant' : m < 60 ? m + ' min' : m < 1440 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' j'; };
-const go = (page, arg) => { view = { page, arg }; render(); };
+const go = (page, arg) => { view = { page, arg }; pend.post = []; pend.dm = []; render(); };
 let err = '';
+// images en cours de rédaction (par zone de saisie) : { post: [{src, alt}], dm: [...] }, propres à ce visiteur
+const pend = { post: [], dm: [] };
+let lb = null; // visionneuse plein écran : { images, i }
+const MAX_IMG = Social.MAX_IMAGES, MAX_SIDE = 1280, MAX_CHARS = 380000;
+// import + redimensionnement automatique (canvas) ; un GIF léger garde son animation
+async function prepImage(file) {
+  if (!/^image\/(jpeg|png|webp|gif)$/.test(file.type)) throw new Error(`« ${file.name} » : format non pris en charge`);
+  const read = f => new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => ko(new Error('Lecture impossible')); r.readAsDataURL(f); });
+  const orig = await read(file);
+  if (file.type === 'image/gif' && orig.length <= MAX_CHARS) return { src: orig, alt: '' };
+  const img = await new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ko(new Error(`« ${file.name} » : image illisible`)); i.src = orig; });
+  let k = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight)), q = 0.85, out;
+  for (let t = 0; t < 8; t++) {
+    const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(img.naturalWidth * k)); c.height = Math.max(1, Math.round(img.naturalHeight * k));
+    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+    out = c.toDataURL('image/jpeg', q);
+    if (out.length <= MAX_CHARS) return { src: out, alt: '' };
+    q = Math.max(0.5, q - 0.1); k *= 0.8;
+  }
+  throw new Error(`« ${file.name} » : image trop lourde`);
+}
+const gallery = (images, kind, id) => !images || !images.length ? '' : `<div class="gal n${images.length}">${images.map((im, i) => `<button class="gi" data-gal="${kind}:${id}:${i}" aria-label="Agrandir l’image ${i + 1} sur ${images.length}${im.alt ? ' : ' + esc(im.alt) : ''}"><img src="${im.src}" alt="${esc(im.alt || 'Image jointe ' + (i + 1))}" loading="lazy"></button>`).join('')}</div>`;
+const attachBox = key => `<div class="att"><label class="filebtn">📷 Ajouter des images<input type="file" id="img-${key}" data-pick="${key}" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden></label> <span class="mut">${pend[key].length}/${MAX_IMG} · redimensionnées automatiquement</span>
+  <div class="prev">${pend[key].map((im, i) => `<div class="pv"><img src="${im.src}" alt="Aperçu ${i + 1}"><input id="alt-${key}-${i}" data-alt="${key}:${i}" maxlength="200" placeholder="Texte alternatif (décris l’image)" aria-label="Texte alternatif de l’image ${i + 1}" value="${esc(im.alt)}"><button data-rmimg="${key}:${i}" aria-label="Retirer l’image ${i + 1}">✕</button></div>`).join('')}</div></div>`;
+function lightbox() {
+  const o = document.getElementById('lb'); if (o) o.remove();
+  if (!lb) return;
+  const im = lb.images[lb.i], many = lb.images.length > 1, d = document.createElement('div');
+  d.id = 'lb'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-modal', 'true'); d.setAttribute('aria-label', 'Galerie d’images');
+  d.innerHTML = `<button data-lbclose aria-label="Fermer">✕</button>${many ? '<button class="nv p" data-lbnav="-1" aria-label="Image précédente">‹</button><button class="nv n" data-lbnav="1" aria-label="Image suivante">›</button>' : ''}<figure><img src="${im.src}" alt="${esc(im.alt || 'Image ' + (lb.i + 1))}"><figcaption>${esc(im.alt || '')} <span class="mut">${lb.i + 1}/${lb.images.length}</span></figcaption></figure>`;
+  document.body.appendChild(d); d.querySelector('[data-lbclose]').focus();
+}
+const closeLb = () => { const from = lb && lb.from; lb = null; lightbox(); if (from) { const b = document.querySelector(`[data-gal="${from}"]`); if (b) b.focus(); } };
 const attempt = async f => { try { err = ''; await f(); } catch (e) { err = e.message; } render(); };
 // re-rendu sans perdre la saisie en cours (changement venu d'un autre visiteur)
 function refresh() {
@@ -48,13 +81,13 @@ function postHTML(p, thread) {
   const saved = net.isBookmarked(me, p.id), rp = net.hasReposted(me, p.id), rc = net.repostCount(p.id), hist = p.history || [];
   const edited = p.editedAt ? `<button class="lnk" data-hist="${p.id}" aria-expanded="${view.hist === p.id}">modifié</button>` : '';
   const histHTML = p.editedAt && view.hist === p.id ? `<div class="hist"><b>Historique des modifications</b>${hist.map(h => `<div class="mut">${ago(h.at)} · ${esc(h.text)}</div>`).join('')}<div>Actuel · ${esc(p.text)}</div></div>` : '';
-  const body = editing ? `<textarea id="edit-txt" maxlength="280">${esc(p.text)}</textarea><button data-saveedit="${p.id}">💾 Enregistrer</button> <button data-canceledit>Annuler</button> <span class="mut">${Math.ceil(net.editLeft(p.id) / 60000)} min restantes</span>` : `<p>${rich(p.text)}</p>`;
+  const body = editing ? `<textarea id="edit-txt" maxlength="280">${esc(p.text)}</textarea><button data-saveedit="${p.id}">💾 Enregistrer</button> <button data-canceledit>Annuler</button> <span class="mut">${Math.ceil(net.editLeft(p.id) / 60000)} min restantes</span>` : `${p.text ? `<p>${rich(p.text)}</p>` : ''}${gallery(p.images, 'p', p.id)}`;
   return `<div class="card post">${av(p.author)}<span class="who" data-user="${p.author}">${esc(shown(p.author))}</span> <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span> ${edited}
   ${body}${histHTML}<div class="acts"><button data-like="${p.id}" class="${liked ? 'on' : ''}">♥ ${p.likes.length}</button>
   <button data-open="${p.id}">💬 ${n}</button>${!p.replyTo && p.author !== me ? `<button data-repost="${p.id}" class="${rp ? 'on' : ''}" aria-pressed="${rp}" aria-label="${rp ? 'Annuler le repartage' : 'Repartager sur mon profil'}">🔁 ${rc}</button>` : rc ? `<span class="mut">🔁 ${rc}</span>` : ''}
   <button data-bm="${p.id}" class="${saved ? 'on' : ''}" aria-pressed="${saved}" aria-label="${saved ? 'Retirer des favoris' : 'Mettre en favori'}">${saved ? '🔖' : '📑'}</button>${net.canEdit(me, p.id) && !editing ? `<button data-edit="${p.id}" aria-label="Modifier le post">✏️</button>` : ''}${p.author === me || net.isAdmin(me) ? `<button data-del="${p.id}">🗑</button>` : ''}</div></div>`;
 }
-const composer = (ph, reply) => `<div class="card"><textarea id="txt" maxlength="280" placeholder="${ph}"></textarea><button data-send="${reply || ''}">Publier</button></div>`;
+const composer = (ph, reply) => `<div class="card"><textarea id="txt" maxlength="280" placeholder="${ph}"></textarea>${attachBox('post')}<button data-send="${reply || ''}">Publier</button></div>`;
 
 function render() {
   const nav = $('#nav'), app = $('#app');
@@ -126,8 +159,8 @@ function render() {
   } else if (view.page === 'dm') {
     const peers = Object.values(net.db().users).filter(u => u.name !== me);
     h = `<div class="card">${peers.map(u => `<button data-chat="${u.name}" class="${view.arg === u.name ? 'on' : ''}">${esc(u.name)}</button>`).join(' ') || '<span class="mut">Personne d’autre pour l’instant.</span>'}</div>`;
-    if (view.arg) h += `<div class="card" style="display:grid;gap:6px">${net.conversation(me, view.arg).map(m => `<div class="msg ${m.from === me ? 'me' : ''}">${esc(m.text)}</div>`).join('') || '<span class="mut">Dites bonjour 👋</span>'}
-      <input id="dm" placeholder="Message à ${esc(view.arg)}"><button data-dm>Envoyer</button></div>${e}`;
+    if (view.arg) h += `<div class="card" style="display:grid;gap:6px">${net.conversation(me, view.arg).map(m => `<div class="msg ${m.from === me ? 'me' : ''}">${m.text ? esc(m.text) : ''}${gallery(m.images, 'm', m.id)}</div>`).join('') || '<span class="mut">Dites bonjour 👋</span>'}
+      <input id="dm" placeholder="Message à ${esc(view.arg)}">${attachBox('dm')}<button data-dm>Envoyer</button></div>${e}`;
   }
   app.innerHTML = h;
   a11yPass();
@@ -150,7 +183,7 @@ document.addEventListener('keydown', ev => {
 const download = (name, text) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); };
 
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist]');
+  const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav]');
   if (!d) return;
   const D = d.dataset, v = id => ($(id) || {}).value;
   if ('login' in D) attempt(async () => openSession(await net.login(v('#u'), v('#pw'))));
@@ -172,8 +205,15 @@ document.addEventListener('click', ev => {
     const f = ($('#imp-file') || {}).files && $('#imp-file').files[0], txt = f ? await f.text() : v('#imp-txt');
     const r = net.importUser(me, txt); notice = `Import réussi ✔ : ${r.posts} post(s), ${r.messages} message(s), ${r.following} abonnement(s)`;
   });
+  else if ('gal' in D) {
+    const [k, i, j] = D.gal.split(':'), it = k === 'p' ? net.db().posts.find(x => x.id === +i) : net.db().messages.find(x => x.id === +i);
+    if (it && it.images) { lb = { images: it.images, i: +j, from: D.gal }; lightbox(); }
+  }
+  else if ('rmimg' in D) { const [k, i] = D.rmimg.split(':'); pend[k].splice(+i, 1); err = ''; refresh(); }
+  else if ('lbclose' in D) closeLb();
+  else if ('lbnav' in D) { lb.i = (lb.i + +D.lbnav + lb.images.length) % lb.images.length; lightbox(); }
   else if ('page' in D) { err = ''; notice = ''; go(D.page); $('#app').focus(); }
-  else if ('send' in D) attempt(() => net.post(me, v('#txt'), D.send ? +D.send : null));
+  else if ('send' in D) attempt(() => { net.post(me, v('#txt'), D.send ? +D.send : null, pend.post); pend.post = []; });
   else if ('like' in D) attempt(() => net.toggleLike(me, +D.like));
   else if ('bm' in D) attempt(() => net.toggleBookmark(me, +D.bm));
   else if ('repost' in D) attempt(() => net.toggleRepost(me, +D.repost));
@@ -189,9 +229,28 @@ document.addEventListener('click', ev => {
   else if ('user' in D) go('profile', D.user);
   else if ('follow' in D) attempt(() => net.toggleFollow(me, D.follow));
   else if ('chat' in D) go('dm', D.chat);
-  else if ('dm' in D) attempt(() => net.send(me, view.arg, v('#dm')));
+  else if ('dm' in D) attempt(() => { net.send(me, view.arg, v('#dm'), pend.dm); pend.dm = []; });
   else if ('search' in D) go('search', D.search);
   else if ('dosearch' in D) go('search', v('#q'));
+});
+// choix des fichiers : import, redimensionnement, ajout à l'aperçu (4 max)
+document.addEventListener('change', async ev => {
+  const t = ev.target; if (!t.dataset || !t.dataset.pick) return;
+  const key = t.dataset.pick, files = [...t.files]; err = '';
+  for (const f of files) {
+    if (pend[key].length >= MAX_IMG) { err = `${MAX_IMG} images maximum`; break; }
+    try { pend[key].push(await prepImage(f)); } catch (e) { err = e.message; }
+  }
+  refresh();
+});
+// texte alternatif : mémorisé à la frappe
+document.addEventListener('input', ev => { const d = ev.target.dataset; if (d && d.alt) { const [k, i] = d.alt.split(':'); if (pend[k][+i]) pend[k][+i].alt = ev.target.value; } });
+// plein écran : Échap ferme, flèches naviguent, Tab reste dans la visionneuse
+document.addEventListener('keydown', ev => {
+  if (!lb) return;
+  if (ev.key === 'Escape') closeLb();
+  else if (ev.key === 'ArrowRight' || ev.key === 'ArrowLeft') { lb.i = (lb.i + (ev.key === 'ArrowRight' ? 1 : -1) + lb.images.length) % lb.images.length; lightbox(); }
+  else if (ev.key === 'Tab') { const b = [...document.querySelectorAll('#lb button')], i = b.indexOf(document.activeElement); ev.preventDefault(); b[(i + (ev.shiftKey ? -1 : 1) + b.length) % b.length].focus(); }
 });
 render();
 // « live » : la page Tendances se rafraîchit seule (les données viennent du stockage partagé)
