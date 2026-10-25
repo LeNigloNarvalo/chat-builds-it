@@ -180,7 +180,10 @@
   const ANN_LEVELS = { info: 'ℹ️ Info', success: '🎉 Nouveauté', warning: '⚠️ Attention', critical: '🚨 Urgent' };
   const COMPONENTS = { feed: '📰 Fil et publications', dm: '✉️ Messages privés', media: '🖼 Médias et vidéos', login: '🔑 Connexion', api: '🔌 API et webhooks' };
   const IMPACTS = { degraded: '🟠 Service dégradé', outage: '🔴 Panne', maintenance: '🛠 Maintenance' }, INC_STATES = { investigating: '🔎 Analyse en cours', identified: '🎯 Cause identifiée', monitoring: '👀 Surveillance', resolved: '✅ Résolu' };
-  const MAINT_BLOCK = new Set(['post', 'editPost', 'quote', 'react', 'toggleLike', 'toggleRepost', 'send', 'sendRoom', 'editMessage', 'createRoom', 'createGroup', 'createEvent', 'createList', 'ask', 'answerQuestion', 'vote', 'addMedia', 'publishDraft', 'createOrg', 'submitOrgPost', 'toggleFollow', 'joinGroup', 'updateProfile']);
+  const MAINT_BLOCK = new Set(['post', 'editPost', 'quote', 'react', 'toggleLike', 'toggleRepost', 'send', 'sendRoom', 'editMessage', 'createRoom', 'createGroup', 'createEvent', 'createList', 'ask', 'answerQuestion', 'vote', 'addMedia', 'publishDraft', 'createOrg', 'submitOrgPost', 'toggleFollow', 'joinGroup', 'updateProfile', 'proposeIdea', 'voteIdea', 'commentIdea', 'followIdea']);
+  // ---- feuille de route publique : nouveautés datées, idées des membres, votes et statuts ----
+  const IDEA_STATES = { considered: '💭 Envisagé', progress: '🚧 En cours', delivered: '✅ Livré' }, UPD_TAGS = { new: '✨ Nouveauté', improved: '🔧 Amélioration', fixed: '🐛 Correctif', soon: '🔭 Bientôt' };
+  const MAX_IDEAS = 500, MAX_UPDATES = 200, MAX_IDEA_COMMENTS = 200;
   const MAX_ANN = 50, MAX_INC = 100, SEV = { ok: 0, maintenance: 1, degraded: 2, outage: 3 };
   const activeMaint = (st, t) => { const m = st && st.maintenance; return m && m.on && (!m.until || m.until > t) ? m : null; };
   const liveAnn = (st, t) => ((st && st.announcements) || []).filter(a => !a.expires || a.expires > t).sort((a, b) => (b.pinned - a.pinned) || (b.at - a.at));
@@ -2089,6 +2092,66 @@ function Net(storage, now) {
         st.maintenance = { on: true, message, at: now(), by: user(by).name, until: min ? now() + min * 60000 : null };
         audit(by, 'maintenance-on', null, 'mode maintenance activé' + (message ? ' · ' + message : '') + (min ? ` · ${min} min` : '')); save(); return st.maintenance;
       },
+      // ---- feuille de route publique (écriture des nouveautés et des statuts : équipe ; idées, votes, commentaires : membres) ----
+      roadmapBoard() { const r = db.roadmap || {}; return { updates: (r.updates || []).slice().sort((a, b) => b.at - a.at || b.id - a.id), ideas: r.ideas || [] }; },
+      // vrai si une nouveauté a été publiée depuis la dernière visite du membre sur la page (pastille « nouveau »)
+      roadmapNew(by) { const u = user(by), seen = u.roadSeen || u.joined || 0; return ((db.roadmap || {}).updates || []).some(x => x.at > seen && lc(x.by) !== lc(u.name)); },
+      markRoadmapSeen(by) { const u = user(by), t = now(); if (!u.roadSeen || u.roadSeen < t) { u.roadSeen = t; save(); } },
+      publishUpdate(by, o) {
+        need(api.isAdmin(by), 'Réservé à l’équipe'); o = o || {};
+        const title = String(o.title || '').replace(/\s+/g, ' ').trim(), text = String(o.text || '').trim();
+        need(title.length >= 3 && title.length <= 80, 'Titre : 3 à 80 caractères'); need(text.length <= 1000, 'Texte : 1000 caractères maximum'); need(UPD_TAGS[o.tag], 'Catégorie inconnue');
+        const r = db.roadmap = db.roadmap || { updates: [], ideas: [] }, x = { id: id(), title, text, tag: o.tag, at: now(), by: user(by).name };
+        r.updates.push(x); if (r.updates.length > MAX_UPDATES) r.updates.splice(0, r.updates.length - MAX_UPDATES);
+        audit(by, 'roadmap-update', null, `nouveauté « ${title} »`); save(); return x;
+      },
+      deleteUpdate(by, uid) {
+        need(api.isAdmin(by), 'Réservé à l’équipe'); const r = db.roadmap || {}, x = (r.updates || []).find(v => v.id === uid); need(x, 'Nouveauté introuvable');
+        r.updates = r.updates.filter(v => v !== x); audit(by, 'roadmap-update-delete', null, `nouveauté « ${x.title} » retirée`); save();
+      },
+      proposeIdea(by, o) {
+        const u = user(by); guard(by, true); o = o || {};
+        const title = String(o.title || '').replace(/\s+/g, ' ').trim(), text = String(o.text || '').trim();
+        need(title.length >= 3 && title.length <= 80, 'Titre : 3 à 80 caractères'); need(text.length <= 600, 'Description : 600 caractères maximum');
+        const r = db.roadmap = db.roadmap || { updates: [], ideas: [] };
+        need(r.ideas.length < MAX_IDEAS, 'Trop d’idées : l’équipe doit en archiver avant d’en ajouter');
+        need(!r.ideas.some(i => i.title.toLowerCase() === title.toLowerCase()), 'Cette idée existe déjà : votez pour elle !');
+        need(r.ideas.filter(i => lc(i.by) === lc(u.name) && i.at > now() - 86400000).length < 5, 'Maximum 5 idées par jour');
+        const i = { id: id(), title, text, by: u.name, at: now(), status: 'considered', votes: [u.name], followers: [u.name], comments: [], log: [{ status: 'considered', at: now(), by: u.name }] };
+        r.ideas.push(i); save(); return i;
+      },
+      deleteIdea(by, iid) {
+        const adm = api.isAdmin(by), r = db.roadmap || {}, i = (r.ideas || []).find(v => v.id === iid); need(i, 'Idée introuvable');
+        need(adm || (lc(i.by) === lc(user(by).name) && i.status === 'considered' && i.votes.every(v => lc(v) === lc(i.by))), 'Seule l’équipe peut supprimer une idée qui a déjà des votes');
+        r.ideas = r.ideas.filter(v => v !== i); db.notifs = db.notifs.filter(n => !(n.type === 'roadmap' && n.idea === iid)); if (lc(i.by) !== lc(user(by).name)) audit(by, 'idea-delete', null, `idée « ${i.title} » supprimée`); save();
+      },
+      voteIdea(by, iid) {
+        const u = user(by); guard(by, true); const i = ((db.roadmap || {}).ideas || []).find(v => v.id === iid); need(i, 'Idée introuvable'); need(i.status !== 'delivered', 'Cette idée est déjà livrée');
+        const k = i.votes.findIndex(v => lc(v) === lc(u.name)); if (k >= 0) i.votes.splice(k, 1); else i.votes.push(u.name); save(); return k < 0;
+      },
+      followIdea(by, iid) {
+        const u = user(by), i = ((db.roadmap || {}).ideas || []).find(v => v.id === iid); need(i, 'Idée introuvable');
+        const k = i.followers.findIndex(v => lc(v) === lc(u.name)); if (k >= 0) i.followers.splice(k, 1); else i.followers.push(u.name); save(); return k < 0;
+      },
+      commentIdea(by, iid, text) {
+        const u = user(by); guard(by, true); const i = ((db.roadmap || {}).ideas || []).find(v => v.id === iid); need(i, 'Idée introuvable');
+        text = String(text || '').trim(); need(text.length >= 1 && text.length <= 400, 'Commentaire : 1 à 400 caractères'); need(i.comments.length < MAX_IDEA_COMMENTS, 'Trop de commentaires sur cette idée');
+        const c = { id: id(), by: u.name, text, at: now() }; i.comments.push(c);
+        save(); return c;
+      },
+      deleteIdeaComment(by, iid, cid) {
+        const adm = api.isAdmin(by), i = ((db.roadmap || {}).ideas || []).find(v => v.id === iid); need(i, 'Idée introuvable'); const c = i.comments.find(v => v.id === cid); need(c, 'Commentaire introuvable');
+        need(adm || lc(c.by) === lc(user(by).name), 'Commentaire d’un autre membre'); i.comments = i.comments.filter(v => v !== c); save();
+      },
+      // l'équipe fait avancer une idée ; passer à « livré » prévient tous ceux qui la suivent
+      setIdeaStatus(by, iid, status) {
+        need(api.isAdmin(by), 'Réservé à l’équipe'); const i = ((db.roadmap || {}).ideas || []).find(v => v.id === iid); need(i, 'Idée introuvable'); need(IDEA_STATES[status], 'Statut inconnu');
+        if (i.status === status) return i;
+        i.status = status; i.log.push({ status, at: now(), by: user(by).name });
+        if (status === 'delivered') { i.deliveredAt = now(); for (const n of i.followers) if (db.users[lc(n)]) notify(db.users[lc(n)].name, '', 'roadmap', null, { idea: i.id, what: 'delivered', title: i.title }); }
+        else delete i.deliveredAt;
+        audit(by, 'idea-status', null, `idée « ${i.title} » → ${status}`); save(); return i;
+      },
       notifications(by, markRead) {
         const bell = normPrefs(user(by).notifPrefs).types;
         const l = db.notifs.filter(n => n.to === user(by).name && !hiddenFor(by, n.from) && !(bell[n.type] && !bell[n.type].bell)).sort((a, b) => b.id - a.id);
@@ -2118,12 +2181,12 @@ function Net(storage, now) {
     if (!me) throw new Error('Utilisateur introuvable');
     const lcm = me.name.toLowerCase(), users = Object.create(null);
     for (const [k, u] of Object.entries(db.users)) {
-      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, notifPrefs, privacy, deleteAt, onboarding, fy, annSeen, ...pub } = u;
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, notifPrefs, privacy, deleteAt, onboarding, fy, annSeen, roadSeen, ...pub } = u;
       if (lists) pub.lists = k === lcm ? lists : lists.filter(l => l.public || (l.share && (me.sharedLists || []).some(r => r.owner.toLowerCase() === k && r.id === l.id && r.token === l.share))).map(l => ({ ...l, share: null }));
       if (k !== lcm && !privOk(db, me.name, u.name, 'profile')) Object.assign(pub, { bio: '', link: '', banner: '', display: '', photo: '', locked: true });
       if (k !== lcm && !privOk(db, me.name, u.name, 'posts')) pub.lockedPosts = true;
       pub.followReq = k === lcm ? (u.followReq || []).slice() : (u.followReq || []).filter(x => x === me.name);
-      if (k === lcm) Object.assign(pub, { annSeen, privacy: normPrivacy(privacy), deleteAt, onboarding, fy, dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
+      if (k === lcm) Object.assign(pub, { annSeen, roadSeen, privacy: normPrivacy(privacy), deleteAt, onboarding, fy, dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
       else if (me.admin) Object.assign(pub, { sanction, sanctions });
       users[k] = JSON.parse(JSON.stringify(pub));
     }
@@ -2151,6 +2214,7 @@ function Net(storage, now) {
       peerReadAt: Object.fromEntries(Object.values(db.users).filter(u => u.name !== me.name && !(u.blocked || []).includes(me.name) && !(me.blocked || []).includes(u.name) && (u.dmReadAt || {})[lcm]).map(u => [u.name.toLowerCase(), u.dmReadAt[lcm]])),
       peerRead: Object.fromEntries(Object.values(db.users).filter(u => u.name !== me.name && !(u.blocked || []).includes(me.name) && !(me.blocked || []).includes(u.name) && (u.dmRead || {})[lcm]).map(u => [u.name.toLowerCase(), u.dmRead[lcm]])),
       status: statusView(db, Date.now()),
+      roadmap: db.roadmap || { updates: [], ideas: [] },
       audit: me.admin ? (db.audit || []).slice(-300) : [], totals: me.admin ? { hiddenPosts: db.posts.filter(p => !p.replyTo && p.group && !readable.has(p.group)).length, hiddenMessages: db.messages.filter(m => m.from !== me.name && m.to !== me.name).length } : undefined,
       verifs: me.admin ? (db.verifs || []).slice(-200) : (db.verifs || []).filter(v => v.user === me.name),
       badgeLog: me.admin ? (db.badgeLog || []).slice(-500) : (db.badgeLog || []).filter(e => e.user === me.name),
@@ -2160,6 +2224,6 @@ function Net(storage, now) {
     };
   }
 
-  const exported = { ANN_LEVELS, COMPONENTS, IMPACTS, INC_STATES, MAINT_BLOCK, AM, normImport, MSG_EMOJIS, Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
+  const exported = { IDEA_STATES, UPD_TAGS, ANN_LEVELS, COMPONENTS, IMPACTS, INC_STATES, MAINT_BLOCK, AM, normImport, MSG_EMOJIS, Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
   if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);
