@@ -17,3 +17,4 @@ main{max-width:620px;margin:16px auto;padding:0 12px;display:grid;gap:12px}
 .av.big{width:64px;height:64px;line-height:58px;font-size:26px}.pname{font-size:18px}.stats button b{color:var(--acc)}.person{cursor:pointer}.person:hover{border-color:var(--acc)}
 label{display:block;margin:8px 0;color:var(--mut)}label input[type=color]{width:60px;height:36px;padding:2px;display:block}.grads{display:flex;gap:6px;margin-bottom:8px}.grads button{width:36px;height:24px;padding:0}
 a{color:#b794ff}
+.ok{color:#4cd98a}

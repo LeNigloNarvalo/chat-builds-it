@@ -4,8 +4,13 @@ const STREAM = new URLSearchParams(location.search).get('stream') === '1';
 const SESSION = 'app.session';
 const store = localStorage;
 const net = Social.Net(store);
-let me = store.getItem(SESSION);
-if (me) { try { net.profile(me); } catch (e) { me = null; store.removeItem(SESSION); } }
+// session : « pseudo|époque » (époque changée = « déconnecté partout »)
+let me = null;
+const checkSession = () => {
+  const [n, ep] = (store.getItem(SESSION) || '').split('|');
+  try { net.profile(n); if (+(ep || 0) !== net.epoch(n)) throw 0; me = net.profile(n).name; } catch (e) { me = null; store.removeItem(SESSION); }
+};
+checkSession();
 let view = { page: 'feed' };
 const $ = s => document.querySelector(s);
 const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -23,14 +28,14 @@ let err = '';
 const attempt = async f => { try { err = ''; await f(); } catch (e) { err = e.message; } render(); };
 // re-rendu sans perdre la saisie en cours (changement venu d'un autre visiteur)
 function refresh() {
-  if (me) { try { net.profile(me); } catch (e) { me = null; store.removeItem(SESSION); } }
+  if (me) checkSession();
   const a = document.activeElement, keep = [...document.querySelectorAll('#app input[id],#app textarea[id]')].map(x => [x.id, x.value]);
   render();
   for (const [id, val] of keep) { const x = document.getElementById(id); if (x && !x.value) x.value = val; }
   if (a && a.id && document.getElementById(a.id)) document.getElementById(a.id).focus();
 }
 window.addEventListener('storage', ev => { if (ev.key === null || ev.key === Social.KEY) refresh(); });
-const openSession = name => { me = name; store.setItem(SESSION, me); };
+const openSession = name => { me = name; store.setItem(SESSION, me + '|' + net.epoch(me)); };
 
 function postHTML(p, thread) {
   const liked = me && p.likes.includes(me), n = net.replies(p.id).length;
@@ -50,7 +55,7 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length;
-  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['dm', '✉️ Messages'], ['profile', '👤 Profil'], ['settings', '⚙️ Réglages']]
+  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['dm', '✉️ Messages'], ['profile', '👤 Profil'], ['settings', '⚙️ Réglages'], ['security', '🔒 Sécurité']]
     .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
   const list = ps => ps.map(p => postHTML(p)).join('') || '<p class="mut">Rien ici pour l’instant.</p>';
@@ -89,7 +94,14 @@ function render() {
       <div class="grads">${GRADS.map((g, i) => `<button data-grad="${i}" style="background:${g}" title="Dégradé ${i + 1}"></button>`).join('')}</div>
       <label>Lien web<input id="s-link" value="${esc(u.link || '')}" placeholder="https://twitch.tv/…"></label>
       <input id="s-gradv" type="hidden" value="${/^grad:/.test(b) ? b : ''}">
-      <button data-saveprofile>💾 Enregistrer</button> <button data-user="${u.name}">Voir mon profil</button>${e}</div>`;
+      <button data-saveprofile>💾 Enregistrer</button> <button data-page="security">🔒 Sécurité</button> <button data-user="${u.name}">Voir mon profil</button>${e}</div>`;
+  } else if (view.page === 'security') {
+    h = `<div class="card"><h2>🔒 Sécurité</h2><b>Changer le mot de passe</b>
+      <input id="sec-old" type="password" placeholder="Mot de passe actuel" autocomplete="current-password"><input id="sec-new" type="password" placeholder="Nouveau mot de passe (4 min)" autocomplete="new-password"><input id="sec-new2" type="password" placeholder="Confirmer le nouveau mot de passe" autocomplete="new-password">
+      <button data-chpw>Changer le mot de passe</button> <p class="mut">Les autres appareils seront déconnectés. Après 5 connexions ratées, le pseudo est bloqué 60 s.</p></div>
+      <div class="card"><b>Se déconnecter partout</b><p class="mut">Ferme toutes les sessions ouvertes, y compris celle-ci.</p><button data-logoutall>🚪 Déconnecter tous mes appareils</button></div>
+      <div class="card"><b>Supprimer mon compte</b><p class="mut">Supprime définitivement le compte, ses posts, réponses, likes et messages.</p>
+      ${net.isAdmin(me) ? '<p class="mut">Le compte Streamer ne peut pas être supprimé.</p>' : '<input id="sec-del" type="password" placeholder="Mot de passe pour confirmer"><button data-delacc>🗑 Supprimer mon compte et mes posts</button>'}</div>${e}${view.ok ? `<p class="ok">${esc(view.ok)}</p>` : ''}`;
   } else if (view.page === 'dm') {
     const peers = Object.values(net.db().users).filter(u => u.name !== me);
     h = `<div class="card">${peers.map(u => `<button data-chat="${u.name}" class="${view.arg === u.name ? 'on' : ''}">${esc(u.name)}</button>`).join(' ') || '<span class="mut">Personne d’autre pour l’instant.</span>'}</div>`;
@@ -100,12 +112,21 @@ function render() {
 }
 
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile]');
+  const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-logoutall],*[data-delacc]');
   if (!d) return;
   const D = d.dataset, v = id => ($(id) || {}).value;
   if ('login' in D) attempt(async () => openSession(await net.login(v('#u'), v('#pw'))));
   else if ('signup' in D) attempt(async () => openSession(await net.signup(v('#u'), v('#pw'), v('#bio'))));
   else if ('logout' in D) { me = null; store.removeItem(SESSION); if (STREAM) attempt(async () => openSession(await net.ensureStreamer())); go('feed'); }
+  else if ('chpw' in D) attempt(async () => {
+    if (v('#sec-new') !== v('#sec-new2')) throw new Error('La confirmation ne correspond pas');
+    await net.changePassword(me, v('#sec-old'), v('#sec-new')); openSession(me); view = { page: 'security', ok: 'Mot de passe modifié ✔ (autres appareils déconnectés)' };
+  });
+  else if ('logoutall' in D) { net.logoutAll(me); me = null; store.removeItem(SESSION); err = ''; go('feed'); }
+  else if ('delacc' in D) attempt(async () => {
+    if (!confirm('Supprimer définitivement votre compte et tous vos posts ?')) return;
+    await net.deleteAccount(me, v('#sec-del')); me = null; store.removeItem(SESSION); view = { page: 'feed' };
+  });
   else if ('page' in D) { err = ''; go(D.page); }
   else if ('send' in D) attempt(() => net.post(me, v('#txt'), D.send ? +D.send : null));
   else if ('like' in D) attempt(() => net.toggleLike(me, +D.like));

@@ -2,7 +2,8 @@
 // Chaque appel relit le storage (lecture-modification-écriture) : aucune copie ancienne n'est conservée en mémoire.
 (function (root) {
   const KEY = 'twitchgram.v1';
-  const empty = () => ({ users: {}, posts: [], messages: [], notifs: [], seq: 1 });
+  const empty = () => ({ users: {}, posts: [], messages: [], notifs: [], seq: 1, attempts: {} });
+  const MAX_FAILS = 5, LOCK_MS = 60000;
 
   const RESERVED = 'streamer';
   const subtle = () => (root.crypto || require('crypto').webcrypto).subtle;
@@ -43,10 +44,53 @@
         db.users[name.toLowerCase()] = { name, pass, bio: (bio || '').slice(0, 160), following: [], joined: now() };
         save(); return name;
       },
+      // connexion limitée : MAX_FAILS échecs d'affilée verrouillent le pseudo LOCK_MS (compteur partagé)
       async login(name, password) {
-        const u = load().users[(name || '').toLowerCase()];
-        need(u && u.pass.includes('$') && u.pass === await hashPw(password || '', u.pass.split('$')[0]), 'Identifiants invalides');
-        return u.name;
+        const key = (name || '').toLowerCase();
+        const locked = () => { const a = load().attempts[key]; return a && a.until > now() ? Math.ceil((a.until - now()) / 1000) : 0; };
+        let s = locked();
+        need(!s, `Trop d'essais ratés : réessayez dans ${s} s`);
+        const u0 = db.users[key];
+        const ok = !!(u0 && u0.pass.includes('$') && u0.pass === await hashPw(password || '', u0.pass.split('$')[0]));
+        load(); // relire après l'attente
+        s = locked(); need(!s, `Trop d'essais ratés : réessayez dans ${s} s`);
+        if (!ok || !db.users[key] || db.users[key].pass !== u0.pass) {
+          const a = db.attempts[key] && db.attempts[key].last > now() - 10 * LOCK_MS ? db.attempts[key] : { fails: 0, until: 0 };
+          a.fails++; a.last = now();
+          if (a.fails >= MAX_FAILS) { a.until = now() + LOCK_MS; a.fails = 0; }
+          db.attempts[key] = a; save();
+          throw new Error('Identifiants invalides');
+        }
+        delete db.attempts[key]; save();
+        return db.users[key].name;
+      },
+      // session valide = compte existant et même « époque » (incrémentée par « se déconnecter partout »)
+      epoch: n => (user(n).epoch || 0),
+      async changePassword(name, oldPw, newPw) {
+        need((newPw || '').length >= 4, 'Nouveau mot de passe trop court (4 min)');
+        need(newPw !== oldPw, 'Le nouveau mot de passe doit être différent');
+        let u = user(name);
+        need(u.pass.includes('$') && u.pass === await hashPw(oldPw || '', u.pass.split('$')[0]), 'Mot de passe actuel incorrect');
+        const pass = await hashPw(newPw);
+        load(); u = user(name);
+        u.pass = pass; u.epoch = (u.epoch || 0) + 1; // les autres appareils sont déconnectés
+        save(); return u.epoch;
+      },
+      logoutAll(name) { const u = user(name); u.epoch = (u.epoch || 0) + 1; save(); return u.epoch; },
+      // suppression du compte avec ses posts, réponses, likes, abonnements, messages et notifications
+      async deleteAccount(name, password) {
+        let u = user(name);
+        need(!u.admin, 'Le compte Streamer ne peut pas être supprimé');
+        need(u.pass.includes('$') && u.pass === await hashPw(password || '', u.pass.split('$')[0]), 'Mot de passe incorrect');
+        load(); u = user(name);
+        const n = u.name, gone = new Set(db.posts.filter(p => p.author === n).map(p => p.id));
+        db.posts = db.posts.filter(p => !gone.has(p.id) && !gone.has(p.replyTo));
+        for (const p of db.posts) p.likes = p.likes.filter(x => x !== n);
+        for (const x of Object.values(db.users)) x.following = x.following.filter(f => f !== n);
+        db.messages = db.messages.filter(m => m.from !== n && m.to !== n);
+        db.notifs = db.notifs.filter(x => x.from !== n && x.to !== n && !gone.has(x.postId));
+        delete db.users[n.toLowerCase()]; delete db.attempts[n.toLowerCase()];
+        save();
       },
       // vue stream : ouvre la session d'un VRAI compte « Streamer » (créé au besoin, mot de passe aléatoire jamais conservé)
       async ensureStreamer() {
