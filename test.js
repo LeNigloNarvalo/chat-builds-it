@@ -28,4 +28,12 @@ assert.ok(d.isAdmin('admin') && d.explore().length >= 4 && d.feed('Admin').lengt
 d.deletePost('Admin', d.explore().find(x => x.author === 'Luna').id);
 const tl = d.trendingLive(); assert.ok(tl.length >= 2 && tl[0].score >= tl[1].score && tl[0].tag.startsWith('#'));
 const rk = d.ranking(3); assert.ok(rk.length === 3 && rk[0].score >= rk[1].score && rk.every(r => !r.post.replyTo));
+// profil éditable
+n = Net(mem); n.signup('carol', 'pass3');
+n.updateProfile('carol', { display: 'Carol ✨', bio: 'Hello', avatar: '#ff00aa', banner: 'https://x.io/b.png', link: 'https://carol.dev' });
+assert.strictEqual(n.profile('carol').display, 'Carol ✨'); assert.strictEqual(n.profile('carol').avatar, '#ff00aa');
+n.updateProfile('carol', { banner: 'grad:2' });
+assert.throws(() => n.updateProfile('carol', { link: 'javascript:alert(1)' }), /Lien/);
+assert.throws(() => n.updateProfile('carol', { avatar: 'red' }), /avatar/);
+assert.throws(() => n.updateProfile('carol', { banner: 'javascript:x' }), /Bannière/);
 console.log('ok');

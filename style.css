@@ -13,3 +13,7 @@ main{max-width:620px;margin:16px auto;padding:0 12px;display:grid;gap:12px}
 
 .trend{margin:8px 0 0;padding-left:22px;display:grid;gap:6px}.trend li{position:relative}.bar{display:block;height:4px;border-radius:2px;background:var(--acc);margin-top:2px;transition:width .6s}
 .rank{display:grid;grid-template-columns:36px 1fr;align-items:start}.rank .medal{font-size:20px;padding-top:12px}.rank .mut{grid-column:2;margin-top:-6px}
+.prof{padding:0;overflow:hidden}.banner{height:120px;background-size:cover}.pbody{padding:0 14px 14px}.pbody .av.big{margin-top:-28px;border:3px solid var(--card)}
+.av.big{width:64px;height:64px;line-height:58px;font-size:26px}.pname{font-size:18px}.stats button b{color:var(--acc)}.person{cursor:pointer}.person:hover{border-color:var(--acc)}
+label{display:block;margin:8px 0;color:var(--mut)}label input[type=color]{width:60px;height:36px;padding:2px;display:block}.grads{display:flex;gap:6px;margin-bottom:8px}.grads button{width:36px;height:24px;padding:0}
+a{color:#b794ff}

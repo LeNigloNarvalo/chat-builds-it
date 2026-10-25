@@ -95,6 +95,18 @@
         for (const p of db.posts) for (const t of new Set((p.text.match(/#\w+/g) || []).map(x => x.toLowerCase()))) { const e = c[t] || (c[t] = { tag: t, count: 0, score: 0 }); e.count++; e.score += this.score(p); }
         return Object.values(c).sort((a, b) => b.score - a.score).slice(0, limit || 8);
       },
+      // profil éditable : pseudo affiché, bio, couleur d'avatar, bannière (URL d'image ou dégradé), lien web
+      updateProfile(by, f) {
+        const u = user(by); f = f || {};
+        const display = (f.display || '').trim(), bio = (f.bio || '').trim(), avatar = (f.avatar || '').trim(), banner = (f.banner || '').trim(), link = (f.link || '').trim();
+        need(display.length <= 30, 'Pseudo affiché : 30 caractères max');
+        need(bio.length <= 160, 'Bio : 160 caractères max');
+        need(!avatar || /^#[0-9a-fA-F]{6}$/.test(avatar), 'Couleur d’avatar invalide (#rrggbb)');
+        need(!banner || /^https?:\/\/\S+$/i.test(banner) || /^grad:[0-5]$/.test(banner), 'Bannière : URL http(s) ou dégradé');
+        need(!link || /^https?:\/\/\S+$/i.test(link), 'Lien : URL http(s) requise');
+        Object.assign(u, { display, bio, avatar, banner, link });
+        save(); return u;
+      },
       followers: n => Object.values(db.users).filter(u => u.following.includes(user(n).name)).map(u => u.name),
       profile: n => user(n),
       isAdmin: n => !!(db.users[(n || '').toLowerCase()] || {}).admin,
@@ -103,7 +115,7 @@
         if (db.users.admin) return 'Admin';
         const t = now();
         const mk = (name, bio, extra) => (db.users[name.toLowerCase()] = Object.assign({ name, pass: hash('demo'), bio, following: [], joined: t - 864e5 * 30 }, extra));
-        mk('Admin', 'Compte de démonstration administrateur 👑', { admin: true });
+        mk('Admin', 'Compte de démonstration administrateur 👑', { admin: true, display: 'Admin du Stream', avatar: '#9146ff', banner: 'grad:0', link: 'https://twitch.tv' });
         mk('Luna', 'Streameuse & fan de pixel art 🎨', {}); mk('Pixel', 'Je code en direct sur Twitch 💻', {}); mk('Neo', 'Open source, café et chat 🐱', {});
         db.users.admin.following = ['Luna', 'Pixel', 'Neo']; db.users.luna.following = ['Admin', 'Pixel']; db.users.pixel.following = ['Admin']; db.users.neo.following = ['Admin', 'Luna'];
         const mkPost = (author, text, mins, likes, replyTo) => { const p = { id: id(), author, text, at: t - mins * 60000, likes, replyTo: replyTo || null }; db.posts.push(p); return p; };

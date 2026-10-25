@@ -10,7 +10,12 @@ const $ = s => document.querySelector(s);
 const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const rich = s => esc(s).replace(/#\w+/g, t => `<span class="tag" data-search="${t}">${t}</span>`).replace(/@\w+/g, t => `<span class="mention" data-user="${t.slice(1)}">${t}</span>`);
 const color = n => `hsl(${[...n].reduce((a, c) => a + c.charCodeAt(0) * 7, 0) % 360},60%,45%)`;
-const av = n => `<span class="av" style="background:${color(n)}">${esc(n[0].toUpperCase())}</span>`;
+const prof = n => { try { return net.profile(n); } catch (e) { return {}; } };
+const shown = n => prof(n).display || n;
+const av = (n, big) => `<span class="av${big ? ' big' : ''}" style="background:${prof(n).avatar || color(n)}">${esc(shown(n)[0].toUpperCase())}</span>`;
+const GRADS = ['linear-gradient(135deg,#9146ff,#ff4d8d)', 'linear-gradient(135deg,#00c6ff,#0072ff)', 'linear-gradient(135deg,#f7971e,#ffd200)', 'linear-gradient(135deg,#11998e,#38ef7d)', 'linear-gradient(135deg,#232526,#9146ff)', 'linear-gradient(135deg,#ff512f,#dd2476)'];
+const bannerCss = b => !b ? GRADS[0] : b.startsWith('grad:') ? GRADS[+b.slice(5)] : `center/cover url("${encodeURI(b).replace(/"/g, '%22')}"), ${GRADS[4]}`;
+const peopleList = names => names.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)} · ${esc(prof(n).bio || '')}</span></div>`).join('') || '<p class="mut">Personne pour l’instant.</p>';
 const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'à l’instant' : m < 60 ? m + ' min' : m < 1440 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' j'; };
 const go = (page, arg) => { view = { page, arg }; render(); };
 let err = '';
@@ -18,7 +23,7 @@ const attempt = f => { try { err = ''; f(); } catch (e) { err = e.message; } ren
 
 function postHTML(p, thread) {
   const liked = me && p.likes.includes(me), n = net.replies(p.id).length;
-  return `<div class="card post">${av(p.author)}<span class="who" data-user="${p.author}">${esc(p.author)}</span> <span class="mut">· ${ago(p.at)}</span>
+  return `<div class="card post">${av(p.author)}<span class="who" data-user="${p.author}">${esc(shown(p.author))}</span> <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span>
   <p>${rich(p.text)}</p><div class="acts"><button data-like="${p.id}" class="${liked ? 'on' : ''}">♥ ${p.likes.length}</button>
   <button data-open="${p.id}">💬 ${n}</button>${p.author === me || net.isAdmin(me) ? `<button data-del="${p.id}">🗑</button>` : ''}</div></div>`;
 }
@@ -34,7 +39,7 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length;
-  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['dm', '✉️ Messages'], ['profile', '👤 Profil']]
+  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['dm', '✉️ Messages'], ['profile', '👤 Profil'], ['settings', '⚙️ Réglages']]
     .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
   const list = ps => ps.map(p => postHTML(p)).join('') || '<p class="mut">Rien ici pour l’instant.</p>';
@@ -49,7 +54,7 @@ function render() {
   } else if (view.page === 'search') {
     const r = net.search(view.arg);
     h = `<div class="card"><input id="q" placeholder="Pseudo, mot, #tag" value="${esc(view.arg || '')}"><button data-dosearch>Chercher</button></div>` +
-      r.users.map(u => `<div class="card">${av(u.name)}<span class="who" data-user="${u.name}">${esc(u.name)}</span> <span class="mut">${esc(u.bio)}</span></div>`).join('') + list(r.posts);
+      r.users.map(u => `<div class="card">${av(u.name)}<span class="who" data-user="${u.name}">${esc(shown(u.name))}</span> <span class="mut">${esc(u.bio)}</span></div>`).join('') + list(r.posts);
   } else if (view.page === 'notifs') {
     const L = { like: 'a aimé votre post', reply: 'a répondu à votre post', mention: 'vous a mentionné', follow: 'vous suit' };
     h = net.notifications(me, true).map(n => `<div class="card" ${n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}><b>${esc(n.from)}</b> ${L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') || '<p class="mut">Aucune notification.</p>';
@@ -57,9 +62,23 @@ function render() {
     const p = net.db().posts.find(x => x.id === view.arg);
     h = p ? postHTML(p) + composer('Votre réponse…', p.id) + e + net.replies(p.id).map(r => postHTML(r)).join('') : '<p class="mut">Post supprimé.</p>';
   } else if (view.page === 'profile') {
-    const name = view.arg || me, u = net.profile(name), fl = net.followers(name);
-    h = `<div class="card">${av(u.name)}<b>${esc(u.name)}</b><p>${esc(u.bio) || '<span class="mut">Pas de bio</span>'}</p><p class="mut">${fl.length} abonnés · ${u.following.length} abonnements</p>` +
-      (u.name !== me ? `<button data-follow="${u.name}">${fl.includes(me) ? 'Se désabonner' : 'Suivre'}</button> <button data-chat="${u.name}">Message</button>` : '') + `</div>${e}` + list(net.byUser(name));
+    const name = view.arg || me, u = net.profile(name), fl = net.followers(name), self = u.name === me;
+    h = `<div class="card prof"><div class="banner" style="background:${bannerCss(u.banner)}"></div><div class="pbody">${av(u.name, true)}<b class="pname">${esc(u.display || u.name)}</b> <span class="mut">@${esc(u.name)}</span>
+      <p>${esc(u.bio) || '<span class="mut">Pas de bio</span>'}</p>${u.link ? `<p><a href="${esc(u.link)}" target="_blank" rel="noopener noreferrer nofollow">🔗 ${esc(u.link.replace(/^https?:\/\//, ''))}</a></p>` : ''}
+      <p class="stats"><button data-sub="followers:${u.name}" class="${view.sub === 'followers' ? 'on' : ''}"><b>${fl.length}</b> abonnés</button> <button data-sub="following:${u.name}" class="${view.sub === 'following' ? 'on' : ''}"><b>${u.following.length}</b> abonnements</button></p>` +
+      (self ? `<button data-page="settings">⚙️ Modifier le profil</button>` : `<button data-follow="${u.name}">${fl.includes(me) ? 'Se désabonner' : 'Suivre'}</button> <button data-chat="${u.name}">Message</button>`) + `</div></div>${e}` +
+      (view.sub ? `<div class="card"><b>${view.sub === 'followers' ? 'Abonnés' : 'Abonnements'}</b> <button data-sub="">✕</button></div>` + peopleList(view.sub === 'followers' ? fl : u.following) : list(net.byUser(name)));
+  } else if (view.page === 'settings') {
+    const u = net.profile(me), b = u.banner || '';
+    h = `<div class="card"><h2>⚙️ Réglages du profil</h2><div class="banner" id="pvb" style="background:${bannerCss(b)}"></div>
+      <label>Pseudo affiché<input id="s-display" maxlength="30" value="${esc(u.display || '')}" placeholder="${esc(u.name)}"></label>
+      <label>Bio<textarea id="s-bio" maxlength="160">${esc(u.bio)}</textarea></label>
+      <label>Couleur d’avatar<input id="s-avatar" type="color" value="${u.avatar || '#9146ff'}"></label>
+      <label>Image de bannière (URL) <input id="s-banner" value="${esc(/^grad:/.test(b) ? '' : b)}" placeholder="https://…/image.jpg"></label>
+      <div class="grads">${GRADS.map((g, i) => `<button data-grad="${i}" style="background:${g}" title="Dégradé ${i + 1}"></button>`).join('')}</div>
+      <label>Lien web<input id="s-link" value="${esc(u.link || '')}" placeholder="https://twitch.tv/…"></label>
+      <input id="s-gradv" type="hidden" value="${/^grad:/.test(b) ? b : ''}">
+      <button data-saveprofile>💾 Enregistrer</button> <button data-user="${u.name}">Voir mon profil</button>${e}</div>`;
   } else if (view.page === 'dm') {
     const peers = Object.values(net.db().users).filter(u => u.name !== me);
     h = `<div class="card">${peers.map(u => `<button data-chat="${u.name}" class="${view.arg === u.name ? 'on' : ''}">${esc(u.name)}</button>`).join(' ') || '<span class="mut">Personne d’autre pour l’instant.</span>'}</div>`;
@@ -70,7 +89,7 @@ function render() {
 }
 
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch]');
+  const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile]');
   if (!d) return;
   const D = d.dataset, v = id => ($(id) || {}).value;
   if ('login' in D) attempt(() => { me = net.login(v('#u'), v('#pw')); store.setItem('twitchgram.me', me); });
@@ -81,6 +100,9 @@ document.addEventListener('click', ev => {
   else if ('like' in D) attempt(() => net.toggleLike(me, +D.like));
   else if ('del' in D) attempt(() => net.deletePost(me, +D.del));
   else if ('open' in D) go('thread', +D.open);
+  else if ('sub' in D) { const [k, n] = D.sub.split(':'); view = { page: 'profile', arg: n, sub: k || null }; render(); }
+  else if ('grad' in D) { $('#s-gradv').value = 'grad:' + D.grad; $('#s-banner').value = ''; $('#pvb').style.background = GRADS[+D.grad]; }
+  else if ('saveprofile' in D) attempt(() => { net.updateProfile(me, { display: v('#s-display'), bio: v('#s-bio'), avatar: v('#s-avatar'), banner: v('#s-banner') || v('#s-gradv'), link: v('#s-link') }); if (!err) view = { page: 'profile' }; });
   else if ('user' in D) go('profile', D.user);
   else if ('follow' in D) attempt(() => net.toggleFollow(me, D.follow));
   else if ('chat' in D) go('dm', D.chat);
