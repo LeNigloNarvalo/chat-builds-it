@@ -36,7 +36,7 @@ const GRADS = ['linear-gradient(135deg,#9146ff,#ff4d8d)', 'linear-gradient(135de
 const bannerCss = b => !b ? GRADS[0] : b.startsWith('grad:') ? GRADS[+b.slice(5)] : `center/cover url("${encodeURI(b).replace(/"/g, '%22')}"), ${GRADS[4]}`;
 const peopleList = names => names.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)} · ${esc(prof(n).bio || '')}</span></div>`).join('') || '<p class="mut">Personne pour l’instant.</p>';
 const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'à l’instant' : m < 60 ? m + ' min' : m < 1440 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' j'; };
-const go = (page, arg) => { if (page === 'settings') { tfa.loaded = false; tfa.setup = null; tfa.codes = null; } if (page === 'dev') { dev.loaded = false; dev.fresh = null; dev.detail = null; } view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
+const go = (page, arg) => { if (page === 'settings') { tfa.loaded = false; tfa.setup = null; tfa.codes = null; } if (page === 'stats') st.loaded = false; if (page === 'dev') { dev.loaded = false; dev.fresh = null; dev.detail = null; } view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
 // ---- fil paginé côté serveur (/api/feed) : pages de 10 posts, défilement infini, bandeau « N nouveaux posts » ----
 const PAGE = 10, fs = { scope: null, who: null, ids: [], more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: 0 };
 // clé du fil affiché : « feed », « explore » ou « list:<propriétaire>:<id> » (fil dédié d'une liste de comptes)
@@ -67,7 +67,7 @@ const typingNow = () => Object.keys(typing).filter(n => typing[n] > Date.now());
 const typingHTML = () => typingNow().includes(view.arg) ? `<span id="typing" class="mut" role="status">✍️ ${esc(shown(view.arg))} est en train d’écrire…</span>` : '<span id="typing" role="status"></span>';
 let lastTyped = 0;
 const onLive = (ev, d) => {
-  if (ev === 'update') sync.poll().then(feedFresh);
+  if (ev === 'update') { sync.poll().then(feedFresh); if (view.page === 'stats') statsLoad(); }
   else if (ev === 'dev') { if (view.page === 'dev') devLoad(); }
   else if (ev === 'typing') { typing[d.from] = Date.now() + 4000; if (view.page === 'dm') refresh(); setTimeout(() => { if (view.page === 'dm') refresh(); }, 4100); }
 };
@@ -220,7 +220,7 @@ function postHTML(p, thread) {
   const histHTML = p.editedAt && view.hist === p.id ? `<div class="hist"><b>Historique des modifications</b>${hist.map((h, i) => `<div class="mut">v${i + 1} · ${ago(h.at)} · ${esc(h.text)} ${net.canEdit(me, p.id) ? `<button class="lnk" data-restore="${p.id}:${i}">restaurer</button>` : ''}</div>`).join('')}<div>v${hist.length + 1} (actuelle) · ${esc(p.text)}</div></div>` : '';
   const body = editing ? `<textarea id="edit-txt" maxlength="280">${esc(view.restore && view.restore.id === p.id ? view.restore.text : p.text)}</textarea><button data-saveedit="${p.id}">💾 Enregistrer</button> <button data-canceledit>Annuler</button> <span class="mut">${Math.ceil(net.editLeft(p.id) / 60000)} min restantes</span>` : `${p.text ? `<p>${rich(p.text)}</p>` : ''}${gallery(p.images, 'p', p.id)}`;
   const pollH = pollHTML(p);
-  return `<div class="card post">${av(p.author)}<span class="who" data-user="${p.author}">${esc(shown(p.author))}</span> <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span> ${edited}${p.group ? groupTag(p.group) : ''}
+  return `<div class="card post" data-pid="${p.id}">${av(p.author)}<span class="who" data-user="${p.author}">${esc(shown(p.author))}</span> <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span> ${edited}${p.group ? groupTag(p.group) : ''}
   ${body}${pollH}${histHTML}${view.reporting === p.id ? reportForm(p.id) : ''}<div class="acts"><button data-like="${p.id}" class="${liked ? 'on' : ''}">♥ ${p.likes.length}</button>
   <button data-open="${p.id}">💬 ${n}</button>${!p.replyTo && p.author !== me ? `<button data-repost="${p.id}" class="${rp ? 'on' : ''}" aria-pressed="${rp}" aria-label="${rp ? 'Annuler le repartage' : 'Repartager sur mon profil'}">🔁 ${rc}</button>` : rc ? `<span class="mut">🔁 ${rc}</span>` : ''}
   ${p.author !== me && !net.isAdmin(p.author) ? `<button data-report="${p.id}" class="${net.hasReported(me, p.id) ? 'on' : ''}" aria-label="${net.hasReported(me, p.id) ? 'Post déjà signalé' : 'Signaler le post'}" ${net.hasReported(me, p.id) ? 'disabled' : ''}>🚩</button>` : ''}<button data-bm="${p.id}" class="${saved ? 'on' : ''}" aria-pressed="${saved}" aria-label="${saved ? 'Retirer des favoris' : 'Mettre en favori'}">${saved ? '🔖' : '📑'}</button>${net.canEdit(me, p.id) && !editing ? `<button data-edit="${p.id}" aria-label="Modifier le post">✏️</button>` : ''}${p.author === me || net.isAdmin(me) ? `<button data-del="${p.id}">🗑</button>` : ''}</div></div>`;
@@ -347,7 +347,7 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['groups', `👥 Communautés ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `🗂 Listes ${(net.lists(me, me) || []).length || ''}`], ['drafts', `📝 Brouillons ${net.drafts(me).length || ''}`], ['dm', `✉️ Messages ${unreadDm.total || ''}`], ['profile', '👤 Profil'], ['theme', '🎨 Thème'], ['settings', '⚙️ Réglages'], ['blocks', '🚫 Bloqués'], ['security', '🔒 Sécurité'], ['dev', '🔑 API & Webhooks'], ['diag', '✅ Vérification']].concat(net.isAdmin(me) ? [['mod', `🛡 Modération ${net.queue(me).length || ''}`]] : [])
+  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['groups', `👥 Communautés ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `🗂 Listes ${(net.lists(me, me) || []).length || ''}`], ['drafts', `📝 Brouillons ${net.drafts(me).length || ''}`], ['dm', `✉️ Messages ${unreadDm.total || ''}`], ['profile', '👤 Profil'], ['theme', '🎨 Thème'], ['settings', '⚙️ Réglages'], ['blocks', '🚫 Bloqués'], ['security', '🔒 Sécurité'], ['stats', '📈 Statistiques'], ['dev', '🔑 API & Webhooks'], ['diag', '✅ Vérification']].concat(net.isAdmin(me) ? [['mod', `🛡 Modération ${net.queue(me).length || ''}`]] : [])
     .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
   // onglets du fil : global + une entrée par liste (les siennes)
@@ -363,6 +363,7 @@ function render() {
   };
   if (view.page === 'feed') h = composer('Quoi de neuf ?') + whoToFollow() + tabs() + e + paged();
   else if (view.page === 'dev') h = devPage(e);
+  else if (view.page === 'stats') h = statsPage(e);
   else if (view.page === 'groups') h = groupsPage(e);
   else if (view.page === 'group') h = groupPage(e, paged);
   else if (view.page === 'lists') h = listsPage(e);
@@ -451,8 +452,47 @@ function render() {
   a11yPass();
   ensureLive();
   const m = $('#more'); if (m) more.observe(m);
+  watchViews();
   if (feedScope() && (fs.scope !== feedScope() || fs.who !== me)) feedLoad(true);
 }
+// ---- statistiques personnelles : calculées par le serveur (vues, réactions, réponses, abonnés par jour, meilleurs posts, heures actives) ----
+const st = { data: null, loaded: false, days: 14, busy: false };
+async function statsLoad() {
+  if (st.busy) return; st.busy = true;
+  try { st.data = await sync.get(`/api/stats?days=${st.days}&tz=${new Date().getTimezoneOffset()}`); } catch (e) { err = e.message; }
+  st.busy = false; st.loaded = true; if (view.page === 'stats') render();
+}
+const SERIES = [['views', '👁 Vues', '#9146ff'], ['reactions', '♥ Réactions', '#ff4d8d'], ['replies', '💬 Réponses', '#00a3ff'], ['followers', '➕ Nouveaux abonnés', '#2a9d4a']];
+const nfmt = n => n.toLocaleString('fr-FR');
+function barChart(vals, labels, color, title) {
+  const max = Math.max(1, ...vals);
+  return `<div class="bars" role="img" aria-label="${esc(title)} : ${vals.map((v, i) => labels[i] + ' ' + v).join(', ')}">${vals.map((v, i) => `<span class="bar" title="${esc(labels[i])} : ${v}" style="height:${Math.max(v ? 4 : 1, Math.round(v / max * 100))}%;background:${color}"></span>`).join('')}</div>`;
+}
+function statsPage(e) {
+  if (!st.loaded) { statsLoad(); return '<div class="card"><h2>📈 Statistiques de mes publications</h2><p class="mut" role="status">Chargement…</p></div>'; }
+  const d = st.data; if (!d) return `<div class="card"><h2>📈 Statistiques</h2>${e}<button data-statsgo="${st.days}">Réessayer</button></div>`;
+  const dl = d.series.map(x => new Date(x.day + 'T12:00:00Z').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', timeZone: 'UTC' }));
+  const hmax = Math.max(1, ...d.hours), best = d.hours.map((v, h) => [v, h]).sort((a, b) => b[0] - a[0] || a[1] - b[1]).filter(x => x[0] > 0).slice(0, 3).map(x => x[1]);
+  const tiles = SERIES.map(([k, l, c]) => `<div class="card tile"><span class="mut">${l}</span><b style="color:${c}">${nfmt(d.totals[k])}</b><span class="mut">sur ${d.days} jours</span></div>`).join('');
+  const charts = SERIES.map(([k, l, c]) => `<div class="card"><b>${l} par jour</b>${barChart(d.series.map(x => x[k]), dl, c, l + ' par jour')}<div class="axis"><span>${dl[0]}</span><span>${dl[dl.length - 1]}</span></div></div>`).join('');
+  const top = d.top.map((p, i) => `<div class="card toppost" data-open="${p.id}"><b class="rank">#${i + 1}</b> <span>${esc(p.text.slice(0, 120) || '📷 (image)')}</span><br><span class="mut">👁 ${nfmt(p.views)} · ♥ ${nfmt(p.reactions)} · 💬 ${nfmt(p.replies)} · ${ago(p.at)}</span></div>`).join('') || '<p class="mut">Aucun post n’a encore reçu de vues ou de réactions sur cette période : publie, et les chiffres arrivent en direct.</p>';
+  const heat = d.hours.map((v, h) => `<span class="hh" title="${h} h : ${v} interaction${v > 1 ? 's' : ''}" style="opacity:${v ? (0.2 + 0.8 * v / hmax).toFixed(2) : 0.08}"><i>${h}</i></span>`).join('');
+  return `<div class="card"><h2>📈 Statistiques de mes publications</h2>
+    <p class="mut">${d.total.posts} post${d.total.posts > 1 ? 's' : ''} publié${d.total.posts > 1 ? 's' : ''} · ${d.total.followers} abonné${d.total.followers > 1 ? 's' : ''} au total · mis à jour en direct.</p>
+    <div class="tabs" role="group" aria-label="Période">${[7, 14, 30, 90].map(n => `<button data-statsgo="${n}" class="${d.days === n ? 'on' : ''}" aria-pressed="${d.days === n}">${n} jours</button>`).join('')}</div>${e}</div>
+    <div class="tiles">${tiles}</div>${charts}
+    <div class="card"><h3>🏆 Mes meilleurs posts</h3><p class="mut">Classés par vues + 5 × réactions + 8 × réponses.</p>${top}</div>
+    <div class="card"><h3>🕒 Quand mon audience est active</h3><div class="heat" role="img" aria-label="Activité par heure : ${d.hours.map((v, h) => h + ' h ' + v).join(', ')}">${heat}</div>
+    <p>${best.length ? `Ton audience est la plus active à <b>${best.map(h => h + ' h').join(', ')}</b> — idéal pour publier juste avant.` : '<span class="mut">Pas encore assez d’activité pour dégager des heures de pointe.</span>'}</p></div>`;
+}
+// vues : un post affiché à l'écran (≥ 50 % visible) est signalé au serveur, qui ignore l'auteur et compte une vue par heure et par lecteur
+const seenQ = new Set(), sentAt = {}; let seenTimer = 0;
+const viewObs = new IntersectionObserver(es => {
+  for (const x of es) if (x.isIntersecting) { viewObs.unobserve(x.target); const id = +x.target.dataset.pid; if (id && !(sentAt[id] > Date.now() - 3600000)) { sentAt[id] = Date.now(); seenQ.add(id); } }
+  if (seenQ.size && !seenTimer) seenTimer = setTimeout(() => { seenTimer = 0; const ids = [...seenQ]; seenQ.clear(); if (me) sync.send('/api/view', { ids }).catch(() => {}); }, 1500);
+}, { threshold: 0.5 });
+const watchViews = () => { if (me) document.querySelectorAll('#app .post[data-pid]').forEach(x => { if (x.dataset.w !== '1') { x.dataset.w = '1'; viewObs.observe(x); } }); };
+document.addEventListener('click', ev => { const b = ev.target.closest('[data-statsgo]'); if (b) { st.days = +b.dataset.statsgo || 14; st.loaded = false; statsLoad(); render(); } });
 // ---- jetons d'API & webhooks : tout est stocké côté serveur, la page ne garde que la dernière lecture ----
 const dev = { data: null, loaded: false, fresh: null, detail: null, secrets: {} };
 async function devLoad() {
@@ -841,7 +881,7 @@ render();
   if (me && Notif.supported() && Notif.seenGet(store, me) === null) Notif.seenSet(store, me, net.notifications(me).reduce((m, n) => Math.max(m, n.id), 0));
   if (new URLSearchParams(location.search).get('notif') && me) view = { page: 'notifs' };
   if (linkMsg && me) { /✔/.test(linkMsg) ? view = { page: 'security', ok: linkMsg } : err = linkMsg; linkMsg = ''; LINK = null; }
-  if (STREAM) await attempt(async () => { if (me !== 'Streamer') openSession(await net.ensureStreamer()); view = { page: 'theme' }; }); else render();
+  if (STREAM) await attempt(async () => { if (me !== 'Streamer') openSession(await net.ensureStreamer()); view = { page: 'stats' }; }); else render();
   // temps réel : le serveur annonce chaque changement (SSE) ; l'interrogation ne sert plus que de secours
   setInterval(() => { if (!sync.connected()) sync.poll().then(feedFresh); }, 2000);
   setInterval(() => { if (sync.connected()) sync.poll().then(feedFresh); }, 20000);

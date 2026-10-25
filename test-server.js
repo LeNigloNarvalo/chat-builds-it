@@ -221,6 +221,21 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
     assert.strictEqual((await tc('/api/login', null, { name: 'totpy', password: 'secret1' })).token.length, 64);
     assert.strictEqual((await tc('/api/2fa')).status, 401);
   }
+  // statistiques personnelles : vues (pas celles de l'auteur, dédupliquées), réactions, réponses, abonnés, classement, heures
+  {
+    const act = (tok, method, ...args) => call('/api/call', tok, { method, args }).then(r => r), sa = { token: await open('statsa') }, sb = { token: await open('statsb') };
+    const p1 = (await act(sa.token, 'post', 'premier')).result, p2 = (await act(sa.token, 'post', 'second')).result;
+    assert.strictEqual((await call('/api/view', sa.token, { ids: [p1.id] })).n, 0, 'pas de vue sur ses propres posts');
+    assert.strictEqual((await call('/api/view', sb.token, { ids: [p1.id, p1.id, p2.id, 99999] })).n, 2, 'une vue par post et par lecteur');
+    assert.strictEqual((await call('/api/view', sb.token, { ids: [p1.id] })).n, 0, 'dédupliqué sur l\'heure');
+    await act(sb.token, 'toggleLike', p1.id); await act(sb.token, 'post', 'une réponse', p1.id); await act(sb.token, 'toggleFollow', 'statsa');
+    const r = await call('/api/stats?days=7&tz=0', sa.token);
+    assert.deepStrictEqual(r.totals, { views: 2, reactions: 1, replies: 1, followers: 1 });
+    assert.strictEqual(r.series.length, 7); assert.strictEqual(r.series[6].views, 2); assert.strictEqual(r.hours.length, 24);
+    assert.strictEqual(r.top[0].id, p1.id); assert.strictEqual(r.top[0].views, 1); assert.strictEqual(r.top[0].reactions, 1);
+    assert.strictEqual((await call('/api/stats?days=7', sb.token)).totals.views, 0, 'chacun ne voit que ses statistiques');
+    assert.strictEqual((await call('/api/stats')).status, 401);
+  }
   for (const x of [s3, srv, rcv]) x.close(); rcv.closeAllConnections && rcv.closeAllConnections();
-  console.log('ok jetons, webhooks & double authentification'); process.exit(0);
+  console.log('ok jetons, webhooks, double authentification & statistiques'); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });

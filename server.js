@@ -3,12 +3,12 @@
 // et envoient leurs actions à /api/call, authentifiées par une session aléatoire (seul son hachage SHA-256 est stocké).
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
-const Social = require('./social.js'), { Dev } = require('./devapi.js'), { Totp } = require('./totp.js');
+const Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp } = require('./totp.js');
 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
 const ACTIONS = new Set(['post', 'deletePost', 'editPost', 'toggleBookmark', 'toggleRepost', 'toggleLike', 'toggleFollow', 'updateProfile', 'importUser', 'send', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'exportUser', 'markDmRead', 'saveDraft', 'deleteDraft', 'publishDraft', 'createList', 'updateList', 'deleteList', 'toggleListMember', 'dismissSuggestion', 'vote', 'createGroup', 'updateGroup', 'deleteGroup', 'joinGroup', 'leaveGroup', 'handleRequest', 'inviteToGroup', 'respondInvite', 'cancelInvite', 'removeFromGroup', 'unbanFromGroup', 'setGroupMod']);
-const STATIC = new Set(['index.html', 'style.css', 'a11y.js', 'theme.js', 'social.js', 'sync.js', 'diag.js', 'app.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'notif.js', 'qrcode.js']);
+const STATIC = new Set(['index.html', 'style.css', 'a11y.js', 'theme.js', 'social.js', 'sync.js', 'diag.js', 'app.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'notif.js', 'qrcode.js', 'stats.js']);
 const TYPES = { html: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', webmanifest: 'application/manifest+json; charset=utf-8', svg: 'image/svg+xml' };
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 
@@ -20,6 +20,8 @@ function createServer(opts = {}) {
   db.exec(`PRAGMA journal_mode=WAL;
     CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS tokens (hash TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL, expires INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS views (post INTEGER NOT NULL, viewer TEXT NOT NULL, author TEXT NOT NULL, at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS views_author ON views (author, at);
     CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, name TEXT NOT NULL, epoch INTEGER NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL);`);
   const getRow = db.prepare('SELECT v, version FROM kv WHERE k = ?'), putRow = db.prepare(`INSERT INTO kv (k, v, version) VALUES (?, ?, 1)
     ON CONFLICT(k) DO UPDATE SET v = excluded.v, version = version + 1`);
@@ -43,6 +45,18 @@ function createServer(opts = {}) {
   // ---- publication planifiée : l'horloge du serveur publie les brouillons dont la date est arrivée ----
   const tick = () => { try { net.publishDue(); } catch (e) { console.error('Publication planifiée :', e); } };
   const sched = setInterval(tick, 5000); sched.unref(); tick();
+
+  // ---- vues des posts : une vue par lecteur, par post et par heure ; jamais celles de l'auteur lui-même ----
+  const insV = db.prepare('INSERT INTO views (post, viewer, author, at) SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM views WHERE post = ? AND viewer = ? AND at > ?)'),
+    delV = db.prepare('DELETE FROM views WHERE author = ? OR viewer = ?'), getV = db.prepare('SELECT post, at FROM views WHERE author = ? AND at >= ?');
+  const recordViews = (viewer, ids) => {
+    const d = net.db(), now = Date.now(), byId = new Map(d.posts.map(p => [p.id, p])); let n = 0;
+    for (const id of ids.slice(0, 50)) {
+      const p = byId.get(+id); if (!p || p.group || p.author.toLowerCase() === viewer.toLowerCase() || net.isHidden(viewer, p.author) || net.isBlocked(p.author, viewer)) continue;
+      n += Number(insV.run(p.id, viewer.toLowerCase(), p.author.toLowerCase(), now, p.id, viewer.toLowerCase(), now - 3600000).changes);
+    }
+    return n;
+  };
 
   // ---- sessions ----
   const insS = db.prepare('INSERT INTO sessions (hash, name, epoch, created, expires) VALUES (?, ?, ?, ?, ?)'), getS = db.prepare('SELECT * FROM sessions WHERE hash = ?'),
@@ -178,6 +192,11 @@ function createServer(opts = {}) {
       }
       throw new Http(404, 'Route inconnue');
     }
+    if (route === 'POST /api/view') { const b = await body(req); return send(res, 200, { n: Array.isArray(b.ids) ? recordViews(me.name, b.ids) : 0 }); }
+    if (route === 'GET /api/stats') {
+      const days = Math.min(Stats.MAX_DAYS, Math.max(1, +url.searchParams.get('days') || 14));
+      return send(res, 200, Stats.compute(net.db(), getV.all(me.name.toLowerCase(), Date.now() - (days + 1) * 86400000), me.name, days, url.searchParams.get('tz'), Date.now()));
+    }
     if (route === 'GET /api/state') {
       tick();
       const v = version();
@@ -230,7 +249,7 @@ function createServer(opts = {}) {
       const b = await body(req); await net.changePassword(me.name, String(b.oldPw || ''), String(b.newPw || ''));
       delUser.run(me.name); tfa.revokeDevices(me.name); return send(res, 200, openSession(me.name)); // les autres appareils sont déconnectés
     }
-    if (route === 'POST /api/delete-account') { const b = await body(req); await net.deleteAccount(me.name, String(b.password || '')); delUser.run(me.name); tfa.forget(me.name); dev.forget(me.name); return send(res, 200, { ok: true }); }
+    if (route === 'POST /api/delete-account') { const b = await body(req); await net.deleteAccount(me.name, String(b.password || '')); delV.run(me.name.toLowerCase(), me.name.toLowerCase()); delUser.run(me.name); tfa.forget(me.name); dev.forget(me.name); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/read-notifications') { net.notifications(me.name, true); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/call') {
       const b = await body(req);
