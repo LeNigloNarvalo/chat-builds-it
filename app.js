@@ -690,6 +690,8 @@ function modPage(e) {
   <div class="card"><b>Historique</b>${hist.map(r => `<div class="mut">#${r.postId} @${esc(r.target)} · ${esc(R[r.reason] || r.reason)} → ${({ dismiss: 'sans suite', hide: 'post masqué', delete: 'post supprimé', warn: 'avertissement', mute: 'mute', suspend: 'suspension', ban: 'bannissement' })[r.action]} (${ago(r.closedAt)})</div>`).join('') || '<p class="mut">Vide.</p>'}</div>`;
 }
 // ---- tableau de bord d'administration : vue d'ensemble, utilisateurs, signalements, journal d'audit ----
+let cap = null, capBusy = false; // défi anti-robot de l'inscription (un nouveau à chaque tentative)
+function loadCaptcha() { if (capBusy) return; capBusy = true; net.captcha().then(c => { cap = c; }, e => { err = e.message; }).finally(() => { capBusy = false; if (!me) render(); }); }
 const adm = { tab: STREAM ? 'status' : 'overview', q: '', del: null, rest: null, bk: null, bkMsg: '', st: null };
 async function bkLoad() { try { adm.bk = await sync.get('/api/admin/backups'); } catch (e) { adm.bk = { backups: [], keep: 7, min: 1, max: 90 }; err = e.message; } if (view.page === 'admin') refresh(); }
 const KINDS = { auto: '🕑 automatique', manual: '🖐 manuelle', pre: '🛟 avant restauration' };
@@ -740,6 +742,7 @@ function trustCard(name) {
   if (self && !admin) {
     const reqs = net.verifRequests(me), open = reqs.find(r => r.status === 'open'), last = reqs.find(r => r.status === 'rejected'), ver = net.badgesOf(me).includes('verified');
     return `<div class="card trust" role="group" aria-labelledby="h-trust"><h2 id="h-trust">🏷 Badges de confiance</h2><p>${trBadges(me)}</p>
+      ${Date.now() - u.joined < 24 * 3600000 ? `<p class="mut" role="status">🌱 Période d’essai : pendant 24 h, tes quotas de posts et de messages sont réduits (ensuite, tout passe en régime normal).</p>` : ''}
       ${ver ? '<p class="ok">✅ Votre profil est vérifié.</p>' : open ? `<p class="mut" role="status">⏳ Demande de vérification envoyée ${ago(open.at)} : un administrateur va l’examiner.</p>`
       : `${last ? `<p class="err">Dernière demande refusée ${ago(last.closedAt)}${last.answer ? ' : « ' + esc(last.answer) + ' »' : ''}</p>` : ''}
         <label>Pourquoi faire vérifier votre profil ? <textarea id="tr-note" maxlength="400" placeholder="Qui êtes-vous, quel rôle jouez-vous dans la communauté ?"></textarea></label><button data-tr="req">✅ Demander la vérification</button>`}
@@ -774,13 +777,27 @@ document.addEventListener('click', ev => {
     else if (a === 'revoke') { await net.revokeBadge(me, x, k, reason()); tr.msg = `Badge « ${Social.BADGES[k].label} » révoqué pour @${x} ✔`; }
   });
 });
+// écran anti-spam : blocages en cours (levables), plafonds, comptes à l'essai ; rafraîchi toutes les 5 s
+async function spLoad() { try { adm.sp = await sync.get('/api/admin/spam'); adm.spErr = ''; } catch (e) { adm.spErr = e.message; } adm.spAt = Date.now(); if (view.page === 'admin' && adm.tab === 'spam') refresh(); }
+setInterval(() => { if (view.page === 'admin' && adm.tab === 'spam' && !document.hidden && !adm.spBusy) { adm.spBusy = true; spLoad().finally(() => { adm.spBusy = false; }); } }, 5000);
+function spamPage(head) {
+  if (!adm.sp) { if (!adm.spBusy) { adm.spBusy = true; spLoad().finally(() => { adm.spBusy = false; }); } return head + (adm.spErr ? `<p class="err" role="alert">${esc(adm.spErr)}</p>` : States.loading('Chargement…')); }
+  const S = adm.sp, st = S.stats, left = ms => { const s = Math.max(0, Math.ceil((ms - Date.now()) / 1000)); return s >= 3600 ? Math.floor(s / 3600) + ' h ' + Math.floor(s % 3600 / 60) + ' min' : s >= 60 ? Math.floor(s / 60) + ' min ' + s % 60 + ' s' : s + ' s'; };
+  const lim = (x, p) => x ? `${p || x.max} / ${x.perMin >= 60 ? x.perMin / 60 + ' h' : x.perMin + ' min'}` : '—';
+  return head + `<div class="card"><h2>🛡 Anti-spam</h2><p class="mut">${S.enabled ? 'Actif' : 'Désactivé'} · ralentissement progressif dès ${S.softPct} % du plafond · défi anti-robot à l’inscription · comptes de moins de ${S.probationHours} h « à l’essai » (plafonds par compte réduits à ${S.probationPct} %).</p>
+    <p>Défis : ${st.captchaIssued} proposés, ${st.captchaOk} réussis, ${st.captchaFail} échoués · ${st.blocked} blocage(s) posé(s) · ${st.slowed} action(s) ralentie(s)</p></div>
+    <div class="card"><b>⛔ Blocages en cours (${S.blocks.length})</b>${S.blocks.length ? `<table><tr><th>Cible</th><th>Règle</th><th>Reste</th><th>Récidive</th><th>Tentatives</th><th></th></tr>${S.blocks.map(b => `<tr><td>${b.scope === 'ip' ? '🌐 IP' : '👤 @'} ${esc(b.who)}${b.probation ? ' 🌱' : ''}</td><td>${esc(b.label)}</td><td>${left(b.until)}</td><td>×${b.strikes}</td><td>${b.hits}</td><td><button data-spunblock="${b.id}">Lever</button></td></tr>`).join('')}</table>` : '<p class="mut">Aucun blocage en cours.</p>'}</div>
+    <div class="card"><b>📏 Plafonds</b><table><tr><th>Action</th><th>Par IP</th><th>Par compte</th><th>Compte à l’essai</th></tr>${S.rules.map(r => `<tr><td>${esc(r.label)}</td><td>${lim(r.ip)}</td><td>${lim(r.acct)}</td><td>${r.acct ? lim(r.acct, r.acct.probationMax) : '—'}</td></tr>`).join('')}</table></div>
+    <div class="card"><b>🌱 Comptes à l’essai (${S.trial.length})</b>${S.trial.length ? `<ul>${S.trial.map(u => `<li>@${esc(u.name)} <span class="mut">inscrit ${ago(u.joined)} · fin de l’essai dans ${left(u.until)}</span></li>`).join('')}</ul>` : '<p class="mut">Aucun compte récent.</p>'}</div>`;
+}
 function adminPage(e) {
   const S = net.adminStats(me), nq = net.queue(me).length + net.appeals(me).length;
-  const tabs = [['overview', '📊 Vue d’ensemble'], ['users', `👥 Utilisateurs (${S.users})`], ['reports', `🚩 Signalements${nq ? ' (' + nq + ')' : ''}`], ['trust', `✅ Vérifications${net.verifRequests(me).length ? ' (' + net.verifRequests(me).length + ')' : ''}`], ['audit', '📜 Journal d’audit'], ['backups', '💾 Sauvegardes'], ['status', '🩺 État']];
+  const tabs = [['overview', '📊 Vue d’ensemble'], ['users', `👥 Utilisateurs (${S.users})`], ['reports', `🚩 Signalements${nq ? ' (' + nq + ')' : ''}`], ['trust', `✅ Vérifications${net.verifRequests(me).length ? ' (' + net.verifRequests(me).length + ')' : ''}`], ['audit', '📜 Journal d’audit'], ['spam', '🛡 Anti-spam'], ['backups', '💾 Sauvegardes'], ['status', '🩺 État']];
   const head = `<div class="card"><h2>🛠 Tableau de bord d’administration</h2><p class="mut">Réservé aux administrateurs : toute action de modération est inscrite au journal d’audit.</p>
     <div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${adm.tab === k}" data-atab="${k}" class="${adm.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>${e}`;
   if (adm.tab === 'reports') return head + modPage('');
   if (adm.tab === 'trust') return head + trustAdmin();
+  if (adm.tab === 'spam') return spamPage(head);
   if (adm.tab === 'backups') return backupsPage(head);
   if (adm.tab === 'status') return statusPage(head);
   if (adm.tab === 'audit') {
@@ -1059,8 +1076,9 @@ function renderPage() {
     return;
   }
   if (!me) {
-    nav.innerHTML = '';
+    nav.innerHTML = ''; if (!cap && !capBusy && !STREAM) loadCaptcha();
     app.innerHTML = `<div class="card"><h2>${t('auth.welcome')}</h2><input id="u" placeholder="${t('auth.user')}"><input id="pw" type="password" placeholder="${t('auth.password')}"><input id="bio" placeholder="${t('auth.bio')}">
+    <div class="captcha" role="group" aria-labelledby="cap-q"><b>🤖 Défi anti-robot (inscription)</b><p id="cap-q">${esc(cap ? cap.question : 'Chargement du défi…')}</p><input id="cap-a" inputmode="numeric" autocomplete="off" placeholder="Ta réponse" aria-label="Réponse au défi anti-robot"><input id="cap-w" name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0"> <button class="lnk" type="button" data-capnew>↻ Autre question</button></div>
     <button data-login>${t('auth.login')}</button> <button data-signup>${t('auth.signup')}</button> <button class="lnk" data-forgot>${t('auth.forgot')}</button><br><button data-pklogin ${window.PublicKeyCredential ? '' : 'disabled title="Clés d’accès non prises en charge par ce navigateur"'}>🔑 Se connecter avec une clé d’accès</button><p class="err">${esc(err)}</p>${linkMsg ? `<p class="ok" role="status">${esc(linkMsg)}</p>` : ''}</div>`;
     return;
   }
@@ -1703,7 +1721,8 @@ document.addEventListener('click', ev => {
   else if ('pklogin' in D) attempt(async () => { openSession(await net.passkeyLogin(await pkGet(await net.passkeyOptions()))); });
   else if ('mfago' in D) attempt(async () => { const r = await net.login(mfa.name, mfa.password, v('#mfa-code'), !!($('#mfa-trust') || {}).checked); mfa = null; openSession(r); });
   else if ('mfaback' in D) { mfa = null; err = ''; render(); }
-  else if ('signup' in D) attempt(async () => { openSession(await net.signup(v('#u'), v('#pw'), v('#bio'))); view = { page: 'welcome', arg: 0 }; });
+  else if ('signup' in D) attempt(async () => { try { openSession(await net.signup(v('#u'), v('#pw'), v('#bio'), { id: cap && cap.id, answer: v('#cap-a'), website: v('#cap-w') })); } catch (e) { cap = null; loadCaptcha(); throw e; } view = { page: 'welcome', arg: 0 }; });
+  else if ('capnew' in D) { cap = null; loadCaptcha(); }
   else if ('logout' in D) { me = null; sync.logout(); clearOffline(); if (STREAM) attempt(async () => openSession(await net.ensureStreamer())); go('feed'); }
   else if ('chpw' in D) attempt(async () => {
     if (v('#sec-new') !== v('#sec-new2')) throw new Error('La confirmation ne correspond pas');
@@ -1806,7 +1825,8 @@ document.addEventListener('click', ev => {
   else if ('unmute' in D) attempt(() => net.toggleMute(me, D.unmute));
   else if ('modhist' in D) { mc.who = D.modhist || null; render(); }
   else if ('lift' in D) attempt(() => net.liftSanction(me, D.lift));
-  else if ('atab' in D) { adm.tab = D.atab; adm.del = null; adm.rest = null; adm.bkMsg = ''; if (D.atab === 'backups') adm.bk = null; if (D.atab === 'status') adm.st = null; err = ''; render(); }
+  else if ('spunblock' in D) attempt(async () => { await sync.send('/api/admin/spam-unblock', { id: +D.spunblock }); await spLoad(); });
+  else if ('atab' in D) { if (D.atab === 'spam') adm.sp = null; adm.tab = D.atab; adm.del = null; adm.rest = null; adm.bkMsg = ''; if (D.atab === 'backups') adm.bk = null; if (D.atab === 'status') adm.st = null; err = ''; render(); }
   else if ('bkcreate' in D) attempt(async () => { adm.bk = await sync.send('/api/admin/backups/create', {}); adm.bkMsg = 'Sauvegarde créée ✔'; });
   else if ('bkkeep' in D) attempt(async () => { adm.bk = await sync.send('/api/admin/backups/keep', { keep: +v('#bk-keep') }); adm.bkMsg = 'Rotation : ' + adm.bk.keep + ' sauvegarde(s) automatique(s) conservée(s) ✔'; });
   else if ('bkask' in D) { adm.rest = D.bkask; adm.bkMsg = ''; render(); }

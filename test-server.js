@@ -2,7 +2,7 @@
 const assert = require('assert'), os = require('os'), path = require('path'), fs = require('fs');
 const { createServer } = require('./server.js'), Social = require('./social.js');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cornichon-')), dbFile = path.join(dir, 't.db');
-const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicUrl: 'http://x.test', mail: (to, subject, text) => outbox.push({ to, subject, text }) });
+const outbox = [], server = createServer({ spam: false, db: dbFile, authPerMin: 1000, publicUrl: 'http://x.test', mail: (to, subject, text) => outbox.push({ to, subject, text }) });
 (async () => {
   await new Promise(ok => server.listen(0, '127.0.0.1', ok));
   const base = 'http://127.0.0.1:' + server.address().port;
@@ -158,7 +158,7 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   // persistance : redémarrage sur le même fichier
   const raw = fs.readFileSync(dbFile); assert.ok(!raw.includes('secret2') && !raw.includes('nouveau1'));
   await new Promise(ok => server.close(ok));
-  const s2 = createServer({ db: dbFile, authPerMin: 1000 }); await new Promise(ok => s2.listen(0, '127.0.0.1', ok));
+  const s2 = createServer({ spam: false, db: dbFile, authPerMin: 1000 }); await new Promise(ok => s2.listen(0, '127.0.0.1', ok));
   const base2 = 'http://127.0.0.1:' + s2.address().port;
   const r = await (await fetch(base2 + '/api/state?v=-1', { headers: { Authorization: 'Bearer ' + b.token } })).json();
   assert.strictEqual(r.me, 'bob'); assert.strictEqual(r.state.posts.length, 15);
@@ -166,14 +166,14 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   console.log('ok serveur');
 })().catch(e => { console.error(e); process.exit(1); });
 (async () => {
-  const s2 = createServer({ db: path.join(dir, 'p.db') }); await new Promise(ok => s2.listen(0, '127.0.0.1', ok));
+  const s2 = createServer({ spam: false, db: path.join(dir, 'p.db') }); await new Promise(ok => s2.listen(0, '127.0.0.1', ok));
   const b2 = 'http://127.0.0.1:' + s2.address().port;
   for (const [f, t] of [['sw.js', 'javascript'], ['manifest.webmanifest', 'manifest+json'], ['icon.svg', 'svg'], ['notif.js', 'javascript']]) { const r = await fetch(b2 + '/' + f); assert.strictEqual(r.status, 200, f); assert.ok(r.headers.get('content-type').includes(t), f); }
   s2.close(); console.log('ok fichiers PWA');
 })().catch(e => { console.error(e); process.exit(1); });
 // événements par l'API : création, réponse d'un autre compte, vue filtrée, rappel émis par l'horloge du serveur
 (async () => {
-  const srv = createServer({ db: ':memory:', authPerMin: 1000 }); await new Promise(ok => srv.listen(0, '127.0.0.1', ok));
+  const srv = createServer({ spam: false, db: ':memory:', authPerMin: 1000 }); await new Promise(ok => srv.listen(0, '127.0.0.1', ok));
   const base = 'http://127.0.0.1:' + srv.address().port;
   const call = async (p, tok, data) => { const r = await fetch(base + p, { method: data === undefined ? 'GET' : 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, tok ? { Authorization: 'Bearer ' + tok } : {}), body: data === undefined ? undefined : JSON.stringify(data) }); return Object.assign(await r.json(), { status: r.status }); };
   const open = async name => (await call('/api/signup', null, { name, password: 'secret1' })).token;
@@ -195,7 +195,7 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   const rcv = http.createServer((q, r) => { let b = ''; q.on('data', c => b += c); q.on('end', () => { got.push({ h: q.headers, b }); r.writeHead(status); r.end('reçu'); }); });
   await new Promise(ok => rcv.listen(0, '127.0.0.1', ok));
   const hook = 'http://127.0.0.1:' + rcv.address().port + '/h';
-  const srv = createServer({ db: ':memory:', authPerMin: 1000, webhookPrivate: true }); await new Promise(ok => srv.listen(0, '127.0.0.1', ok));
+  const srv = createServer({ spam: false, db: ':memory:', authPerMin: 1000, webhookPrivate: true }); await new Promise(ok => srv.listen(0, '127.0.0.1', ok));
   const base = 'http://127.0.0.1:' + srv.address().port;
   const call = async (p, tok, data) => { const r = await fetch(base + p, { method: data === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok }, body: data === undefined ? undefined : JSON.stringify(data) }); return Object.assign(await r.json(), { status: r.status }); };
   const open = async (name) => (await (await fetch(base + '/api/signup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, password: 'secret1' }) })).json()).token;
@@ -244,7 +244,7 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   await call('/api/dev/token-revoke', al, { id: rw.id }); assert.strictEqual((await call('/api/v1/me', rw.token)).status, 401);
   assert.strictEqual((await call('/api/v1/me', ro.token)).status, 200);
   // adresses internes refusées par défaut
-  const s3 = createServer({ db: ':memory:' }); await new Promise(ok => s3.listen(0, '127.0.0.1', ok));
+  const s3 = createServer({ spam: false, db: ':memory:' }); await new Promise(ok => s3.listen(0, '127.0.0.1', ok));
   const b3 = 'http://127.0.0.1:' + s3.address().port, tk = (await (await fetch(b3 + '/api/signup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'carol', password: 'secret1' }) })).json()).token;
   const r3 = await fetch(b3 + '/api/dev/hook', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tk }, body: JSON.stringify({ url: 'http://127.0.0.1:9/x', events: ['follow'] }) }); assert.strictEqual(r3.status, 400);
   // clés d'accès (WebAuthn) : authentificateur simulé (ES256), enregistrement, connexion sans mot de passe, renommage, révocation
@@ -342,7 +342,7 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   }
   // sauvegardes : réservées à l'admin, restauration fidèle (même vers une version plus ancienne), rotation
   {
-    const bsrv = createServer({ db: path.join(dir, 'bk.db'), authPerMin: 1000 }); await new Promise(ok => bsrv.listen(0, '127.0.0.1', ok));
+    const bsrv = createServer({ spam: false, db: path.join(dir, 'bk.db'), authPerMin: 1000 }); await new Promise(ok => bsrv.listen(0, '127.0.0.1', ok));
     const base = 'http://127.0.0.1:' + bsrv.address().port;
     const call = async (p, tok, data) => { const r = await fetch(base + p, { method: data === undefined ? 'GET' : 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, tok ? { Authorization: 'Bearer ' + tok } : {}), body: data === undefined ? undefined : JSON.stringify(data) }); return Object.assign(await r.json(), { status: r.status }); };
     const open = async name => (await call('/api/signup', null, { name, password: 'secret1' })).token;
@@ -383,7 +383,7 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   }
   // sessions actives et journal de sécurité : liste, révocation ciblée, tentatives ratées, mot de passe
   {
-    const ssrv = createServer({ db: path.join(dir, 'ses.db'), authPerMin: 1000 }); await new Promise(ok => ssrv.listen(0, '127.0.0.1', ok));
+    const ssrv = createServer({ spam: false, db: path.join(dir, 'ses.db'), authPerMin: 1000 }); await new Promise(ok => ssrv.listen(0, '127.0.0.1', ok));
     const base = 'http://127.0.0.1:' + ssrv.address().port;
     const call = async (p, tok, data, ua) => { const r = await fetch(base + p, { method: data === undefined ? 'GET' : 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, ua ? { 'User-Agent': ua } : {}, ua === 'Mozilla/5.0 (Windows NT 10.0) Chrome/120 Safari/537 Edg/120' ? { 'X-Timezone': 'Europe/Paris' } : {}, tok ? { Authorization: 'Bearer ' + tok } : {}), body: data === undefined ? undefined : JSON.stringify(data) }); return Object.assign(await r.json(), { status: r.status }); };
     const FF = 'Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0', ED = 'Mozilla/5.0 (Windows NT 10.0) Chrome/120 Safari/537 Edg/120';
@@ -421,7 +421,7 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   }
   // médiathèque + badges de confiance via l'API : écritures protégées, vue filtrée selon le compte
   {
-    const tsrv = createServer({ db: ':memory:', authPerMin: 1000 }); await new Promise(ok => tsrv.listen(0, '127.0.0.1', ok));
+    const tsrv = createServer({ spam: false, db: ':memory:', authPerMin: 1000 }); await new Promise(ok => tsrv.listen(0, '127.0.0.1', ok));
     const base = 'http://127.0.0.1:' + tsrv.address().port;
     const call = async (p, tok, data) => { const r = await fetch(base + p, { method: data === undefined ? 'GET' : 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, tok ? { Authorization: 'Bearer ' + tok } : {}), body: data === undefined ? undefined : JSON.stringify(data) }); return Object.assign(await r.json(), { status: r.status }); };
     const act = (tok, method, ...args) => call('/api/call', tok, { method, args });

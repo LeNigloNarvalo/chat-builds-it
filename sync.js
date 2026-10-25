@@ -41,7 +41,8 @@
       if (markRead && !reading && l.some(n => !n.read)) { reading = true; req('/api/read-notifications', 'POST', {}).then(() => pull(), () => {}).then(c => { reading = false; if (c) onChange(); }); }
       return l;
     };
-    net.signup = async (name, password, bio) => open(await req('/api/signup', 'POST', { name, password, bio }));
+    net.captcha = () => req('/api/captcha', 'GET');
+    net.signup = async (name, password, bio, captcha) => open(await req('/api/signup', 'POST', { name, password, bio, captcha }));
     // appareils de confiance (par navigateur, clé « app.trusted ») : un jeton par pseudo, envoyé à la connexion pour passer l'étape du code
     const trustedKey = 'app.trusted', trustedAll = () => { try { return JSON.parse(store.getItem(trustedKey) || '{}'); } catch (e) { return {}; } };
     const trustedSet = (name, t) => { const m = trustedAll(); if (t) m[name.toLowerCase()] = t; else delete m[name.toLowerCase()]; store.setItem(trustedKey, JSON.stringify(m)); };

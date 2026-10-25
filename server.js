@@ -3,7 +3,7 @@
 // et envoient leurs actions à /api/call, authentifiées par une session aléatoire (seul son hachage SHA-256 est stocké).
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
-const { Store } = require('./store.js'), Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp, deviceLabel } = require('./totp.js'), { Passkeys } = require('./passkeys.js'), { Backups } = require('./backup.js'), { Public } = require('./public.js'), { config, Ops } = require('./ops.js');
+const { Guard, clientIp, PROBATION_MS } = require('./guard.js'), { Store } = require('./store.js'), Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp, deviceLabel } = require('./totp.js'), { Passkeys } = require('./passkeys.js'), { Backups } = require('./backup.js'), { Public } = require('./public.js'), { config, Ops } = require('./ops.js');
 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
@@ -153,6 +153,15 @@ function createServer(opts = {}) {
     if (hits.size > 5000) for (const [k, v] of hits) if (v.reset < now) hits.delete(k);
     return ++h.n > (opts.authPerMin || 30);
   };
+  // ---- anti-spam : plafonds par IP et par compte, ralentissement progressif, défi anti-robot, comptes à l'essai ----
+  const guard = Guard({ enabled: opts.spam !== false, minFillMs: opts.captchaMinMs, limits: opts.spamLimits });
+  const probation = n => { const u = net.db().users[String(n).toLowerCase()]; return !!u && !u.admin && Date.now() - u.joined < PROBATION_MS; };
+  const spam = async (rule, req, acct) => { // lève 429 au-delà du plafond ; sinon ralentit l'action quand le visiteur s'emballe
+    if (acct && net.isAdmin(acct)) return;
+    const d = guard.hit(rule, { ip: clientIp(req), acct, probation: acct ? probation(acct) : false });
+    if (d) await new Promise(ok => setTimeout(ok, d));
+  };
+  const SPAM_RULE = { post: 'post', quote: 'post', send: 'message', sendRoom: 'message' };
   const loopback = req => /^(::1|127\.0\.0\.1|::ffff:127\.0\.0\.1)$/.test(req.socket.remoteAddress) && !req.headers['x-forwarded-for'];
 
   const HEAD = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY',
@@ -174,9 +183,11 @@ function createServer(opts = {}) {
       return send(res, dbOk ? 200 : 503, { ok: dbOk, db: dbOk, backups: backups ? (late ? 'late' : 'ok') : 'off', uptime: ops.metrics().uptime });
     }
     if (/^POST \/api\/(signup|login|stream-session|forgot|reset|verify-email|secure-account|passkey-login-options|passkey-login)$/.test(route) && limited(req)) throw new Http(429, 'Trop de requêtes : réessayez dans une minute');
-    if (route === 'POST /api/signup') { const b = await body(req); const name = await net.signup(b.name, b.password, b.bio); return send(res, 200, openSession(name, req, 'signup')); }
+    if (route === 'GET /api/captcha') { await spam('captcha', req); return send(res, 200, guard.challenge()); }
+    if (route === 'POST /api/signup') { const b = await body(req); await spam('signup', req); guard.verify(b.captcha); const name = await net.signup(b.name, b.password, b.bio); return send(res, 200, openSession(name, req, 'signup')); }
     if (route === 'POST /api/login') {
       const b = await body(req); let name;
+      await spam('login', req, String(b.name || '').slice(0, 40));
       try { name = await net.login(String(b.name || ''), String(b.password || '')); } catch (e) {
         try { const n = net.profile(String(b.name || '')).name; secLog(n, 'login_fail', req); checkBurst(n, req); } catch (x) { /* compte inconnu : rien à journaliser */ }
         throw e;
@@ -240,7 +251,7 @@ function createServer(opts = {}) {
         need('read'); const d = net.db(), seen = new Set();
         return send(res, 200, { mentions: net.notifications(me.name).filter(n => n.type === 'mention' && !seen.has(n.postId) && seen.add(n.postId)).slice(0, lim()).map(n => d.posts.find(p => p.id === n.postId)).filter(Boolean).map(pub) });
       }
-      if (route === 'POST /api/v1/posts') { need('write'); const b = await body(req); return send(res, 200, pub(await net.post(me.name, String(b.text || ''), b.replyTo ? +b.replyTo : undefined))); }
+      if (route === 'POST /api/v1/posts') { need('write'); const b = await body(req); await spam('post', req, me.name); return send(res, 200, pub(await net.post(me.name, String(b.text || ''), b.replyTo ? +b.replyTo : undefined))); }
       throw new Http(404, 'Route inconnue');
     }
     if (me.api) throw new Http(403, 'Un jeton d\'API ne donne accès qu\'à /api/v1/*');
@@ -272,6 +283,16 @@ function createServer(opts = {}) {
         backups: backups ? { count: list.length, last: auto ? auto.at : null, everyHours: Math.round(backups.every() / 3600000), keep: backups.keep(), next: auto ? auto.at + backups.every() : Date.now() } : null,
         config: { port: server.address() ? server.address().port : cfg.port, publicUrl: process.env.PUBLIC_URL || opts.publicUrl || '', webhookPrivate: !!(opts.webhookPrivate || cfg.webhookPrivate) },
       }));
+    }
+    // ---- anti-spam : blocages en cours, plafonds et comptes à l'essai (administrateurs) ----
+    if (url.pathname.startsWith('/api/admin/spam')) {
+      if (!net.isAdmin(me.name)) throw new Http(403, 'Réservé à l\'administrateur');
+      if (route === 'POST /api/admin/spam-unblock') { const b = await body(req); if (!guard.unblock(b.id)) throw new Http(404, 'Blocage introuvable ou déjà levé'); return send(res, 200, { ok: true }); }
+      if (route === 'GET /api/admin/spam') {
+        const trial = Object.values(net.db().users).filter(u => !u.admin && Date.now() - u.joined < PROBATION_MS).map(u => ({ name: u.name, joined: u.joined, until: u.joined + PROBATION_MS })).sort((a, b) => b.joined - a.joined);
+        return send(res, 200, Object.assign(guard.summary(), { trial }));
+      }
+      throw new Http(404, 'Route inconnue');
     }
     // ---- sauvegardes et restauration : réservées aux administrateurs ----
     if (url.pathname.startsWith('/api/admin/backups')) {
@@ -410,6 +431,7 @@ function createServer(opts = {}) {
     if (route === 'POST /api/call') {
       const b = await body(req);
       if (!ACTIONS.has(b.method) || !Array.isArray(b.args) || b.args.length > 5) throw new Http(400, 'Action inconnue');
+      if (SPAM_RULE[b.method]) await spam(SPAM_RULE[b.method], req, me.name);
       const result = await net[b.method](me.name, ...b.args);
       return send(res, 200, { result: result === undefined ? null : result });
     }
