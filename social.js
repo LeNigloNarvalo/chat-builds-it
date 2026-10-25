@@ -169,9 +169,10 @@
   // `by` peut-il voir `key` (profile | posts) de `author` ? Soi-même et la modération : toujours.
   function privOk(db, by, author, key) {
     const u = db.users[String(author || '').toLowerCase()], lv = u && u.privacy && u.privacy[key] || 'all';
-    if (lv === 'all') return true;
+    const priv = !!u && key === 'posts' && !!u.isPrivate; // compte privé : publications réservées aux abonnés validés
+    if (lv === 'all' && !priv) return true;
     const v = db.users[String(by || '').toLowerCase()];
-    return !!v && (v === u || !!v.admin || lv === 'followers' && v.following.includes(u.name));
+    return !!v && (v === u || !!v.admin || (lv === 'followers' || priv) && v.following.includes(u.name));
   }
 
 function Net(storage, now) {
@@ -215,7 +216,7 @@ function Net(storage, now) {
         const gone = new Set(db.posts.filter(p => p.author === n).map(p => p.id));
         db.posts = db.posts.filter(p => !gone.has(p.id) && !gone.has(p.replyTo));
         for (const p of db.posts) { p.likes = p.likes.filter(x => x !== n); for (const e of Object.keys(p.reactions || {})) p.reactions[e] = p.reactions[e].filter(x => x !== n); }
-        for (const x of Object.values(db.users)) { x.following = x.following.filter(f => f !== n); for (const l of x.lists || []) l.members = l.members.filter(f => f !== n); }
+        for (const x of Object.values(db.users)) { x.following = x.following.filter(f => f !== n); x.followReq = (x.followReq || []).filter(f => f !== n); for (const l of x.lists || []) l.members = l.members.filter(f => f !== n); }
         db.messages = db.messages.filter(m => m.from !== n && m.to !== n);
         for (const r of db.rooms) { r.members = r.members.filter(x => x !== n); r.msgs = r.msgs.filter(m => m.from !== n); delete r.read[lc(n)]; if (r.owner === n) r.owner = r.members[0]; }
         db.rooms = db.rooms.filter(r => r.members.length >= 2); db.msgReports = db.msgReports.filter(r => r.by !== n && r.target !== n);
@@ -791,8 +792,40 @@ function Net(storage, now) {
         need(me !== t, 'Impossible de se suivre soi-même'); guard(by);
         if (!has(me.following, t.name)) need(!blockedBy(me.name, t.name) && !has(me.blocked, t.name), 'Abonnement impossible (compte bloqué)');
         const i = me.following.indexOf(t.name);
+        if (i < 0 && t.isPrivate && !me.admin) { // compte privé : on demande l'accès (ou on annule sa demande)
+          const rq = t.followReq = t.followReq || [], j = rq.findIndex(x => lc(x) === lc(me.name));
+          if (j >= 0) rq.splice(j, 1); else { rq.push(me.name); notify(t.name, me.name, 'frequest'); }
+          save(); return false;
+        }
         if (i >= 0) me.following.splice(i, 1); else { me.following.push(t.name); notify(t.name, me.name, 'follow'); }
         save(); return i < 0;
+      },
+      // ---- compte privé : les nouveaux abonnés doivent être approuvés ----
+      isPrivate: n => !!user(n).isPrivate,
+      setPrivateAccount(by, on) {
+        const u = user(by); u.isPrivate = !!on;
+        if (!on) for (const n of u.followReq || []) { const r = db.users[lc(n)]; if (r && !has(r.following, u.name)) { r.following.push(u.name); notify(r.name, u.name, 'faccept'); } }
+        if (!on) u.followReq = [];
+        save(); return u.isPrivate;
+      },
+      followRequests: by => (user(by).followReq || []).filter(n => db.users[lc(n)]).slice().reverse(),
+      hasRequested: (by, target) => has((db.users[lc(target)] || {}).followReq, by),
+      approveFollower(by, n) {
+        const u = user(by), r = user(n); need(has(u.followReq, r.name), 'Aucune demande de ce compte');
+        u.followReq = u.followReq.filter(x => lc(x) !== lc(r.name));
+        need(!has(r.blocked, u.name) && !has(u.blocked, r.name), 'Compte bloqué');
+        if (!has(r.following, u.name)) { r.following.push(u.name); notify(r.name, u.name, 'faccept'); }
+        save(); return true;
+      },
+      declineFollower(by, n) {
+        const u = user(by), r = user(n); need(has(u.followReq, r.name), 'Aucune demande de ce compte');
+        u.followReq = u.followReq.filter(x => lc(x) !== lc(r.name)); save(); return true;
+      },
+      removeFollower(by, n, block) {
+        const u = user(by), r = user(n); need(has(r.following, u.name), 'Ce compte ne vous suit pas');
+        r.following = r.following.filter(f => lc(f) !== lc(u.name));
+        if (block) { need(!r.admin, 'Le compte Streamer ne peut pas être bloqué'); const b = u.blocked = u.blocked || []; if (!has(b, r.name)) b.push(r.name); u.following = u.following.filter(f => lc(f) !== lc(r.name)); }
+        save(); return true;
       },
       // fil : posts racines des gens suivis + les siens, récents d'abord
       feed(by) {
@@ -1416,7 +1449,7 @@ function Net(storage, now) {
         need(me !== t, 'Impossible de se bloquer soi-même'); need(!t.admin, 'Le compte Streamer ne peut pas être bloqué');
         const b = me.blocked = me.blocked || [], i = b.findIndex(x => lc(x) === lc(t.name));
         if (i >= 0) b.splice(i, 1);
-        else { b.push(t.name); me.following = me.following.filter(f => f !== t.name); t.following = t.following.filter(f => f !== me.name); }
+        else { b.push(t.name); me.following = me.following.filter(f => f !== t.name); t.following = t.following.filter(f => f !== me.name); me.followReq = (me.followReq || []).filter(f => lc(f) !== lc(t.name)); t.followReq = (t.followReq || []).filter(f => lc(f) !== lc(me.name)); }
         save(); return i < 0;
       },
       // ---- questions-réponses : boîte de questions publiques, avec ou sans anonymat ----
@@ -1948,6 +1981,7 @@ function Net(storage, now) {
       if (lists) pub.lists = k === lcm ? lists : lists.filter(l => l.public || (l.share && (me.sharedLists || []).some(r => r.owner.toLowerCase() === k && r.id === l.id && r.token === l.share))).map(l => ({ ...l, share: null }));
       if (k !== lcm && !privOk(db, me.name, u.name, 'profile')) Object.assign(pub, { bio: '', link: '', banner: '', display: '', photo: '', locked: true });
       if (k !== lcm && !privOk(db, me.name, u.name, 'posts')) pub.lockedPosts = true;
+      pub.followReq = k === lcm ? (u.followReq || []).slice() : (u.followReq || []).filter(x => x === me.name);
       if (k === lcm) Object.assign(pub, { privacy: normPrivacy(privacy), deleteAt, onboarding, fy, dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
       else if (me.admin) Object.assign(pub, { sanction, sanctions });
       users[k] = JSON.parse(JSON.stringify(pub));

@@ -180,3 +180,4 @@ kbd{border:1px solid var(--bd);border-bottom-width:2px;border-radius:5px;padding
 .badge.err { color: #c0392b; }
 
 .qscore{text-align:center}.qbig{font-size:3rem;font-weight:700;line-height:1}.qbig small{font-size:1rem;font-weight:400}
+.lockbadge{display:inline-block;font-size:.8em;padding:0 .4em;border-radius:1em;background:#9146ff;color:#fff;vertical-align:middle}

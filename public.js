@@ -9,7 +9,7 @@ function Public(net, opts = {}) {
     : (req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http') + '://' + String(req.headers.host || 'localhost').replace(/[^\w.:\-\[\]]/g, '');
   const banned = (d, n) => { const u = d.users[lc(n)]; return !u || (u.sanction && u.sanction.type === 'ban'); };
   const shown = (d, n) => { const u = d.users[lc(n)]; return u ? u.display || u.name : n; };
-  const closed = (d, n, k) => { const u = d.users[lc(n)]; return !!(u && u.privacy && u.privacy[k] && u.privacy[k] !== 'all'); }; // confidentialité choisie par le compte
+  const closed = (d, n, k) => { const u = d.users[lc(n)]; return !!(u && (u.privacy && u.privacy[k] && u.privacy[k] !== 'all' || k === 'posts' && u.isPrivate)); }; // confidentialité choisie par le compte
   const isPublic = (d, p) => !p.group && !banned(d, p.author) && !closed(d, p.author, 'posts');
   const recent = (d, f) => d.posts.filter(p => isPublic(d, p) && f(p)).sort((a, b) => b.id - a.id);
   const tagsOf = text => new Set((String(text).match(TAG) || []).map(t => lc(t.slice(1))));
