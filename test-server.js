@@ -37,6 +37,16 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   // le moteur client lit bien la vue reçue
   const mem = { d: { [Social.KEY]: JSON.stringify(sb.state) }, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
   assert.strictEqual(Social.Net(mem).explore('bob').length, 1);
+  // recherche plein texte : classement, extraits, filtres, suggestions, confidentialité
+  { const sr = await call('/api/search?q=' + encodeURIComponent('cornich'), b.token);
+    assert.strictEqual(sr.posts.length, 1); assert.ok(sr.posts[0].snippet.includes('\u0001cornichon\u0002')); assert.strictEqual(sr.posts[0].author, 'alice');
+    assert.ok(sr.tags.some(t => t.tag === '#cornichon'));
+    assert.strictEqual((await call('/api/search?q=cornich&from=carol', b.token)).posts.length, 0, 'filtre auteur');
+    assert.strictEqual((await call('/api/search?q=cornich&since=2999-01-01', b.token)).posts.length, 0, 'filtre date');
+    assert.strictEqual((await call('/api/search?q=cornich&from=alice', b.token)).posts.length, 1);
+    assert.ok((await call('/api/search/suggest?q=corn', b.token)).words.includes('cornichon')); assert.ok((await call('/api/search/suggest?q=ali', b.token)).users.some(u => u.name === 'alice'));
+    assert.strictEqual((await call('/api/search?q=cornich')).status, 401);
+    await act(b.token, 'toggleBlock', 'alice'); assert.strictEqual((await call('/api/search?q=cornich', b.token)).posts.length, 0, 'compte bloqué masqué'); await act(b.token, 'toggleBlock', 'alice'); }
   // actions réservées / invalides
   assert.strictEqual((await act(b.token, 'moderate', 1, 'ban')).status, 400);
   assert.strictEqual((await act(b.token, 'signup', 'x')).status, 400);
@@ -354,7 +364,7 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
     assert.strictEqual((await call('/api/admin/backups/restore', A, { id: snap.id })).status, 400, 'confirmation requise');
     assert.strictEqual((await call('/api/admin/backups/restore', A, { id: '../x.db', confirm: true })).status, 400);
     const v0 = (await call('/api/state?v=-1', user.token)).version;
-    const rs = await call('/api/admin/backups/restore', A, { id: snap.id, confirm: true }); assert.ok(rs.safety && rs.backups.some(b => b.kind === 'pre'));
+    const rs = await call('/api/admin/backups/restore', A, { id: snap.id, confirm: true }); if (!rs.safety) console.log(rs); assert.ok(rs.safety && rs.backups.some(b => b.kind === 'pre'));
     const after = await call('/api/state?v=' + v0, user.token); assert.ok(!after.unchanged && after.version > v0, 'les clients rapatrient la vue restaurée');
     assert.deepStrictEqual(after.state.posts.filter(p => /sauvegarde/.test(p.text)).map(p => p.text), ['avant la sauvegarde']);
     assert.strictEqual((await call('/api/state?v=-1', user.token)).me, 'bkuser', 'les sessions survivent à la restauration');

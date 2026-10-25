@@ -125,3 +125,8 @@ header #me{white-space:nowrap;min-width:0}.phi{white-space:nowrap;flex:none}
 #app .post,#app .rank{content-visibility:auto;contain-intrinsic-size:auto 140px}
 #app .msg{content-visibility:auto;contain-intrinsic-size:auto 36px}
 table{width:100%;border-collapse:collapse;font-size:.9em}th,td{text-align:left;padding:3px 6px;border-bottom:1px solid var(--line,#8884)}
+
+/* recherche rapide (FTS5) */
+mark { background: #ffe066; color: #000; border-radius: 3px; padding: 0 2px; }
+.ftsres { cursor: pointer; }
+.ftsres p { margin: .4em 0 0; }

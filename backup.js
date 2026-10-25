@@ -55,7 +55,8 @@ function Backups(db, dir, opts = {}) {
     const safety = create('pre');
     db.exec(`ATTACH DATABASE '${f.replace(/'/g, "''")}' AS bk`);
     try {
-      const tables = db.prepare("SELECT name FROM bk.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'sessions'").all().map(r => r.name);
+      // l'index de recherche (fts_*, tags) n'est jamais copié : store.reload() le reconstruit depuis les posts restaurés
+      const tables = db.prepare("SELECT name FROM bk.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'sessions' AND name <> 'tags' AND name NOT LIKE 'fts\\_%' ESCAPE '\\'").all().map(r => r.name);
       db.exec('BEGIN IMMEDIATE');
       try {
         for (const t of tables) {

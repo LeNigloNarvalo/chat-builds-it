@@ -579,6 +579,15 @@ function Net(storage, now) {
           posts: visP(by, db.posts.filter(p => !p.group && p.text.toLowerCase().includes(q)), p => p.author).sort((a, b) => b.id - a.id),
         };
       },
+      // recherche plein texte (FTS5, voir store.js) : ne garde que ce que `by` a le droit de voir (hors communautés, posts masqués, comptes bloqués / masqués, confidentialité)
+      ftsVisible(by, ids) {
+        const m = new Map(db.posts.map(p => [p.id, p]));
+        return ids.filter(i => { const p = m.get(i); return p && !p.group && !p.hidden && visP(by, [p], x => x.author).length; });
+      },
+      ftsMembers(by, names) {
+        return names.map(n => db.users[lc(n)]).filter(u => u && vis(by, [u], x => x.name).length)
+          .map(u => ({ name: u.name, display: privOk(db, by, u.name, 'profile') ? u.display || '' : '', bio: privOk(db, by, u.name, 'profile') ? u.bio || '' : '' }));
+      },
       // ---- recherche avancée : « de:@pseudo », « depuis:AAAA-MM-JJ », « avant:AAAA-MM-JJ », « avec:image », « avec:sondage », « tri:populaire » ----
       parseSearch(raw) {
         const o = { text: '', from: null, since: null, until: null, image: false, poll: false, sort: 'recent' }, rest = [];

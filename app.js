@@ -659,6 +659,59 @@ const composer = (ph, reply) => reply ? `<div class="card"><textarea id="txt" ma
   : `<div class="card"><textarea id="txt" data-draft="new" maxlength="280" placeholder="${ph}"></textarea>${attachBox('post')}${pollBox()}<div class="row"><button data-send="">${t('composer.send')}</button>
   <label class="inl">ou le <input type="datetime-local" id="plan-at" aria-label="Date de publication planifiée" value="${localInput(Date.now() + 3600000)}"></label><button data-plan>📅 Planifier</button></div>
   <p class="mut" id="dr-note" role="status">Brouillon enregistré automatiquement · <button class="lnk" data-page="drafts">voir mes brouillons</button></p></div>`;
+// ---- recherche plein texte (SQLite FTS5 côté serveur) : posts classés par pertinence, extraits surlignés, filtres auteur / dates, suggestions pendant la frappe ----
+const fts = { q: '', from: '', since: '', until: '', res: null, sug: null, busy: false, err: '', gen: 0, timer: null };
+const ftsMark = s => esc(s || '').replace(/\u0001/g, '<mark>').replace(/\u0002/g, '</mark>');
+const ftsParams = () => `q=${encodeURIComponent(fts.q)}${fts.from ? '&from=' + encodeURIComponent(fts.from) : ''}${fts.since ? '&since=' + fts.since : ''}${fts.until ? '&until=' + fts.until : ''}`;
+async function ftsRun(more) {
+  const gen = ++fts.gen, q = fts.q.trim();
+  if (!q) { fts.res = null; fts.busy = false; fts.err = ''; return refresh(); }
+  fts.busy = true; if (!more) refresh();
+  try {
+    const j = await sync.get(`/api/search?${ftsParams()}&limit=10${more && fts.res ? '&offset=' + fts.res.posts.length : ''}`);
+    if (gen !== fts.gen) return;
+    fts.res = more && fts.res ? Object.assign(j, { posts: fts.res.posts.concat(j.posts), users: fts.res.users, tags: fts.res.tags }) : j; fts.err = '';
+  } catch (e) { if (gen !== fts.gen) return; fts.err = e.message; }
+  fts.busy = false; refresh();
+}
+async function ftsSuggest() {
+  const q = fts.q;
+  if (!/[\p{L}\p{N}_]$/u.test(q)) { fts.sug = null; return refresh(); }
+  try { const j = await sync.get('/api/search/suggest?q=' + encodeURIComponent(q)); if (q === fts.q) { fts.sug = j; refresh(); } } catch (e) { /* suggestions facultatives */ }
+}
+const ftsTyped = () => { clearTimeout(fts.timer); fts.timer = setTimeout(() => { ftsSuggest(); ftsRun(); }, 180); };
+function ftsPage() {
+  const r = fts.res, best = r && r.posts.length ? Math.min(...r.posts.map(p => p.rank)) : 0, s = fts.sug;
+  const chips = s && fts.q.trim() ? [...s.words.map(w => ['w', w, w]), ...s.tags.map(x => ['t', x, x]), ...s.users.map(u => ['u', u.name, '@' + u.name + (u.display ? ' · ' + u.display : '')])] : [];
+  const postCard = p => `<div class="card ftsres" data-open="${p.id}" role="article">${av(p.author)}<b data-user="${esc(p.author)}">${esc(shown(p.author))}</b> <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span> <span class="badge" title="Score de pertinence BM25">⚡ ${best && p.rank ? Math.max(1, Math.round(100 * p.rank / best)) : 100} %</span><p>${ftsMark(p.snippet)}</p></div>`;
+  return `<div class="card"><h2>⚡ Recherche rapide</h2><p class="mut">Recherche plein texte (index SQLite FTS5) dans les posts, les membres et les hashtags : résultats classés par pertinence, mots trouvés surlignés.</p>
+    <div class="row"><input id="fts-q" type="search" placeholder="Tapez un mot… (« corn » trouve « cornichon »)" value="${esc(fts.q)}" maxlength="120" autocomplete="off" aria-label="Recherche plein texte" aria-controls="fts-sug"></div>
+    <div id="fts-sug" class="row" role="listbox" aria-label="Suggestions">${chips.map(([k, v, l]) => `<button role="option" data-ftssug="${k}:${esc(v)}">${k === 't' ? '' : k === 'u' ? '👤 ' : '🔤 '}${esc(l)}</button>`).join('')}</div>
+    <div class="row"><label class="inl">Auteur <input id="fts-from" placeholder="@pseudo" maxlength="30" value="${esc(fts.from)}"></label>
+    <label class="inl">Depuis <input id="fts-since" type="date" value="${esc(fts.since)}"></label>
+    <label class="inl">Jusqu’au <input id="fts-until" type="date" value="${esc(fts.until)}"></label>
+    ${fts.from || fts.since || fts.until ? '<button data-ftsx="reset">✕ Effacer les filtres</button>' : ''}</div></div>` +
+    (fts.err ? `<p class="mut" role="alert">${esc(fts.err)}</p>` : '') +
+    (!fts.q.trim() ? '<p class="mut">Commencez à taper pour lancer la recherche.</p>' : !r ? '<p class="mut" role="status">Recherche en cours…</p>' :
+      `<p class="mut" role="status">${r.total} post${r.total > 1 ? 's' : ''} trouvé${r.total > 1 ? 's' : ''}${fts.busy ? ' …' : ''}</p>` +
+      (r.tags.length ? `<div class="card"><b>#️⃣ Hashtags</b><div class="row">${r.tags.map(x => `<button data-tag="${esc(x.tag)}">${ftsMark(x.htag)} <span class="mut">${x.n}</span></button>`).join('')}</div></div>` : '') +
+      (r.users.length ? r.users.map(u => `<div class="card">${av(u.name)}<span class="who" data-user="${esc(u.name)}">${ftsMark(u.hdisplay || u.hname || u.name)}</span> <span class="mut">@${ftsMark(u.hname || u.name)}</span>${u.bio ? `<p class="mut">${ftsMark(u.hbio || u.bio)}</p>` : ''}</div>`).join('') : '') +
+      r.posts.map(postCard).join('') + (r.more ? '<button class="card morebar" data-ftsx="more">Voir plus de résultats</button>' : '') +
+      (!r.posts.length && !r.users.length && !r.tags.length && !fts.busy ? '<p class="mut">Aucun résultat : essayez un autre mot ou élargissez les filtres.</p>' : ''));
+}
+document.addEventListener('input', ev => {
+  const id = ev.target.id; if (!/^fts-(q|from|since|until)$/.test(id)) return;
+  fts[id.slice(4)] = id === 'fts-from' ? ev.target.value.replace(/^@/, '') : ev.target.value;
+  if (id === 'fts-q') ftsTyped(); else { clearTimeout(fts.timer); fts.timer = setTimeout(() => ftsRun(), 250); }
+});
+document.addEventListener('click', ev => {
+  const b = ev.target.closest('[data-ftssug],[data-ftsx]'); if (!b) return;
+  if (b.dataset.ftsx === 'more') return ftsRun(true);
+  if (b.dataset.ftsx === 'reset') { fts.from = fts.since = fts.until = ''; return ftsRun(); }
+  const [k, ...rest] = b.dataset.ftssug.split(':'), v = rest.join(':'), words = fts.q.replace(/\s+$/, '').split(/\s+/);
+  if (k === 'u') { fts.from = v; words.pop(); fts.q = words.join(' '); } else { words[words.length - 1] = k === 't' ? v.replace(/^#/, '') : v; fts.q = words.join(' ') + ' '; }
+  fts.sug = null; ftsRun(); setTimeout(() => { const x = document.getElementById('fts-q'); if (x) { x.focus(); x.setSelectionRange(x.value.length, x.value.length); } });
+});
 function draftsPage(e) {
   const ds = net.drafts(me), sch = ds.filter(d => d.scheduledAt), plain = ds.filter(d => !d.scheduledAt);
   const item = d => `<div class="card draft"><textarea id="dr-txt-${d.id}" data-draft="${d.id}" maxlength="280" aria-label="Texte du brouillon">${esc(d.text)}</textarea>
@@ -781,8 +834,8 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
-  const MAIN = ['feed', 'explore', 'events', 'dm', 'profile'], btn = ([k, l]) => { const [ic, ...rest] = String(l).split(' '); return `<button data-page="${k}" class="${view.page === k ? 'on' : ''}" aria-label="${esc(rest.join(' ').trim() || l)}">${ic}<span class="lt"> ${rest.join(' ')}</span></button>`; };
+  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['fts', '⚡ Recherche rapide'], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
+  const MAIN = ['feed', 'explore', 'fts', 'dm', 'profile'], btn = ([k, l]) => { const [ic, ...rest] = String(l).split(' '); return `<button data-page="${k}" class="${view.page === k ? 'on' : ''}" aria-label="${esc(rest.join(' ').trim() || l)}">${ic}<span class="lt"> ${rest.join(' ')}</span></button>`; };
   const main = MAIN.map(k => items.find(x => x[0] === k)), more = items.filter(x => !MAIN.includes(x[0]));
   const moreOn = more.some(x => x[0] === view.page), badge = more.some(x => /\d/.test(x[1].replace(/^\S+\s*/, ''))) ? ' •' : '';
   nav.innerHTML = main.map(btn).join('') + `<span class="navmore"><button data-navmore aria-haspopup="menu" aria-expanded="${navOpen}" aria-controls="navmenu" class="${moreOn ? 'on' : ''}">${t('nav.more')}${badge}</button>${navOpen ? `<div id="navmenu" class="navmenu card" role="menu" aria-label="${t('nav.more')}">${more.map(([k, l]) => `<button role="menuitem" data-page="${k}" class="${view.page === k ? 'on' : ''}" ${view.page === k ? 'aria-current="page"' : ''}>${l}</button>`).join('')}</div>` : ''}</span>`;
@@ -817,6 +870,8 @@ function render() {
     const tg = view.arg, sub = net.isTopic(me, tg), ps = net.tagFeed(tg, me), au = new Set(ps.map(p => p.author)).size;
     h = `<div class="card"><h2>${esc(tg)}</h2><p class="mut">${ps.length} post${ps.length > 1 ? 's' : ''} · ${au} auteur${au > 1 ? 's' : ''}</p>
       <div class="row"><button data-topic="${esc(tg)}" aria-pressed="${sub}">${sub ? '✔ Sujet suivi' : '＋ Suivre ce sujet'}</button> <button data-page="trends">🔥 Tendances</button></div></div>${e}` + list(ps);
+  } else if (view.page === 'fts') {
+    h = ftsPage();
   } else if (view.page === 'trends') {
     const medal = i => ['🥇', '🥈', '🥉'][i] || `#${i + 1}`, rg = trendRange, tt = net.trendingTopics(rg, me, 10), tp = net.trendingPosts(rg, me, 6), my = net.topics(me);
     const top = tt.length ? tt[0].score : 1, per = rg === '7d' ? '7 jours' : '24 h';
@@ -1523,7 +1578,7 @@ render();
   if (new URLSearchParams(location.search).get('notif') && me) view = { page: 'notifs' };
   if (SHARED && me) { const s = SHARED; SHARED = null; await attempt(async () => { const r = await net.saveSharedList(me, s.owner, s.id, s.token); view = { page: 'list', arg: { owner: r.owner, id: r.id } }; }); }
   if (linkMsg && me) { /✔/.test(linkMsg) ? view = { page: 'security', ok: linkMsg } : err = linkMsg; linkMsg = ''; LINK = null; }
-  if (STREAM) await attempt(async () => { if (me !== 'Streamer') openSession(await net.ensureStreamer()); view = { page: 'admin' }; }); else render();
+  if (STREAM) await attempt(async () => { if (me !== 'Streamer') openSession(await net.ensureStreamer()); view = { page: 'fts' }; }); else render();
   // temps réel : le serveur annonce chaque changement (SSE) ; l'interrogation ne sert plus que de secours
   setInterval(() => { if (!sync.connected()) sync.poll().then(feedFresh); }, 2000);
   setInterval(() => { if (sync.connected()) sync.poll().then(feedFresh); }, 20000);

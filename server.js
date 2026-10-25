@@ -320,6 +320,28 @@ function createServer(opts = {}) {
       const sc = url.searchParams.get('scope'); if (!['feed', 'explore', 'list', 'group', 'search', 'notifs', 'convs', 'dm'].includes(sc)) throw new Http(400, 'Fil inconnu');
       return send(res, 200, net.page(me.name, sc, { owner: url.searchParams.get('owner'), list: url.searchParams.get('list'), group: url.searchParams.get('group'), q: url.searchParams.get('q'), sort: url.searchParams.get('sort'), peer: url.searchParams.get('peer'), limit: url.searchParams.get('limit'), before: url.searchParams.get('before'), after: url.searchParams.get('after') }));
     }
+    // recherche plein texte FTS5 : ?q=&from=&since=AAAA-MM-JJ&until=&limit=&offset= (les opérateurs de:/depuis:/avant: de q sont aussi compris)
+    if (route === 'GET /api/search') {
+      const o = net.parseSearch(url.searchParams.get('q') || ''), day = v => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || ''); return m ? new Date(+m[1], +m[2] - 1, +m[3]).getTime() : null; };
+      const from = String(url.searchParams.get('from') || '').replace(/^@/, '').trim() || o.from, ds = day(url.searchParams.get('since')), du = day(url.searchParams.get('until'));
+      const since = ds != null ? ds : o.since, until = du != null ? du + 86400000 : o.until, limit = Math.min(50, Math.max(1, +url.searchParams.get('limit') || 10)), offset = Math.max(0, +url.searchParams.get('offset') || 0);
+      const first = !offset, out = { q: o.text, posts: [], users: [], tags: [], more: false, offset };
+      if (!o.text) return send(res, 200, out);
+      // on lit plus que demandé : une partie des résultats peut être masquée pour ce lecteur
+      const raw = store.ftsPosts(o.text, { author: from, since, until, limit: 400, offset: 0 }), ok = new Set(net.ftsVisible(me.name, raw.map(r => r.id))), vis = raw.filter(r => ok.has(r.id));
+      out.total = vis.length; out.posts = vis.slice(offset, offset + limit); out.more = vis.length > offset + limit;
+      if (first && !from && since == null && until == null) {
+        const hits = store.ftsUsers(o.text, 8), h = new Map(hits.map(r => [r.name.toLowerCase(), r]));
+        out.users = net.ftsMembers(me.name, hits.map(r => r.name)).map(u => { const r = h.get(u.name.toLowerCase()); return { name: u.name, display: u.display, bio: u.bio, hname: r.hname, hdisplay: u.display ? r.hdisplay : '', hbio: u.bio ? r.hbio : '' }; });
+        out.tags = store.ftsTags(o.text, 8);
+      }
+      return send(res, 200, out);
+    }
+    // suggestions pendant la frappe (dernier mot) : mots, hashtags, membres visibles
+    if (route === 'GET /api/search/suggest') {
+      const r = store.ftsSuggest(url.searchParams.get('q') || '', 5);
+      return send(res, 200, { words: r.words, tags: r.tags, users: net.ftsMembers(me.name, r.users).map(u => ({ name: u.name, display: u.display })) });
+    }
     // « X est en train d'écrire » : éphémère, jamais stocké, transmis seulement au destinataire connecté
     if (route === 'POST /api/typing') {
       const b = await body(req), to = net.profile(String(b.to || '')).name;
