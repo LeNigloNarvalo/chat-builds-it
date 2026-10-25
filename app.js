@@ -9,6 +9,9 @@ let prefs = A11y.load(store);
 const applyPrefs = () => A11y.apply(prefs, document, sysDark.matches);
 sysDark.addEventListener && sysDark.addEventListener('change', applyPrefs);
 applyPrefs();
+let th = Theme.load(store);
+const applyTheme = () => Theme.apply(th, document);
+applyTheme();
 let notice = '';
 // session : « pseudo|époque » (époque changée = « déconnecté partout »)
 let me = null;
@@ -73,7 +76,8 @@ function refresh() {
   for (const [id, val] of keep) { const x = document.getElementById(id); if (x && !x.value) x.value = val; }
   if (a && a.id && document.getElementById(a.id)) document.getElementById(a.id).focus();
 }
-window.addEventListener('storage', ev => { if (ev.key === A11Y_KEY) { prefs = A11y.load(store); applyPrefs(); } if (ev.key === null || ev.key === Social.KEY) refresh(); });
+window.addEventListener('storage', ev => { if (ev.key === Theme.KEY) { th = Theme.load(store); applyTheme(); if (view.page === 'theme' && me) refresh(); }
+  if (ev.key === A11Y_KEY) { prefs = A11y.load(store); applyPrefs(); } if (ev.key === null || ev.key === Social.KEY) refresh(); });
 const openSession = name => { me = name; store.setItem(SESSION, me + '|' + net.epoch(me)); };
 
 function postHTML(p, thread) {
@@ -99,7 +103,7 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length;
-  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['dm', '✉️ Messages'], ['profile', '👤 Profil'], ['settings', '⚙️ Réglages'], ['security', '🔒 Sécurité']]
+  nav.innerHTML = [['feed', '🏠 Mon fil'], ['explore', '🌍 Explorer'], ['trends', '🔥 Tendances'], ['search', '🔎 Recherche'], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', '🔖 Favoris'], ['dm', '✉️ Messages'], ['profile', '👤 Profil'], ['theme', '🎨 Thème'], ['settings', '⚙️ Réglages'], ['security', '🔒 Sécurité']]
     .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
   const list = ps => ps.map(p => postHTML(p)).join('') || '<p class="mut">Rien ici pour l’instant.</p>';
@@ -130,6 +134,8 @@ function render() {
       <p class="stats"><button data-sub="followers:${u.name}" class="${view.sub === 'followers' ? 'on' : ''}"><b>${fl.length}</b> abonnés</button> <button data-sub="following:${u.name}" class="${view.sub === 'following' ? 'on' : ''}"><b>${u.following.length}</b> abonnements</button></p>` +
       (self ? `<button data-page="settings">⚙️ Modifier le profil</button>` : `<button data-follow="${u.name}">${fl.includes(me) ? 'Se désabonner' : 'Suivre'}</button> <button data-chat="${u.name}">Message</button>`) + `</div></div>${e}` +
       (view.sub ? `<div class="card"><b>${view.sub === 'followers' ? 'Abonnés' : 'Abonnements'}</b> <button data-sub="">✕</button></div>` + peopleList(view.sub === 'followers' ? fl : u.following) : (net.timeline(name).map(t => (t.by ? `<p class="mut rt">🔁 ${esc(shown(t.by))} a repartagé</p>` : '') + postHTML(t.post)).join('') || '<p class="mut">Rien ici pour l’instant.</p>'));
+  } else if (view.page === 'theme') {
+    h = themePage();
   } else if (view.page === 'settings') {
     const u = net.profile(me), b = u.banner || '';
     h = `<div class="card"><h2>⚙️ Réglages du profil</h2><div class="banner" id="pvb" style="background:${bannerCss(b)}"></div>
@@ -182,11 +188,85 @@ document.addEventListener('keydown', ev => {
 });
 const download = (name, text) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); };
 
+
+// ---- Studio de thème ----
+const hsl2hex = (h, s, l) => { s /= 100; l /= 100; const k = n => (n + h / 30) % 12, a = s * Math.min(l, 1 - l), f = n => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1))))); return '#' + [f(0), f(8), f(4)].map(x => x.toString(16).padStart(2, '0')).join(''); };
+const TYPE_LABELS = { linear: 'Linéaire', radial: 'Radial', conic: 'Conique' }, FONT_LABELS = { system: 'Système', serif: 'Élégante', mono: 'Machine', round: 'Arrondie' };
+const gradEditor = (key, title) => {
+  const g = th[key];
+  return `<div class="card" role="group" aria-labelledby="g-${key}"><h3 id="g-${key}">${title}</h3>
+    <div class="tbar" id="bar-${key}" style="background:${Theme.css(g)}"></div>
+    <div class="row"><label class="inl">Type <select data-tf="${key}.type">${Theme.TYPES.map(t => `<option value="${t}" ${g.type === t ? 'selected' : ''}>${TYPE_LABELS[t]}</option>`).join('')}</select></label>
+    ${g.type === 'radial' ? '' : `<label class="inl" style="flex:1">${g.type === 'conic' ? 'Rotation' : 'Angle'} <output id="o-${key}-angle">${g.angle}°</output><input type="range" min="0" max="360" value="${g.angle}" data-tf="${key}.angle" aria-label="Angle du dégradé ${title}"></label>`}</div>
+    ${g.stops.map((s, i) => `<div class="stop"><input type="color" value="${s.c}" data-tf="${key}.stops.${i}.c" aria-label="Couleur ${i + 1}"><input type="range" min="0" max="100" value="${s.p}" data-tf="${key}.stops.${i}.p" aria-label="Position de la couleur ${i + 1}"><output id="o-${key}-${i}">${s.p}%</output><button data-trm="${key}:${i}" aria-label="Retirer la couleur ${i + 1}" ${g.stops.length <= 2 ? 'disabled' : ''}>✕</button></div>`).join('')}
+    <div class="row"><button data-tadd="${key}" ${g.stops.length >= Theme.MAX_STOPS ? 'disabled' : ''}>➕ Ajouter une couleur (${g.stops.length}/${Theme.MAX_STOPS})</button><button data-trev="${key}">↔ Inverser</button></div></div>`;
+};
+function themePage() {
+  const names = Object.keys(Theme.PRESETS);
+  return `<div class="card tp" role="group" aria-labelledby="h-th"><h2 id="h-th">🎨 Studio de thème</h2>
+    <p class="mut">Compose ton propre thème : dégradés à plusieurs couleurs, couleurs du texte et des cartes, forme, police, animation. Tout s’applique en direct et reste sur cet appareil.</p>
+    <div class="row"><label class="inl"><input type="checkbox" data-tf="on" ${th.on ? 'checked' : ''}> Activer mon thème personnalisé</label><button data-trandom>🎲 Aléatoire</button><button data-treset>↺ Réinitialiser</button></div>
+    <div class="tprev" id="tprev" style="background:${Theme.css(th.bg)}"><span class="card" style="padding:6px 10px">Aperçu <a href="#" onclick="return false">lien</a></span> <button class="on" style="margin-left:8px">Bouton</button></div>
+    <b>Thèmes prêts à l’emploi</b><div class="pre">${names.map(n => `<button data-tpreset="${esc(n)}" style="background:${Theme.css(Theme.PRESETS[n].bg)}">${esc(n)}</button>`).join('')}</div></div>
+    ${gradEditor('bg', '🌈 Dégradé de fond de la page')}${gradEditor('acc', '✨ Dégradé d’accent (boutons, titre, barres)')}
+    <div class="card tp" role="group" aria-labelledby="h-th2"><h3 id="h-th2">🧩 Couleurs, forme et style</h3>
+      <div class="row"><label class="inl">Cartes <input type="color" value="${th.card}" data-tf="card" aria-label="Couleur des cartes"></label><label class="inl">Texte <input type="color" value="${th.fg}" data-tf="fg" aria-label="Couleur du texte"></label><label class="inl">Liens <input type="color" value="${th.lnk}" data-tf="lnk" aria-label="Couleur des liens"></label></div>
+      <div class="row"><label class="inl" style="flex:1">Opacité des cartes <output id="o-cardAlpha">${th.cardAlpha}%</output><input type="range" min="30" max="100" value="${th.cardAlpha}" data-tf="cardAlpha"></label><label class="inl" style="flex:1">Arrondi <output id="o-radius">${th.radius}px</output><input type="range" min="0" max="28" value="${th.radius}" data-tf="radius"></label></div>
+      <div class="row"><label class="inl">Police <select data-tf="font">${Object.keys(Theme.FONTS).map(f => `<option value="${f}" ${th.font === f ? 'selected' : ''}>${FONT_LABELS[f]}</option>`).join('')}</select></label>
+      <label class="inl"><input type="checkbox" data-tf="anim" ${th.anim ? 'checked' : ''}> Fond animé</label><label class="inl"><input type="checkbox" data-tf="glow" ${th.glow ? 'checked' : ''}> Lueur néon</label></div>
+      <p class="mut" id="tcontrast" role="status">${contrastMsg()}</p></div>
+    <div class="card tp" role="group" aria-labelledby="h-th3"><h3 id="h-th3">📤 Partager mon thème</h3><div class="row"><button data-texport>📋 Copier / exporter</button><button data-timport>📥 Importer</button></div>
+      <label for="t-json">JSON du thème</label><textarea id="t-json" class="json" placeholder='{"format":"twitchgram-theme",…}'>${esc(tjson)}</textarea><p class="ok" role="status">${esc(notice)}</p>${err ? `<p class="err">${esc(err)}</p>` : ''}</div>`;
+}
+let tjson = '';
+const contrastMsg = () => { const r = Theme.ratio(th.fg, Theme.mix(th.bg)), ok = r >= 4.5; return `Contraste texte / fond : ${r.toFixed(1)}:1 ${ok ? '✔ lisible' : '⚠ faible, choisis un texte plus clair ou plus foncé'}`; };
+// lecture-modification-écriture sur le thème stocké, puis application immédiate
+function editTheme(fn) { th = Theme.load(store); fn(th); if (!th.on && !th._keepOff) th.on = true; th = Theme.save(store, th); applyTheme(); }
+function setPath(t, path, val) {
+  const k = path.split('.'); let o = t; for (let i = 0; i < k.length - 1; i++) o = o[k[i]];
+  const last = k[k.length - 1], num = ['angle', 'p', 'cardAlpha', 'radius'].includes(last); o[last] = num ? +val : val;
+}
+function livePreview() {
+  const set = (id, css) => { const e = document.getElementById(id); if (e) e.style.background = css; };
+  set('tprev', Theme.css(th.bg)); set('bar-bg', Theme.css(th.bg)); set('bar-acc', Theme.css(th.acc));
+  const c = $('#tcontrast'); if (c) c.textContent = contrastMsg();
+}
+document.addEventListener('input', ev => {
+  const t = ev.target, path = t.dataset && t.dataset.tf; if (!path || t.tagName === 'SELECT') return;
+  const val = t.type === 'checkbox' ? t.checked : t.value;
+  editTheme(x => { if (path === 'on') { x.on = val; x._keepOff = !val; } else setPath(x, path, val); });
+  const o = document.getElementById('o-' + path.replace(/\.stops\./, '-').replace(/\.[cp]$/, '').replace(/^(\w+)\.angle$/, '$1-angle'));
+  if (o && t.type === 'range') o.textContent = val + (/angle/.test(path) ? '°' : /radius/.test(path) ? 'px' : '%');
+  if (t.type === 'checkbox') render(); else livePreview();
+});
+document.addEventListener('change', ev => {
+  const t = ev.target, path = t.dataset && t.dataset.tf; if (!path || t.tagName !== 'SELECT') return;
+  editTheme(x => setPath(x, path, t.value)); render(); const n = document.querySelector(`[data-tf="${path}"]`); if (n) n.focus();
+});
+function themeClick(D, v) {
+  if ('tpreset' in D) { const p = Theme.PRESETS[D.tpreset]; editTheme(x => Object.assign(x, { font: 'system', anim: false, glow: false }, JSON.parse(JSON.stringify(p)))); }
+  else if ('tadd' in D) editTheme(x => { const g = x[D.tadd]; if (g.stops.length < Theme.MAX_STOPS) g.stops.push({ c: hsl2hex(Math.floor(Math.random() * 360), 80, 55), p: 100 }); });
+  else if ('trm' in D) { const [k, i] = D.trm.split(':'); editTheme(x => { if (x[k].stops.length > 2) x[k].stops.splice(+i, 1); }); }
+  else if ('trev' in D) editTheme(x => { x[D.trev].stops = x[D.trev].stops.map(s => ({ c: s.c, p: 100 - s.p })).reverse(); });
+  else if ('trandom' in D) editTheme(x => {
+    const h = Math.floor(Math.random() * 360), n = 2 + Math.floor(Math.random() * 3), dark = Math.random() < 0.7;
+    x.bg = { type: Theme.TYPES[Math.floor(Math.random() * 3)], angle: Math.floor(Math.random() * 360), stops: Array.from({ length: n }, (_, i) => ({ c: hsl2hex((h + i * (30 + Math.random() * 50)) % 360, 60, dark ? 14 + Math.random() * 14 : 78 + Math.random() * 12), p: Math.round(i * 100 / (n - 1)) })) };
+    x.acc = { type: 'linear', angle: 90, stops: [{ c: hsl2hex((h + 180) % 360, 85, 55), p: 0 }, { c: hsl2hex((h + 230) % 360, 85, 60), p: 100 }] };
+    x.card = dark ? hsl2hex(h, 40, 10) : '#ffffff'; x.fg = dark ? '#f2f2fa' : '#1b1d26'; x.lnk = hsl2hex((h + 180) % 360, 90, dark ? 72 : 32);
+  });
+  else if ('treset' in D) { th = Theme.save(store, { on: false }); applyTheme(); }
+  else if ('texport' in D) { const txt = tjson = Theme.exportText(th); try { navigator.clipboard.writeText(txt); notice = 'Thème copié ✔'; } catch (e) { notice = 'Copie le JSON ci-dessous ✔'; } }
+  else if ('timport' in D) { try { tjson = v('#t-json'); th = Theme.save(store, Theme.importText(tjson)); applyTheme(); notice = 'Thème importé ✔'; err = ''; } catch (e) { err = e.message; notice = ''; } }
+  if (!('texport' in D || 'timport' in D)) { notice = ''; err = ''; }
+  render();
+}
+
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav]');
+  const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport]');
   if (!d) return;
   const D = d.dataset, v = id => ($(id) || {}).value;
-  if ('login' in D) attempt(async () => openSession(await net.login(v('#u'), v('#pw'))));
+  if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
+  else if ('login' in D) attempt(async () => openSession(await net.login(v('#u'), v('#pw'))));
   else if ('signup' in D) attempt(async () => openSession(await net.signup(v('#u'), v('#pw'), v('#bio'))));
   else if ('logout' in D) { me = null; store.removeItem(SESSION); if (STREAM) attempt(async () => openSession(await net.ensureStreamer())); go('feed'); }
   else if ('chpw' in D) attempt(async () => {
@@ -255,4 +335,4 @@ document.addEventListener('keydown', ev => {
 render();
 // « live » : la page Tendances se rafraîchit seule (les données viennent du stockage partagé)
 setInterval(() => { if (me && view.page === 'trends') refresh(); }, 3000);
-if (STREAM) attempt(async () => { openSession(await net.ensureStreamer()); view = { page: 'trends' }; });
+if (STREAM) attempt(async () => { openSession(await net.ensureStreamer()); view = { page: 'theme' }; });
