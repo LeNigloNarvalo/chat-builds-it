@@ -78,6 +78,17 @@ assert.strictEqual(n2.importUser('fred', evil).messages, 1);
   const z = Net(m3, () => ck); await z.signup('hana', 'pass8'); await z.signup('igor', 'pass9');
   const hp = z.post('hana', 'premier jet');
   assert.strictEqual(z.toggleBookmark('igor', hp.id), true); assert.strictEqual(z.bookmarks('igor').length, 1); assert.strictEqual(Net(m3, () => ck).isBookmarked('igor', hp.id), true);
+  // posts épinglés (3 max, hors réponses) et contenu sensible (avertissement modifiable par l'auteur seul)
+  { const ps = [hp, z.post('hana', 'deux'), z.post('hana', 'trois'), z.post('hana', 'quatre')], rp = z.post('igor', 'rép', hp.id);
+    for (const q of ps.slice(0, 3)) assert.strictEqual(z.togglePin('hana', q.id), true);
+    assert.throws(() => z.togglePin('hana', ps[3].id), /3 posts/); assert.throws(() => z.togglePin('igor', ps[0].id), /vos posts/); assert.throws(() => z.togglePin('igor', rp.id), /publications/);
+    assert.deepStrictEqual(z.pinned('hana', 'igor').map(q => q.id), [ps[2].id, ps[1].id, ps[0].id]);
+    assert.strictEqual(Net(m3, () => ck).pinned('hana', 'igor').length, 3);
+    assert.strictEqual(z.togglePin('hana', ps[1].id), false); assert.strictEqual(z.pinned('hana', 'igor').length, 2);
+    z.deletePost('hana', ps[2].id); assert.strictEqual(z.pinned('hana', 'igor').length, 1);
+    const w = z.post('hana', 'spoiler', null, [], null, null, ' Spoilers  '); assert.strictEqual(w.warn, 'Spoilers');
+    assert.throws(() => z.setWarning('igor', w.id, 'x'), /vos posts/); assert.throws(() => z.setWarning('hana', w.id, 'x'.repeat(101)), /100/);
+    assert.strictEqual(z.setWarning('hana', w.id, '').warn, undefined); assert.strictEqual(z.setWarning('hana', w.id, 'Sensible').warn, 'Sensible'); }
   assert.strictEqual(z.toggleRepost('igor', hp.id), true); assert.strictEqual(z.timeline('igor')[0].by, 'igor'); assert.strictEqual(z.repostCount(hp.id), 1);
   assert.throws(() => z.toggleRepost('hana', hp.id), /propre/);
   ck += 60000; z.editPost('hana', hp.id, 'version corrigée');

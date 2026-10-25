@@ -15,7 +15,7 @@ function Public(net, opts = {}) {
   const tagsOf = text => new Set((String(text).match(TAG) || []).map(t => lc(t.slice(1))));
   const clip = (s, n) => { s = String(s).replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
   const iso = ms => new Date(ms).toISOString();
-  const imageOf = (p, base) => { const im = (p && p.images || []).find(i => /^https:\/\//.test(i.src || '')); return im ? im.src : base + '/icon.svg'; };
+  const imageOf = (p, base) => { const im = (p && !p.warn && p.images || []).find(i => /^https:\/\//.test(i.src || '')); return im ? im.src : base + '/icon.svg'; };
 
   const CSS = `:root{color-scheme:light dark;--bg:#fafafa;--fg:#1a1a1f;--mut:#6b6b76;--card:#fff;--bd:#e2e2e8;--ac:#9146ff}
 @media(prefers-color-scheme:dark){:root{--bg:#121216;--fg:#ececf1;--mut:#9a9aa8;--card:#1c1c22;--bd:#33333d}}
@@ -35,7 +35,7 @@ header a{color:var(--ac);font-weight:700;text-decoration:none}.card{background:v
   const feedLinks = (prefix, label) => [{ type: 'application/rss+xml', title: 'RSS — ' + label, href: prefix + '/feed.xml' }, { type: 'application/atom+xml', title: 'Atom — ' + label, href: prefix + '/atom.xml' }];
   const feedBar = (prefix) => `<p class="feeds mut">📡 <a href="${prefix}/feed.xml">RSS</a><a href="${prefix}/atom.xml">Atom</a></p>`;
   const postCard = (d, p) => `<article class="card"><b>${esc(shown(d, p.author))}</b> <a class="mut" href="/u/${encodeURIComponent(p.author)}">@${esc(p.author)}</a>
-<p>${linkTags(p.text)}</p>${(p.images || []).filter(i => /^(https:\/\/|data:image\/)/.test(i.src || '')).map(i => `<img src="${esc(i.src)}" alt="${esc(i.alt || '')}" loading="lazy">`).join('')}
+<p>${linkTags(p.text)}</p>${p.warn ? `<p class="mut">⚠️ Contenu sensible : ${esc(p.warn)} (médias masqués)</p>` : (p.images || []).filter(i => /^(https:\/\/|data:image\/)/.test(i.src || '')).map(i => `<img src="${esc(i.src)}" alt="${esc(i.alt || '')}" loading="lazy">`).join('')}
 <div class="mut"><a class="mut" href="/p/${p.id}"><time datetime="${iso(p.at)}">${esc(new Date(p.at).toLocaleString('fr-FR', { timeZone: 'UTC' }))} UTC</time></a> · ♥ ${p.likes.length}</div></article>`;
   const linkTags = text => esc(text).replace(/#([\p{L}\p{N}_]+)/gu, (m, t) => `<a href="/tag/${encodeURIComponent(lc(t))}">${m}</a>`);
 

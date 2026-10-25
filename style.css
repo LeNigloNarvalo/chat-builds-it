@@ -139,3 +139,8 @@ mark { background: #ffe066; color: #000; border-radius: 3px; padding: 0 2px; }
 .trlog{margin:.4em 0;padding-left:1.1em;display:grid;gap:3px}
 .rec{border:1px dashed var(--acc);border-radius:8px;padding:5px 12px;background:none;color:var(--lnk);cursor:pointer}.rec.on{background:#c0262d;color:#fff;border-style:solid;animation:recp 1.2s infinite}@keyframes recp{50%{opacity:.7}}@media (prefers-reduced-motion:reduce){.rec.on{animation:none}}
 .mplay{margin:8px 0 0;display:grid;gap:4px}.mplay video{width:100%;max-width:480px;max-height:320px;border-radius:10px;background:#000}.mplay audio{width:100%;max-width:360px}.mplay.voice{padding:6px 10px;border:1px solid var(--acc);border-radius:12px;max-width:380px}.mplay figcaption{font-size:.85em}.pv.wide{grid-column:1/-1}
+
+.warnbox{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0}.warnbox input[type=text],.warnbox #warn-txt{flex:1 1 220px}
+.sens-h{margin-top:8px;padding:6px 10px;border:1px solid #c98a00;border-left-width:4px;border-radius:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.sens.blur{filter:blur(24px);pointer-events:none;user-select:none;overflow:hidden;border-radius:10px}.sens.blur video,.sens.blur audio{visibility:hidden}
+.pinb{background:none;border:1px solid var(--acc,#9146ff)}

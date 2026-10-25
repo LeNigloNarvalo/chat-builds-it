@@ -3,7 +3,7 @@
 (function (root) {
   const KEY = 'twitchgram.v1';
   const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], appeals: [], verifs: [], badgeLog: [], drafts: [], media: [], groups: [], events: [], rooms: [], msgReports: [], audit: [], seq: 1, attempts: Object.create(null) });
-  const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000, POLL_MAX_MIN = 7 * 1440, MAX_OWN_GROUPS = 10, MAX_RULES = 600;
+  const MAX_PINS = 3, MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000, POLL_MAX_MIN = 7 * 1440, MAX_OWN_GROUPS = 10, MAX_RULES = 600;
 
   const EV_ANSWERS = ['yes', 'maybe', 'no'], EV_REMINDS = [0, 15, 60, 180, 1440], EV_GRACE = 3 * 3600000, MAX_EVENTS = 30;
   const icsEsc = v => String(v || '').replace(/\\/g, '\\\\').replace(/\r?\n/g, '\\n').replace(/[,;]/g, c => '\\' + c);
@@ -184,7 +184,8 @@ function Net(storage, now) {
     };
     const evt = eid => { const e = db.events.find(x => x.id === +eid); need(e, 'Événement introuvable'); return e; };
     const evVisible = (e, n) => { if (!e.group) return true; const g = db.groups.find(x => x.id === e.group); return !!g && canRead(g, n); };
-    const makePost = (author, text, replyTo, images, poll, group) => {
+    const cleanWarn = w => { w = String(w == null ? '' : w).replace(/\s+/g, ' ').trim(); need(w.length <= 100, 'Avertissement limité à 100 caractères'); return w; };
+    const makePost = (author, text, replyTo, images, poll, group, warn) => {
         text = (text || '').trim(); const media = cleanMedia(images); images = cleanImages(images);
         need((text || images.length || media.length) && text.length <= 280, 'Message vide ou > 280 caractères');
         user(author); guard(author, true);
@@ -196,6 +197,7 @@ function Net(storage, now) {
         if (g) p.group = g.id;
         if (images.length) p.images = images;
         if (media.length) p.media = media;
+        warn = cleanWarn(warn); if (warn) p.warn = warn;
         if (poll) {
           need(!replyTo, 'Un sondage ne peut pas être une réponse');
           const opts = (poll.options || []).map(o => String(o || '').trim()).filter(Boolean);
@@ -328,7 +330,24 @@ function Net(storage, now) {
         db.users[RESERVED] = { name: 'Streamer', pass, bio: 'Compte du stream 🔴', following: [], joined: now(), admin: true, display: 'Streamer', avatar: '#9146ff', banner: 'grad:0' };
         save(); return 'Streamer';
       },
-      post(author, text, replyTo, images, poll, group) { const p = makePost(author, text, replyTo, images, poll, group); save(); return p; },
+      post(author, text, replyTo, images, poll, group, warn) { const p = makePost(author, text, replyTo, images, poll, group, warn); save(); return p; },
+      // contenu sensible : avertissement (100 car. max) ajouté, modifié ou retiré à tout moment par l'auteur ; les médias sont floutés tant que le lecteur ne les révèle pas
+      setWarning(by, postId, warn) {
+        const p = db.posts.find(x => x.id === postId); need(p, 'Post introuvable');
+        need(p.author === user(by).name, 'Vous ne pouvez modifier que vos posts'); guard(by, true);
+        warn = cleanWarn(warn); if (warn) p.warn = warn; else delete p.warn;
+        save(); return p;
+      },
+      // posts épinglés : jusqu'à 3 publications de l'auteur (hors réponses et communautés) en haut de son profil, le dernier épinglé en premier
+      togglePin(by, postId) {
+        const u = user(by); guard(by);
+        const p = db.posts.find(x => x.id === postId); need(p && p.author === u.name, 'Vous ne pouvez épingler que vos posts');
+        const l = u.pinned = (u.pinned || []).filter(i => db.posts.some(x => x.id === i)), i = l.indexOf(postId);
+        if (i >= 0) l.splice(i, 1);
+        else { need(!p.replyTo && !p.group, 'Seules vos publications du profil peuvent être épinglées'); need(l.length < MAX_PINS, `${MAX_PINS} posts épinglés maximum : désépinglez-en un d’abord`); l.push(postId); }
+        save(); return i < 0;
+      },
+      pinned: (n, by) => { const u = db.users[String(n || '').toLowerCase()]; if (!u) return []; return visP(by, (u.pinned || []).slice().reverse().map(i => db.posts.find(p => p.id === i && !p.replyTo && !p.group && p.author === u.name)).filter(Boolean), p => p.author); },
       // vote unique par compte : le choix est définitif ; refusé une fois le sondage clos
       vote(by, postId, choice) {
         const u = user(by); guard(by);
@@ -352,7 +371,7 @@ function Net(storage, now) {
         const gone = new Set([postId, ...db.posts.filter(x => x.replyTo === postId).map(x => x.id)]);
         db.posts = db.posts.filter(x => !gone.has(x.id));
         db.reposts = db.reposts.filter(r => !gone.has(r.postId));
-        for (const u of Object.values(db.users)) if (u.bookmarks) u.bookmarks = u.bookmarks.filter(i => !gone.has(i));
+        for (const u of Object.values(db.users)) { if (u.bookmarks) u.bookmarks = u.bookmarks.filter(i => !gone.has(i)); if (u.pinned) u.pinned = u.pinned.filter(i => !gone.has(i)); }
         save();
       },
       // modification : auteur seulement, dans les 15 min ; l'ancien texte part dans l'historique
