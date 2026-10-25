@@ -73,7 +73,7 @@
             const s = session(), r = await fetch('/api/stream', { headers: { Authorization: 'Bearer ' + s.token } });
             if (r.status === 401) { forget(); onChange(); break; }
             if (!r.ok || !r.body) throw new Error('flux');
-            const rd = r.body.getReader(), dec = new TextDecoder(); let buf = ''; wait = 1000; connected = true;
+            const rd = r.body.getReader(), dec = new TextDecoder(); let buf = ''; wait = 1000; setC(true);
             for (;;) {
               const { done, value } = await rd.read(); if (done) break;
               buf += dec.decode(value, { stream: true });
@@ -84,16 +84,17 @@
               }
             }
           } catch (e) {}
-          connected = false;
+          setC(false);
           await new Promise(ok => setTimeout(ok, wait)); wait = Math.min(wait * 2, 15000);
         }
-        liveOn = false; connected = false;
+        liveOn = false; setC(false);
       })(1000);
     }
-    let connected = false;
+    let connected = false, onState = () => {};
+    const setC = v => { if (v !== connected) { connected = v; try { onState(v); } catch (e) {} } };
     const typing = to => req('/api/typing', 'POST', { to }).catch(() => {});
     const logout = () => { req('/api/logout', 'POST', {}).catch(() => {}); forget(); };
-    return { net, pull, poll, logout, live, typing, get: p => req(p, 'GET'), blob: async p => { const s = session(), r = await fetch(p, { headers: s ? { Authorization: 'Bearer ' + s.token } : {} }); if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || failure(r.status)); return r.blob(); }, send: (p, data) => req(p, 'POST', data), connected: () => connected, stopLive: () => { stopLive = true; }, hasSession: () => !!session(), me: () => me, online: () => online, onChange: f => { onChange = f; } };
+    return { net, pull, poll, logout, live, typing, get: p => req(p, 'GET'), blob: async p => { const s = session(), r = await fetch(p, { headers: s ? { Authorization: 'Bearer ' + s.token } : {} }); if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || failure(r.status)); return r.blob(); }, send: (p, data) => req(p, 'POST', data), connected: () => connected, onState: f => { onState = f; }, stopLive: () => { stopLive = true; }, hasSession: () => !!session(), me: () => me, online: () => online, onChange: f => { onChange = f; } };
   }
   const exported = { Sync, WRITES };
   if (typeof module !== 'undefined') module.exports = exported; else root.Sync = Sync;

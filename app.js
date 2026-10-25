@@ -87,6 +87,22 @@ const onLive = (ev, d) => {
   else if (ev === 'typing') { typing[d.from] = Date.now() + 4000; if (view.page === 'dm') refresh(); setTimeout(() => { if (view.page === 'dm') refresh(); }, 4100); }
 };
 const ensureLive = () => { if (me) sync.live(onLive); };
+// pastille « temps réel » (en haut) et pastilles « nouveau » sur les messages et notifications reçus via le flux
+const news = { notifs: false, dm: false }, counts = { n: null, d: null };
+function livePill() {
+  const el = document.getElementById('live'); if (!el) return;
+  const on = !!me && sync.connected();
+  el.hidden = !me; el.className = 'livepill ' + (on ? 'on' : 'off');
+  el.textContent = on ? '● Temps réel' : '○ Reconnexion…'; el.title = on ? 'Le fil, les notifications et les messages se mettent à jour sans recharger la page' : 'Flux interrompu : reconnexion automatique en cours';
+}
+function trackNews() {
+  if (!me) { counts.n = counts.d = null; return; }
+  const n = net.notifications(me).filter(x => !x.read).length, d = net.unreadDm(me).total;
+  if (counts.n !== null) { if (n > counts.n && view.page !== 'notifs') news.notifs = true; if (d > counts.d && view.page !== 'dm') news.dm = true; }
+  counts.n = n; counts.d = d;
+  if (view.page === 'notifs') news.notifs = false; if (view.page === 'dm') news.dm = false;
+}
+sync.onState(() => { livePill(); if (me && sync.connected()) sync.poll().then(feedFresh); });
 
 let err = '';
 const diag = { res: null, busy: false };
@@ -611,6 +627,7 @@ function whoToFollow() {
 function render() {
   const nav = $('#nav'), app = $('#app');
   $('#me').innerHTML = me ? `${STREAM ? '<b>🔴 STREAM</b> ' : ''}@${esc(me)}${net.isAdmin(me) ? t('me.admin') : ''} <button data-logout>${t('me.logout')}</button>` : '';
+  livePill();
   if (booting) { nav.innerHTML = ''; app.innerHTML = `<p class="mut" role="status">${t('loading.server')}</p>`; return; }
   if (me && !sync.online()) $('#me').innerHTML += ` <span class="err" role="status">${t('offline.short')}</span>`;
   if (LINK && LINK.kind === 'reset' && !linkMsg) {
@@ -652,6 +669,10 @@ function render() {
   const main = MAIN.map(k => items.find(x => x[0] === k)), more = items.filter(x => !MAIN.includes(x[0]));
   const moreOn = more.some(x => x[0] === view.page), badge = more.some(x => /\d/.test(x[1].replace(/^\S+\s*/, ''))) ? ' •' : '';
   nav.innerHTML = main.map(btn).join('') + `<span class="navmore"><button data-navmore aria-haspopup="menu" aria-expanded="${navOpen}" aria-controls="navmenu" class="${moreOn ? 'on' : ''}">${t('nav.more')}${badge}</button>${navOpen ? `<div id="navmenu" class="navmenu card" role="menu" aria-label="${t('nav.more')}">${more.map(([k, l]) => `<button role="menuitem" data-page="${k}" class="${view.page === k ? 'on' : ''}" ${view.page === k ? 'aria-current="page"' : ''}>${l}</button>`).join('')}</div>` : ''}</span>`;
+  trackNews();
+  for (const [pg, on] of [['notifs', news.notifs], ['dm', news.dm]]) if (on) nav.querySelectorAll(`[data-page="${pg}"]`).forEach(b => b.insertAdjacentHTML('beforeend', '<span class="newpill" role="status">nouveau</span>'));
+  if (news.notifs) nav.querySelector('[data-navmore]')?.insertAdjacentHTML('beforeend', '<span class="newpill" role="status">nouveau</span>');
+  livePill();
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
   // onglets du fil : global + une entrée par liste (les siennes)
   const tabs = () => { const ls = net.lists(me, me); return `<div class="card tabs" role="tablist" aria-label="Choix du fil"><button role="tab" aria-selected="${view.page === 'feed'}" class="${view.page === 'feed' ? 'on' : ''}" data-page="feed">🏠 Tout</button>${ls.map(l => `<button role="tab" aria-selected="${view.page === 'list' && view.arg.id === l.id}" class="${view.page === 'list' && view.arg.id === l.id && view.arg.owner === me ? 'on' : ''}" data-lopen="${esc(me)}:${l.id}">${l.public ? '🌐' : '🔒'} ${esc(l.name)}</button>`).join('')}<button data-page="lists">＋ Listes</button></div>`; };
