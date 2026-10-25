@@ -160,3 +160,10 @@ await n.signup('constructor', 'pass9'); assert.throws(() => n.profile('valueOf')
 const snap = require('./social.js').snapshot(n.db(), 'carol'); assert.ok(!JSON.stringify(snap).includes('"pass"'));
 console.log('ok');
 })().catch(e => { console.error(e); process.exit(1); });
+
+// nombre d'or : la feuille de style et l'en-tête l'appliquent
+{
+  const fs = require('fs'), css = fs.readFileSync(__dirname + '/style.css', 'utf8'), html = fs.readFileSync(__dirname + '/index.html', 'utf8');
+  if (!/--phi:1\.618/.test(css) || !/aspect-ratio:1\.618\/1/.test(css) || !/max-width:618px/.test(css) || !html.includes('φ 1,618')) throw new Error('nombre d\'or manquant');
+  console.log('ok nombre d\'or');
+}
