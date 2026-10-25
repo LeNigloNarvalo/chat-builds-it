@@ -161,6 +161,23 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   for (const [f, t] of [['sw.js', 'javascript'], ['manifest.webmanifest', 'manifest+json'], ['icon.svg', 'svg'], ['notif.js', 'javascript']]) { const r = await fetch(b2 + '/' + f); assert.strictEqual(r.status, 200, f); assert.ok(r.headers.get('content-type').includes(t), f); }
   s2.close(); console.log('ok fichiers PWA');
 })().catch(e => { console.error(e); process.exit(1); });
+// événements par l'API : création, réponse d'un autre compte, vue filtrée, rappel émis par l'horloge du serveur
+(async () => {
+  const srv = createServer({ db: ':memory:', authPerMin: 1000 }); await new Promise(ok => srv.listen(0, '127.0.0.1', ok));
+  const base = 'http://127.0.0.1:' + srv.address().port;
+  const call = async (p, tok, data) => { const r = await fetch(base + p, { method: data === undefined ? 'GET' : 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, tok ? { Authorization: 'Bearer ' + tok } : {}), body: data === undefined ? undefined : JSON.stringify(data) }); return Object.assign(await r.json(), { status: r.status }); };
+  const open = async name => (await call('/api/signup', null, { name, password: 'secret1' })).token;
+  const al = await open('alice'), bo = await open('bobby'), act = (tok, method, ...args) => call('/api/call', tok, { method, args });
+  const r0 = await act(al, 'createEvent', { title: 'Rendez-vous API', start: Date.now() + 600000, remind: 15 }); const ev = r0.result;
+  assert.ok(ev && ev.owner === 'alice'); assert.strictEqual((await act(bo, 'rsvp', ev.id, 'maybe')).result, 'maybe');
+  assert.ok((await call('/api/state?v=-1', bo)).state.events.some(e => e.id === ev.id && e.rsvps.bobby === 'maybe'));
+  const st = (await call('/api/state?v=-1', al)).state; assert.ok(st.notifs.some(n => n.type === 'event' && n.what === 'maybe'));
+  assert.strictEqual((await act(bo, 'deleteEvent', ev.id)).status, 400);
+  // le rappel (15 min avant) est dans 0 min : modifier l'événement pour qu'il commence dans 10 min déclenche le rappel au prochain tick
+  await act(al, 'updateEvent', ev.id, { start: Date.now() + 10 * 60000 });
+  const st2 = (await call('/api/state?v=-1', bo)).state; assert.ok(st2.notifs.some(n => n.type === 'event' && n.what === 'reminder'));
+  srv.close(); console.log('ok événements (API)');
+})().catch(e => { console.error(e); process.exit(1); });
 // jetons d'API + webhooks : vrai récepteur HTTP local, signature, journal, révocation
 (async () => {
   const crypto = require('crypto'), http = require('http');

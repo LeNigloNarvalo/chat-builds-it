@@ -725,8 +725,8 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
-  const MAIN = ['feed', 'explore', 'trends', 'dm', 'profile'], btn = ([k, l]) => { const [ic, ...rest] = String(l).split(' '); return `<button data-page="${k}" class="${view.page === k ? 'on' : ''}" aria-label="${esc(rest.join(' ').trim() || l)}">${ic}<span class="lt"> ${rest.join(' ')}</span></button>`; };
+  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
+  const MAIN = ['feed', 'explore', 'events', 'dm', 'profile'], btn = ([k, l]) => { const [ic, ...rest] = String(l).split(' '); return `<button data-page="${k}" class="${view.page === k ? 'on' : ''}" aria-label="${esc(rest.join(' ').trim() || l)}">${ic}<span class="lt"> ${rest.join(' ')}</span></button>`; };
   const main = MAIN.map(k => items.find(x => x[0] === k)), more = items.filter(x => !MAIN.includes(x[0]));
   const moreOn = more.some(x => x[0] === view.page), badge = more.some(x => /\d/.test(x[1].replace(/^\S+\s*/, ''))) ? ' •' : '';
   nav.innerHTML = main.map(btn).join('') + `<span class="navmore"><button data-navmore aria-haspopup="menu" aria-expanded="${navOpen}" aria-controls="navmenu" class="${moreOn ? 'on' : ''}">${t('nav.more')}${badge}</button>${navOpen ? `<div id="navmenu" class="navmenu card" role="menu" aria-label="${t('nav.more')}">${more.map(([k, l]) => `<button role="menuitem" data-page="${k}" class="${view.page === k ? 'on' : ''}" ${view.page === k ? 'aria-current="page"' : ''}>${l}</button>`).join('')}</div>` : ''}</span>`;
@@ -751,6 +751,7 @@ function render() {
   else if (view.page === 'dev') h = devPage(e);
   else if (view.page === 'stats') h = statsPage(e);
   else if (view.page === 'groups') h = groupsPage(e);
+  else if (view.page === 'events') h = eventsPage(e);
   else if (view.page === 'group') h = groupPage(e, paged);
   else if (view.page === 'lists') h = listsPage(e);
   else if (view.page === 'list') h = listPage(e, paged);
@@ -793,7 +794,7 @@ function render() {
     const L = { dm: 'vous a écrit', sanction: 'a pris une mesure de modération contre votre compte', like: 'a aimé votre post', reply: 'a répondu à votre post', mention: 'vous a mentionné', follow: 'vous suit', repost: 'a repartagé votre post', quote: 'a cité votre post', react: 'a réagi à votre post', group: Notif.TEXT.group, poll: 'Votre sondage est terminé : voir les résultats', search: 'a de nouveaux résultats' };
     const gname = id => { try { return net.group(id).name; } catch (x) { return 'une communauté supprimée'; } };
     const nq = pagerSpecs()[0], np = pagerOf('notifs'), nready = pagerReady('notifs', nq[1]), nm = byId(net.db().notifs, pc.notifs), nl = nready ? np.ids.map(i => nm.get(i)).filter(Boolean) : [];
-    h = (!nready ? `<p class="mut" role="status">Chargement des notifications…</p>` : freshBar('notifs', 'nouvelle notification', 'nouvelles notifications')) + nl.map(n => `<div class="card" ${n.type === 'dm' ? `data-chat="${n.room ? '#' + n.room : esc(n.from)}"` : n.type === 'search' ? `data-ssopen="${n.search}"` : n.type === 'group' ? `data-cmopen="${n.group}"` : n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}>${n.type === 'search' ? `🔎 <b>${esc(n.name)}</b> : ${n.count} nouveau${n.count > 1 ? 'x' : ''} résultat${n.count > 1 ? 's' : ''}` : ''}${n.type === 'search' ? '' : n.from ? `<b>${esc(n.from)}</b> ` : '📊 '}${n.type === 'react' && n.emoji ? n.emoji + ' ' : ''}${n.type === 'dm' && n.count > 1 ? `(×${n.count}) ` : ''}${n.type === 'group' ? `${L.group[n.what] || 'communauté'} · 👥 ${esc(gname(n.group))}` : n.type === 'search' ? '' : n.type === 'sanction' ? ({ warn: 'vous a averti', suspend: 'a suspendu votre compte', ban: 'a banni votre compte' })[n.what] || L.sanction : n.type === 'hide' ? 'a masqué votre post (vous pouvez faire appel)' : n.type === 'appeal' ? ({ new: 'a fait appel d’une décision', accepted: 'a accepté votre appel', rejected: 'a rejeté votre appel' })[n.what] + (n.answer ? ' : « ' + esc(n.answer) + ' »' : '') : L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') + (nready ? moreBtn('notifs') + (!np.more && nl.length ? `<p class="mut" role="status">${t('seen.all')}</p>` : '') : '') + (nready && !nl.length ? '<p class="mut">Aucune notification.</p>' : '');
+    h = (!nready ? `<p class="mut" role="status">Chargement des notifications…</p>` : freshBar('notifs', 'nouvelle notification', 'nouvelles notifications')) + nl.map(n => `<div class="card" ${n.type === 'dm' ? `data-chat="${n.room ? '#' + n.room : esc(n.from)}"` : n.type === 'search' ? `data-ssopen="${n.search}"` : n.type === 'group' ? `data-cmopen="${n.group}"` : n.type === 'event' ? 'data-page="events"' : n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}>${n.type === 'search' ? `🔎 <b>${esc(n.name)}</b> : ${n.count} nouveau${n.count > 1 ? 'x' : ''} résultat${n.count > 1 ? 's' : ''}` : ''}${n.type === 'search' ? '' : n.from ? `<b>${esc(n.from)}</b> ` : n.type === 'event' ? '📅 ' : '📊 '}${n.type === 'react' && n.emoji ? n.emoji + ' ' : ''}${n.type === 'dm' && n.count > 1 ? `(×${n.count}) ` : ''}${n.type === 'event' ? `${Notif.TEXT.event[n.what] || 'événement'} · <b>${esc(n.title)}</b> · ${esc(evWhen(n.start))}` : n.type === 'group' ? `${L.group[n.what] || 'communauté'} · 👥 ${esc(gname(n.group))}` : n.type === 'search' ? '' : n.type === 'sanction' ? ({ warn: 'vous a averti', suspend: 'a suspendu votre compte', ban: 'a banni votre compte' })[n.what] || L.sanction : n.type === 'hide' ? 'a masqué votre post (vous pouvez faire appel)' : n.type === 'appeal' ? ({ new: 'a fait appel d’une décision', accepted: 'a accepté votre appel', rejected: 'a rejeté votre appel' })[n.what] + (n.answer ? ' : « ' + esc(n.answer) + ' »' : '') : L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') + (nready ? moreBtn('notifs') + (!np.more && nl.length ? `<p class="mut" role="status">${t('seen.all')}</p>` : '') : '') + (nready && !nl.length ? '<p class="mut">Aucune notification.</p>' : '');
   } else if (view.page === 'thread') {
     const p = net.db().posts.find(x => x.id === view.arg);
     h = p ? postHTML(p) + composer(t('composer.reply'), p.id) + e + net.replies(p.id, me).map(r => postHTML(r)).join('') : '<p class="mut">Post supprimé.</p>';
@@ -977,13 +978,61 @@ function groupsPage(e) {
 }
 document.addEventListener('input', ev => { if (ev.target.id === 'adm-q') { adm.q = ev.target.value; const p = ev.target.selectionStart; refresh(); const x = document.getElementById('adm-q'); if (x) { x.focus(); x.setSelectionRange(p, p); } } });
 document.addEventListener('input', ev => { if (ev.target.id === 'g-q') { view.q = ev.target.value; const p = ev.target.selectionStart; refresh(); const x = document.getElementById('g-q'); if (x) { x.focus(); x.setSelectionRange(p, p); } } });
+// ---- événements : création (date, lieu, communauté), réponses Je viens / Peut-être / Non, rappel, agenda personnel et export iCal ----
+const EV_ANS = [['yes', '✅ Je viens'], ['maybe', '🤔 Peut-être'], ['no', '❌ Non']], EV_REM = { 0: 'à l’heure du début', 15: '15 min avant', 60: '1 h avant', 180: '3 h avant', 1440: '1 jour avant' };
+const evWhen = ms => I18n.date(ms, { dateStyle: 'full', timeStyle: 'short' });
+const evIn = ms => { const m = Math.round((ms - Date.now()) / 60000); return m <= 0 ? 'en cours' : m < 60 ? `dans ${m} min` : m < 1440 ? `dans ${Math.round(m / 60)} h` : `dans ${Math.round(m / 1440)} j`; };
+function eventCard(e) {
+  const c = net.evCounts(e), mine = net.myRsvp(me, e), isOwner = e.owner.toLowerCase() === me.toLowerCase(), over = e.start <= Date.now(), open = view.arg === e.id;
+  const who = a => Object.entries(e.rsvps).filter(([, x]) => x === a).map(([k]) => '@' + esc(prof(k).name || k)).join(', ') || '—';
+  return `<div class="card event" id="ev-${e.id}"><b>📅 ${esc(e.title)}</b> <span class="mut">${over ? 'terminé' : evIn(e.start)}</span>
+    <p>🕒 ${esc(evWhen(e.start))}${e.place ? `<br>📍 ${esc(e.place)}` : ''}${e.group ? `<br>${groupTag(e.group)}` : ''}</p>${e.desc ? `<p>${esc(e.desc)}</p>` : ''}
+    <p class="mut">Organisé par <span class="who" data-user="${esc(e.owner)}">@${esc(e.owner)}</span> · rappel ${EV_REM[e.remind]} · ✅ ${c.yes} · 🤔 ${c.maybe} · ❌ ${c.no}</p>
+    ${over ? '' : `<div class="row" role="group" aria-label="Ma réponse">${EV_ANS.map(([a, l]) => `<button data-ev="rsvp:${e.id}:${a}" class="${mine === a ? 'on' : ''}" aria-pressed="${mine === a}">${l}</button>`).join('')}${mine ? `<button class="lnk" data-ev="rsvp:${e.id}:none">Retirer ma réponse</button>` : ''}</div>`}
+    <div class="row"><button class="lnk" data-ev="toggle:${e.id}">${open ? 'Masquer' : 'Voir'} les réponses</button>${isOwner || net.isAdmin(me) ? `<button class="lnk" data-ev="del:${e.id}">Annuler l’événement</button>` : ''}</div>
+    ${open ? `<div class="mut"><p>✅ Je viens : ${who('yes')}</p><p>🤔 Peut-être : ${who('maybe')}</p><p>❌ Non : ${who('no')}</p></div>` : ''}</div>`;
+}
+function eventsPage(e) {
+  const tab = view.tab || 'upcoming', gid = view.group || '', mineG = net.myGroups(me);
+  const all = net.events(me), ag = net.agenda(me), shownList = (tab === 'agenda' ? ag : gid ? all.filter(x => x.group === +gid) : all);
+  const tabs = [['upcoming', `🌍 À venir ${all.length}`], ['agenda', `🗓 Mon agenda ${ag.length}`], ['new', '➕ Créer']];
+  const form = `<div class="card"><h3>➕ Nouvel événement</h3>
+    <input id="ev-title" maxlength="80" placeholder="Titre (ex. Soirée speedrun)" aria-label="Titre de l’événement">
+    <label>Date et heure <input type="datetime-local" id="ev-at" value="${localInput(Date.now() + 86400000)}" aria-label="Date et heure"></label>
+    <input id="ev-place" maxlength="120" placeholder="Lieu (adresse, salon vocal, lien…)" aria-label="Lieu">
+    <textarea id="ev-desc" maxlength="500" placeholder="Description (facultatif)" aria-label="Description"></textarea>
+    <div class="row"><label class="inl">Groupe <select id="ev-group" aria-label="Communauté"><option value="">Tout le monde</option>${mineG.map(g => `<option value="${g.id}"${+gid === g.id ? ' selected' : ''}>👥 ${esc(g.name)}</option>`).join('')}</select></label>
+    <label class="inl">Rappel <select id="ev-remind" aria-label="Rappel">${Object.entries(EV_REM).map(([m, l]) => `<option value="${m}"${m === '60' ? ' selected' : ''}>${l}</option>`).join('')}</select></label></div>
+    <button data-ev="create">Créer l’événement</button></div>`;
+  const head = `<div class="card"><h2>📅 Événements</h2><p class="mut">Crée un rendez-vous, reçois les réponses « Je viens », « Peut-être » ou « Non », et un rappel avant le début. Ton agenda se synchronise avec n’importe quel calendrier grâce à l’export iCal.</p>
+    <div class="row" role="tablist" aria-label="Sections">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${tab === k}" class="${tab === k ? 'on' : ''}" data-ev="tab:${k}">${l}</button>`).join('')}${tab === 'agenda' ? '<button data-ev="ical">⬇ Exporter en iCal (.ics)</button>' : ''}</div>
+    ${gid && tab === 'upcoming' ? `<p class="mut">Filtre : 👥 ${esc((mineG.find(g => g.id === +gid) || {}).name || '')} <button class="lnk" data-ev="nofilter">tout afficher</button></p>` : ''}</div>${e}`;
+  if (tab === 'new') return head + form;
+  return head + (shownList.map(eventCard).join('') || `<p class="mut">${tab === 'agenda' ? 'Ton agenda est vide : réponds « Je viens » à un événement ou crée le tien.' : 'Aucun événement à venir : crée le premier !'}</p>`);
+}
+document.addEventListener('click', ev => {
+  const d = ev.target.closest('[data-ev]'); if (!d || !me) return;
+  const [act, a, b] = d.dataset.ev.split(':'), v = id => ($(id) || {}).value;
+  if (act === 'ofgroup') { go('events'); view.group = a; render(); }
+  else if (act === 'tab') { view.tab = a; err = ''; render(); }
+  else if (act === 'nofilter') { view.group = ''; render(); }
+  else if (act === 'toggle') { view.arg = view.arg === +a ? null : +a; render(); }
+  else if (act === 'rsvp') attempt(() => net.rsvp(me, +a, b === 'none' ? null : b));
+  else if (act === 'del') { if (confirm('Annuler cet événement ? Les inscrits seront prévenus.')) attempt(() => net.deleteEvent(me, +a)); }
+  else if (act === 'ical') { const url = URL.createObjectURL(new Blob([net.ical(me)], { type: 'text/calendar' })), l = document.createElement('a'); l.href = url; l.download = 'agenda-cornichon.ics'; l.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+  else if (act === 'create') attempt(async () => {
+    const at = new Date(v('#ev-at')).getTime(); if (!Number.isFinite(at)) throw new Error('Date invalide');
+    await net.createEvent(me, { title: v('#ev-title'), start: at, place: v('#ev-place'), desc: v('#ev-desc'), group: v('#ev-group') || null, remind: +v('#ev-remind') });
+    view.tab = 'agenda';
+  });
+});
 function groupPage(e, paged) {
   let g; try { g = net.group(view.arg); } catch (x) { return '<div class="card"><p class="mut">Cette communauté n’existe pas ou a été supprimée.</p><button data-page="groups">Communautés</button></div>'; }
   const r = net.groupRole(me, g.id), member = ['owner', 'mod', 'member'].includes(r), mod = r === 'owner' || r === 'mod', tab = view.tab || 'feed', owner = r === 'owner';
   const reqs = g.requests.filter(n => n !== me).length;
   const tabs = [['feed', '📰 Fil'], ['members', `👥 Membres ${gcount(g)}`], ['rules', '📜 Règles']].concat(mod ? [['manage', `🛠 Gestion ${reqs || ''}`]] : []);
   const head = `<div class="card"><p><button data-page="groups">← Communautés</button></p><h2>${g.public ? '🌐' : '🔒'} ${esc(g.name)}</h2><p>${esc(g.desc) || '<span class="mut">Pas de description</span>'}</p>
-    <p class="mut">${gbadge(g)} · ${gcount(g)} membre${gcount(g) > 1 ? 's' : ''} · créée par @${esc(g.owner)}${r ? ' · tu es ' + ROLES[r] : ''}</p><div class="row">${groupActions(g, r)}</div></div>
+    <p class="mut">${gbadge(g)} · ${gcount(g)} membre${gcount(g) > 1 ? 's' : ''} · créée par @${esc(g.owner)}${r ? ' · tu es ' + ROLES[r] : ''}</p><div class="row">${groupActions(g, r)}${member ? `<button data-ev="ofgroup:${g.id}">📅 Événements</button>` : ''}</div></div>
     <div class="card tabs" role="tablist" aria-label="Sections de la communauté">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${tab === k}" class="${tab === k ? 'on' : ''}" data-cmtab="${k}">${l}</button>`).join('')}</div>${e}`;
   const person = n => { const rl = g.owner.toLowerCase() === n.toLowerCase() ? 'owner' : g.mods.some(m => m.toLowerCase() === n.toLowerCase()) ? 'mod' : 'member';
     return `<div class="card person"><span class="who" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)} · ${ROLES[rl]}</span></span>

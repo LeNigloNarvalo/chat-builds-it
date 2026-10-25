@@ -2,9 +2,27 @@
 // Chaque appel relit le storage (lecture-modification-écriture) : aucune copie ancienne n'est conservée en mémoire.
 (function (root) {
   const KEY = 'twitchgram.v1';
-  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], appeals: [], drafts: [], groups: [], rooms: [], msgReports: [], audit: [], seq: 1, attempts: Object.create(null) });
+  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], appeals: [], drafts: [], groups: [], events: [], rooms: [], msgReports: [], audit: [], seq: 1, attempts: Object.create(null) });
   const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000, POLL_MAX_MIN = 7 * 1440, MAX_OWN_GROUPS = 10, MAX_RULES = 600;
 
+  const EV_ANSWERS = ['yes', 'maybe', 'no'], EV_REMINDS = [0, 15, 60, 180, 1440], EV_GRACE = 3 * 3600000, MAX_EVENTS = 30;
+  const icsEsc = v => String(v || '').replace(/\\/g, '\\\\').replace(/\r?\n/g, '\\n').replace(/[,;]/g, c => '\\' + c);
+  const icsDate = ms => new Date(ms).toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  // iCalendar : lignes CRLF, repliées à 75 octets
+  const fold = line => { const out = []; let cur = ''; for (const ch of line) { if (byteLen(cur + ch) > (out.length ? 74 : 75)) { out.push(cur); cur = ch; } else cur += ch; } out.push(cur); return out.join('\r\n '); };
+  const byteLen = s => new TextEncoder().encode(s).length;
+  function ics(list, by) {
+    const L = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Cornichon//Agenda//FR', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:Agenda Cornichon'];
+    for (const e of list) {
+      const a = e.rsvps[String(by || '').toLowerCase()];
+      L.push('BEGIN:VEVENT', `UID:event-${e.id}@cornichon`, `DTSTAMP:${icsDate(e.at)}`, `DTSTART:${icsDate(e.start)}`, `DTEND:${icsDate(e.start + 3600000)}`, `SUMMARY:${icsEsc(e.title)}`);
+      if (e.place) L.push(`LOCATION:${icsEsc(e.place)}`);
+      L.push(`DESCRIPTION:${icsEsc((e.desc ? e.desc + '\n' : '') + 'Organisé par @' + e.owner)}`, `ORGANIZER;CN=${icsEsc(e.owner)}:mailto:noreply@cornichon.invalid`, `STATUS:${a === 'maybe' ? 'TENTATIVE' : 'CONFIRMED'}`);
+      if (e.remind > 0) L.push('BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${icsEsc(e.title)}`, `TRIGGER:-PT${e.remind}M`, 'END:VALARM');
+      L.push('END:VEVENT');
+    }
+    L.push('END:VCALENDAR'); return L.map(fold).join('\r\n') + '\r\n';
+  }
   const RESERVED = 'streamer';
   // signalements : motifs, sanctions de modération (durée de suspension en heures)
   const REASONS = { spam: 'Spam ou publicité', harcelement: 'Harcèlement', haine: 'Haine ou discrimination', violence: 'Violence ou menace', nsfw: 'Contenu inapproprié', autre: 'Autre' };
@@ -140,6 +158,8 @@ function Net(storage, now) {
       db.notifs = db.notifs.filter(x => x.group !== g.id && !gone.has(x.postId));
       db.groups = db.groups.filter(x => x !== g);
     };
+    const evt = eid => { const e = db.events.find(x => x.id === +eid); need(e, 'Événement introuvable'); return e; };
+    const evVisible = (e, n) => { if (!e.group) return true; const g = db.groups.find(x => x.id === e.group); return !!g && canRead(g, n); };
     const makePost = (author, text, replyTo, images, poll, group) => {
         text = (text || '').trim(); images = cleanImages(images);
         need((text || images.length) && text.length <= 280, 'Message vide ou > 280 caractères');
@@ -353,7 +373,7 @@ function Net(storage, now) {
       },
       // appelée par le serveur (horloge du serveur) : publie les brouillons dont la date est arrivée ; un échec (compte suspendu…) rend le brouillon à son auteur
       publishDue() {
-        let n = api.closePolls() ? 1 : 0, changed = false;
+        let n = (api.closePolls() ? 1 : 0) + api.sendReminders(), changed = false;
         for (const d of db.drafts.slice()) {
           if (!d.scheduledAt || d.scheduledAt > now()) continue;
           try { makePost(d.author, d.text, null, d.images); db.drafts = db.drafts.filter(x => x !== d); n++; }
@@ -362,6 +382,65 @@ function Net(storage, now) {
         if (n || changed) save();
         return n;
       },
+      // ---- événements : date, lieu, communauté facultative ; réponses « Je viens / Peut-être / Non » ; rappel avant le début ----
+      createEvent(by, o) {
+        const u = user(by); guard(by, true); o = o || {};
+        const title = String(o.title || '').trim().replace(/\s+/g, ' '), place = String(o.place || '').trim(), desc = String(o.desc || '').trim(), start = Math.round(+o.start), remind = o.remind === undefined ? 60 : Math.round(+o.remind);
+        need(title.length >= 3 && title.length <= 80, 'Titre : 3 à 80 caractères'); need(place.length <= 120, 'Lieu : 120 caractères max'); need(desc.length <= 500, 'Description : 500 caractères max');
+        need(Number.isFinite(start) && start > now() - 60000, 'La date doit être dans le futur'); need(start < now() + MAX_AHEAD_MS, 'Date trop lointaine (1 an maximum)');
+        need(Number.isFinite(remind) && EV_REMINDS.includes(remind), 'Rappel invalide');
+        need(db.events.filter(e => lc(e.owner) === lc(u.name) && e.start > now()).length < MAX_EVENTS, `${MAX_EVENTS} événements à venir maximum par compte`);
+        let gid = null; if (o.group) { const g = grp(o.group); need(isMember(g, u.name), 'Rejoignez la communauté pour y créer un événement'); gid = g.id; }
+        const e = { id: id(), title, desc, place, start, remind, group: gid, owner: u.name, rsvps: { [lc(u.name)]: 'yes' }, reminded: [], at: now() };
+        db.events.push(e); save(); return e;
+      },
+      updateEvent(by, eid, o) {
+        const e = evt(eid); need(lc(e.owner) === lc(user(by).name) || api.isAdmin(by), 'Réservé à l’organisateur'); o = o || {};
+        if (o.title !== undefined) { const v = String(o.title).trim().replace(/\s+/g, ' '); need(v.length >= 3 && v.length <= 80, 'Titre : 3 à 80 caractères'); e.title = v; }
+        if (o.place !== undefined) { const v = String(o.place).trim(); need(v.length <= 120, 'Lieu : 120 caractères max'); e.place = v; }
+        if (o.desc !== undefined) { const v = String(o.desc).trim(); need(v.length <= 500, 'Description : 500 caractères max'); e.desc = v; }
+        if (o.remind !== undefined) { need(EV_REMINDS.includes(+o.remind), 'Rappel invalide'); e.remind = +o.remind; e.reminded = []; }
+        if (o.start !== undefined) { const v = Math.round(+o.start); need(Number.isFinite(v) && v > now() - 60000 && v < now() + MAX_AHEAD_MS, 'Date invalide'); e.start = v; e.reminded = []; for (const n of Object.keys(e.rsvps)) if (n !== lc(e.owner)) notify(db.users[n] && db.users[n].name, e.owner, 'event', null, { event: e.id, what: 'moved', title: e.title, start: e.start }); }
+        save(); return e;
+      },
+      deleteEvent(by, eid) {
+        const e = evt(eid); need(lc(e.owner) === lc(user(by).name) || api.isAdmin(by), 'Réservé à l’organisateur');
+        for (const n of Object.keys(e.rsvps)) if (n !== lc(e.owner) && db.users[n]) notify(db.users[n].name, e.owner, 'event', null, { event: e.id, what: 'cancelled', title: e.title, start: e.start });
+        db.events = db.events.filter(x => x !== e); save();
+      },
+      // réponse : yes | maybe | no ; null retire la réponse
+      rsvp(by, eid, answer) {
+        const u = user(by), e = evt(eid); guard(by); need(evVisible(e, u.name), 'Événement introuvable');
+        need(answer === null || answer === undefined || EV_ANSWERS.includes(answer), 'Réponse invalide');
+        need(e.start > now(), 'Cet événement est terminé'); const k = lc(u.name);
+        if (answer === null || answer === undefined) delete e.rsvps[k]; else e.rsvps[k] = answer;
+        e.reminded = e.reminded.filter(x => x !== k);
+        if (answer && k !== lc(e.owner)) notify(e.owner, u.name, 'event', null, { event: e.id, what: answer, title: e.title, start: e.start });
+        save(); return answer || null;
+      },
+      evt: (by, eid) => { const e = evt(eid); need(evVisible(e, by), 'Événement introuvable'); return e; },
+      // événements visibles par `by` (public, ou communauté lisible), à venir d'abord ; `past` ajoute les terminés
+      events(by, past) { return db.events.filter(e => evVisible(e, by) && (past || e.start + EV_GRACE > now())).sort((a, b) => a.start - b.start); },
+      // agenda personnel : événements organisés ou auxquels on a répondu « Je viens » / « Peut-être »
+      agenda(by, past) { const k = lc(by); return api.events(by, past).filter(e => lc(e.owner) === k || e.rsvps[k] === 'yes' || e.rsvps[k] === 'maybe'); },
+      evCounts: e => { const c = { yes: 0, maybe: 0, no: 0 }; for (const v of Object.values(e.rsvps)) c[v]++; return c; },
+      myRsvp: (by, e) => e.rsvps[lc(by)] || null,
+      // export iCal (RFC 5545) de l'agenda de `by`
+      ical(by) { return ics(api.agenda(by, true), by); },
+      // appelée par l'horloge du serveur : rappel (notification) aux inscrits « Je viens » / « Peut-être » quand l'heure du rappel est arrivée
+      sendReminders() {
+        let n = 0;
+        for (const e of db.events) {
+          if (e.start <= now() || e.start - e.remind * 60000 > now()) continue;
+          for (const [k, a] of Object.entries(e.rsvps)) {
+            if ((a !== 'yes' && a !== 'maybe') || e.reminded.includes(k) || !db.users[k]) continue;
+            e.reminded.push(k); db.notifs.push({ id: id(), to: db.users[k].name, from: '', type: 'event', postId: null, at: now(), read: false, event: e.id, what: 'reminder', title: e.title, start: e.start }); n++;
+          }
+        }
+        if (n) save(); return n;
+      },
+      // supprime les événements terminés depuis plus de 30 jours
+      purgeEvents() { const k = db.events.length; db.events = db.events.filter(e => e.start + 30 * 86400000 > now()); if (db.events.length !== k) save(); return k - db.events.length; },
       // favoris : liste personnelle (stockée sur le compte, partagée via le storage)
       toggleBookmark(by, postId) {
         const u = user(by); need(seen(db.posts.find(x => x.id === postId), by) && db.posts.find(x => x.id === postId), 'Post introuvable');
@@ -1195,7 +1274,7 @@ function Net(storage, now) {
       return c;
     });
     return {
-      users, posts: db.posts.filter(p => p.group ? readable.has(p.group) : privOk(db, me.name, p.author, 'posts')).map(p => p.hidden && !me.admin && p.author !== me.name ? Object.assign({}, p, { text: '', images: [], poll: undefined, history: [], quoteOf: undefined }) : p), groups, reposts: db.reposts.filter(r => { const p = db.posts.find(x => x.id === r.postId); return !p || p.group || privOk(db, me.name, p.author, 'posts'); }), seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), attempts: {},
+      users, posts: db.posts.filter(p => p.group ? readable.has(p.group) : privOk(db, me.name, p.author, 'posts')).map(p => p.hidden && !me.admin && p.author !== me.name ? Object.assign({}, p, { text: '', images: [], poll: undefined, history: [], quoteOf: undefined }) : p), groups, events: db.events.filter(e => !e.group || readable.has(e.group)), reposts: db.reposts.filter(r => { const p = db.posts.find(x => x.id === r.postId); return !p || p.group || privOk(db, me.name, p.author, 'posts'); }), seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), attempts: {},
       messages: db.messages.filter(m => m.from === me.name || m.to === me.name),
       notifs: db.notifs.filter(n => n.to === me.name),
       rooms: db.rooms.filter(r => r.members.includes(me.name)).map(r => ({ ...r, msgs: r.msgs.slice(-200) })),
@@ -1207,6 +1286,6 @@ function Net(storage, now) {
     };
   }
 
-  const exported = { Net, snapshot, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, REASONS };
+  const exported = { Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, REASONS };
   if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);

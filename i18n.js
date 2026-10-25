@@ -6,7 +6,7 @@
   // ---- dictionnaires : {n} = paramètre, « clé.one / clé.other » = pluriel selon Intl.PluralRules ----
   const DICT = {
     fr: {
-      'nav.feed': '🏠 Mon fil', 'nav.explore': '🌍 Explorer', 'nav.trends': '🔥 Tendances', 'nav.search': '🔎 Recherche', 'nav.bookmarks': '🔖 Favoris', 'nav.groups': '👥 Communautés', 'nav.lists': '🗂 Listes', 'nav.drafts': '📝 Brouillons',
+      'nav.feed': '🏠 Mon fil', 'nav.explore': '🌍 Explorer', 'nav.events': '📅 Événements', 'nav.trends': '🔥 Tendances', 'nav.search': '🔎 Recherche', 'nav.bookmarks': '🔖 Favoris', 'nav.groups': '👥 Communautés', 'nav.lists': '🗂 Listes', 'nav.drafts': '📝 Brouillons',
       'nav.more': '⋯ Plus', 'nav.dm': '✉️ Messages', 'nav.profile': '👤 Profil', 'nav.theme': '🎨 Thème', 'nav.settings': '⚙️ Réglages', 'nav.privacy': '🛡️ Confidentialité', 'nav.prefs': '🎛️ Alertes', 'nav.blocks': '🚫 Bloqués', 'nav.security': '🔒 Sécurité', 'nav.stats': '📈 Statistiques', 'nav.dev': '🔑 API & Webhooks', 'nav.diag': '✅ Vérification', 'nav.mod': '🛠 Administration',
       'nav.label': 'Navigation principale', 'skip': 'Aller au contenu', 'title': 'Cornichon — le bocal à posts', 'phi': 'Mise en page au nombre d\'or : φ = {n}', 'offline.banner': '📴 Hors-ligne : fil en cache', 'offline.short': '⚠ hors ligne',
       'me.logout': 'Quitter', 'me.admin': ' 👑 admin', 'loading.server': 'Connexion au serveur…', 'loading.feed': 'Chargement du fil…', 'loading.more': 'Chargement de la suite…', 'seen.all': 'Vous avez tout vu 🥒', 'empty': 'Rien ici pour l’instant.',
@@ -27,7 +27,7 @@
       'stats.points': '{n} points', 'rel.mod': 'Modération',
     },
     en: {
-      'nav.feed': '🏠 My feed', 'nav.explore': '🌍 Explore', 'nav.trends': '🔥 Trending', 'nav.search': '🔎 Search', 'nav.bookmarks': '🔖 Bookmarks', 'nav.groups': '👥 Communities', 'nav.lists': '🗂 Lists', 'nav.drafts': '📝 Drafts',
+      'nav.feed': '🏠 My feed', 'nav.explore': '🌍 Explore', 'nav.events': '📅 Events', 'nav.trends': '🔥 Trending', 'nav.search': '🔎 Search', 'nav.bookmarks': '🔖 Bookmarks', 'nav.groups': '👥 Communities', 'nav.lists': '🗂 Lists', 'nav.drafts': '📝 Drafts',
       'nav.more': '⋯ More', 'nav.dm': '✉️ Messages', 'nav.profile': '👤 Profile', 'nav.theme': '🎨 Theme', 'nav.settings': '⚙️ Settings', 'nav.privacy': '🛡️ Privacy', 'nav.prefs': '🎛️ Alerts', 'nav.blocks': '🚫 Blocked', 'nav.security': '🔒 Security', 'nav.stats': '📈 Statistics', 'nav.dev': '🔑 API & Webhooks', 'nav.diag': '✅ Health check', 'nav.mod': '🛠 Administration',
       'nav.label': 'Main navigation', 'skip': 'Skip to content', 'title': 'Cornichon — the jar of posts', 'phi': 'Golden-ratio layout: φ = {n}', 'offline.banner': '📴 Offline: cached feed', 'offline.short': '⚠ offline',
       'me.logout': 'Log out', 'me.admin': ' 👑 admin', 'loading.server': 'Connecting to the server…', 'loading.feed': 'Loading the feed…', 'loading.more': 'Loading more…', 'seen.all': 'You have seen everything 🥒', 'empty': 'Nothing here yet.',
@@ -48,7 +48,7 @@
       'stats.points': '{n} points', 'rel.mod': 'Moderation',
     },
     es: {
-      'nav.feed': '🏠 Mi muro', 'nav.explore': '🌍 Explorar', 'nav.trends': '🔥 Tendencias', 'nav.search': '🔎 Buscar', 'nav.bookmarks': '🔖 Favoritos', 'nav.groups': '👥 Comunidades', 'nav.lists': '🗂 Listas', 'nav.drafts': '📝 Borradores',
+      'nav.feed': '🏠 Mi muro', 'nav.explore': '🌍 Explorar', 'nav.events': '📅 Eventos', 'nav.trends': '🔥 Tendencias', 'nav.search': '🔎 Buscar', 'nav.bookmarks': '🔖 Favoritos', 'nav.groups': '👥 Comunidades', 'nav.lists': '🗂 Listas', 'nav.drafts': '📝 Borradores',
       'nav.more': '⋯ Más', 'nav.dm': '✉️ Mensajes', 'nav.profile': '👤 Perfil', 'nav.theme': '🎨 Tema', 'nav.settings': '⚙️ Ajustes', 'nav.privacy': '🛡️ Privacidad', 'nav.prefs': '🎛️ Alertas', 'nav.blocks': '🚫 Bloqueados', 'nav.security': '🔒 Seguridad', 'nav.stats': '📈 Estadísticas', 'nav.dev': '🔑 API y Webhooks', 'nav.diag': '✅ Verificación', 'nav.mod': '🛠 Administración',
       'nav.label': 'Navegación principal', 'skip': 'Ir al contenido', 'title': 'Cornichon — el tarro de posts', 'phi': 'Diseño áureo: φ = {n}', 'offline.banner': '📴 Sin conexión: muro en caché', 'offline.short': '⚠ sin conexión',
       'me.logout': 'Salir', 'me.admin': ' 👑 admin', 'loading.server': 'Conectando con el servidor…', 'loading.feed': 'Cargando el muro…', 'loading.more': 'Cargando más…', 'seen.all': 'Lo has visto todo 🥒', 'empty': 'Nada por aquí todavía.',

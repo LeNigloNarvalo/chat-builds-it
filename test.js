@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { Net } = require('./social.js');
+const Social = require('./social.js'), { Net } = Social;
 const mem = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
 (async () => {
 let n = Net(mem);
@@ -240,9 +240,9 @@ console.log('ok');
   assert.ok(m.name && m.start_url && m.display === 'standalone' && m.icons.length && fs.existsSync(__dirname + '/' + m.icons[0].src));
   const sw = fs.readFileSync(__dirname + '/sw.js', 'utf8'); assert.ok(/addEventListener\('fetch'/.test(sw) && /api\/feed/.test(sw) && /notificationclick/.test(sw));
   const store = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = String(v); } };
-  assert.deepStrictEqual(Notif.load(store), { enabled: false, types: { mention: true, reply: true, follow: true, poll: true, group: true, search: true } });
+  assert.deepStrictEqual(Notif.load(store), { enabled: false, types: { mention: true, reply: true, follow: true, poll: true, group: true, search: true, event: true } });
   const L = [{ id: 1, type: 'mention', read: false }, { id: 2, type: 'like', read: false }, { id: 3, type: 'follow', read: false }, { id: 4, type: 'reply', read: true }, { id: 5, type: 'reply', read: false }];
-  const on = { enabled: true, types: { mention: true, reply: true, follow: false, poll: true, group: true, search: true } };
+  const on = { enabled: true, types: { mention: true, reply: true, follow: false, poll: true, group: true, search: true, event: true } };
   assert.deepStrictEqual(Notif.pick(L, on, null), { show: [], seen: 5 }); // première ouverture : rien d'ancien
   assert.deepStrictEqual(Notif.pick(L, on, 0).show.map(n => n.id), [1, 5]); // pas de like, pas d'abonné (désactivé), pas de déjà lu
   assert.strictEqual(Notif.pick(L, { enabled: false, types: on.types }, 0).show.length, 0);
@@ -527,5 +527,37 @@ console.log('ok');
     q.markDmRead('mbx', 'max'); assert.ok(q.peerRead('max', 'mbx') > 0);
     q.leaveRoom('mdx', rid); q.leaveRoom('mbx', rid); assert.strictEqual(q.rooms('max').length, 0);
     console.log('ok messagerie privée');
+  }
+  {
+    let clock = Date.now(); const q = Net(mem, () => clock), H = 3600000;
+    await q.signup('evo', 'pass1'); await q.signup('evg', 'pass2'); await q.signup('evx', 'pass3');
+    const e0 = q.createEvent('evo', { title: 'Soirée speedrun', start: clock + 5 * H, place: 'Salon vocal', desc: 'GG', remind: 60 });
+    assert.strictEqual(q.myRsvp('evo', e0), 'yes');
+    await assert.rejects(async () => q.createEvent('evo', { title: 'x', start: clock + H }), /Titre/);
+    await assert.rejects(async () => q.createEvent('evo', { title: 'Passé', start: clock - 5 * H }), /futur/);
+    // réponses : Je viens / Peut-être / Non, retrait, notification à l'organisateur
+    q.rsvp('evg', e0.id, 'yes'); q.rsvp('evx', e0.id, 'maybe'); assert.deepStrictEqual(q.evCounts(q.evt('evo', e0.id)), { yes: 2, maybe: 1, no: 0 });
+    q.rsvp('evx', e0.id, 'no'); assert.strictEqual(q.evCounts(q.evt('evo', e0.id)).no, 1); assert.throws(() => q.rsvp('evx', e0.id, 'bof'), /invalide/);
+    q.rsvp('evx', e0.id, null); assert.strictEqual(q.myRsvp('evx', q.evt('evx', e0.id)), null);
+    assert.ok(q.notifications('evo').some(n => n.type === 'event' && n.what === 'yes' && n.from === 'evg'));
+    // agenda personnel
+    assert.strictEqual(q.agenda('evg').length, 1); assert.strictEqual(q.agenda('evx').length, 0);
+    // événement de communauté privée : invisible hors membres
+    const gp = q.createGroup('evo', 'Club privé', '', '', false), e1 = q.createEvent('evo', { title: 'Réunion du club', start: clock + 2 * H, group: gp.id, remind: 15 });
+    assert.ok(q.events('evo').some(e => e.id === e1.id) && !q.events('evx').some(e => e.id === e1.id)); assert.throws(() => q.rsvp('evx', e1.id, 'yes'), /introuvable/);
+    await assert.rejects(async () => q.createEvent('evx', { title: 'Intrus', start: clock + H, group: gp.id }), /Rejoignez/);
+    assert.ok(!Social.snapshot(q.db(), 'evx').events.some(e => e.id === e1.id) && Social.snapshot(q.db(), 'evo').events.some(e => e.id === e1.id));
+    // rappel : une seule fois, aux inscrits « Je viens » / « Peut-être »
+    assert.strictEqual(q.sendReminders(), 0); clock += 4 * H + 30 * 60000;
+    assert.strictEqual(q.sendReminders(), 2); assert.strictEqual(q.sendReminders(), 0);
+    assert.ok(q.notifications('evg').some(n => n.type === 'event' && n.what === 'reminder' && n.title === 'Soirée speedrun'));
+    assert.ok(!q.notifications('evx').some(n => n.what === 'reminder'));
+    // iCal
+    const ics = q.ical('evg'); assert.ok(/^BEGIN:VCALENDAR\r\n/.test(ics) && /SUMMARY:Soirée speedrun\r\n/.test(ics) && /LOCATION:Salon vocal/.test(ics) && /TRIGGER:-PT60M/.test(ics) && /END:VCALENDAR\r\n$/.test(ics) && !/Réunion/.test(ics));
+    // déplacement / annulation préviennent les inscrits ; terminé : plus de réponse
+    q.updateEvent('evo', e0.id, { start: clock + 6 * H }); assert.ok(q.notifications('evg').some(n => n.what === 'moved'));
+    assert.throws(() => q.deleteEvent('evx', e0.id), /organisateur/); q.deleteEvent('evo', e0.id); assert.ok(q.notifications('evg').some(n => n.what === 'cancelled'));
+    clock += 3 * H; assert.throws(() => q.rsvp('evo', e1.id, 'no'), /terminé/);
+    console.log('ok événements');
   }
 })().catch(e => { console.error(e); process.exit(1); });
