@@ -99,3 +99,10 @@ h2,h3{line-height:1.2}h2{font-size:var(--t2)}h3{font-size:var(--t1)}
 .reacts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;align-items:center}.chip{padding:2px 8px;border-radius:99px}.chip.on,.picker .on{color:var(--acc);border-color:var(--acc)}
 .picker{display:flex;gap:4px;margin-top:6px}.picker button{font-size:1.2em}.rwho{margin-top:6px;font-size:.9em}.quoteform textarea{width:100%}
 .mentionbox{position:absolute;z-index:50;padding:4px;max-width:90vw}.mopt{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:8px;cursor:pointer}.mopt.on,.mopt:hover{background:var(--bd)}
+
+/* navigation compacte : une seule ligne + menu « Plus » */
+header nav{flex-wrap:nowrap;overflow:visible;gap:4px;min-width:0}header nav>button{white-space:nowrap;padding:6px 9px}
+.navmore{position:relative;margin-left:auto}.navmore>button{white-space:nowrap}
+.navmenu{position:absolute;right:0;top:calc(100% + 6px);z-index:20;display:grid;gap:2px;min-width:210px;max-height:70vh;overflow:auto;padding:6px;box-shadow:0 8px 24px #0006}
+.navmenu button{text-align:left;border:0;white-space:nowrap}
+@media (max-width:640px){header{gap:6px;padding:6px 8px}header h1,.phi,#me .mut{display:none}header nav>button{padding:6px 7px;font-size:.8rem}header nav .lt{display:none}header nav>button{font-size:1rem}}

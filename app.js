@@ -80,6 +80,7 @@ const typing = {}; // pseudo -> expiration
 const typingNow = () => Object.keys(typing).filter(n => typing[n] > Date.now());
 const typingHTML = () => typingNow().includes(view.arg) ? `<span id="typing" class="mut" role="status">✍️ ${esc(shown(view.arg))} est en train d’écrire…</span>` : '<span id="typing" role="status"></span>';
 let lastTyped = 0;
+let navOpen = false; // menu « Plus » de la barre de navigation
 const onLive = (ev, d) => {
   if (ev === 'update') { sync.poll().then(feedFresh); if (view.page === 'stats') statsLoad(); }
   else if (ev === 'dev') { if (view.page === 'dev') devLoad(); }
@@ -555,8 +556,11 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  nav.innerHTML = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : [])
-    .map(([k, l]) => `<button data-page="${k}" class="${view.page === k ? 'on' : ''}">${l}</button>`).join('');
+  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
+  const MAIN = ['feed', 'explore', 'trends', 'dm', 'profile'], btn = ([k, l]) => { const [ic, ...rest] = String(l).split(' '); return `<button data-page="${k}" class="${view.page === k ? 'on' : ''}" aria-label="${esc(rest.join(' ').trim() || l)}">${ic}<span class="lt"> ${rest.join(' ')}</span></button>`; };
+  const main = MAIN.map(k => items.find(x => x[0] === k)), more = items.filter(x => !MAIN.includes(x[0]));
+  const moreOn = more.some(x => x[0] === view.page), badge = more.some(x => /\d/.test(x[1].replace(/^\S+\s*/, ''))) ? ' •' : '';
+  nav.innerHTML = main.map(btn).join('') + `<span class="navmore"><button data-navmore aria-haspopup="menu" aria-expanded="${navOpen}" aria-controls="navmenu" class="${moreOn ? 'on' : ''}">${t('nav.more')}${badge}</button>${navOpen ? `<div id="navmenu" class="navmenu card" role="menu" aria-label="${t('nav.more')}">${more.map(([k, l]) => `<button role="menuitem" data-page="${k}" class="${view.page === k ? 'on' : ''}" ${view.page === k ? 'aria-current="page"' : ''}>${l}</button>`).join('')}</div>` : ''}</span>`;
   const e = err ? `<p class="err">${esc(err)}</p>` : '';
   // onglets du fil : global + une entrée par liste (les siennes)
   const tabs = () => { const ls = net.lists(me, me); return `<div class="card tabs" role="tablist" aria-label="Choix du fil"><button role="tab" aria-selected="${view.page === 'feed'}" class="${view.page === 'feed' ? 'on' : ''}" data-page="feed">🏠 Tout</button>${ls.map(l => `<button role="tab" aria-selected="${view.page === 'list' && view.arg.id === l.id}" class="${view.page === 'list' && view.arg.id === l.id && view.arg.owner === me ? 'on' : ''}" data-lopen="${esc(me)}:${l.id}">${l.public ? '🌐' : '🔒'} ${esc(l.name)}</button>`).join('')}<button data-page="lists">＋ Listes</button></div>`; };
@@ -859,6 +863,23 @@ function a11yPass() {
   document.querySelectorAll('#app .err').forEach(x => x.setAttribute('role', 'alert'));
 }
 // clavier : Entrée / Espace activent les éléments « role=button » (les vrais boutons le font déjà)
+// menu « Plus » : clic, clavier (↑ ↓ Début Fin, Échap) et clic extérieur
+const navMenu = () => [...document.querySelectorAll('#navmenu [role=menuitem]')];
+const closeNav = focus => { if (!navOpen) return; navOpen = false; render(); a11yPass(); if (focus) { const b = $('[data-navmore]'); if (b) b.focus(); } };
+document.addEventListener('click', ev => {
+  const m = ev.target.closest('[data-navmore]');
+  if (m) { navOpen = !navOpen; render(); a11yPass(); if (navOpen) { const f = navMenu(); if (f[0]) f[0].focus(); } return; }
+  if (navOpen) navOpen = !!ev.target.closest('#navmenu') && !ev.target.closest('[data-page]');
+}, true);
+document.addEventListener('keydown', ev => {
+  if (!navOpen) { if (ev.key === 'ArrowDown' && ev.target.matches && ev.target.matches('[data-navmore]')) { ev.preventDefault(); ev.target.click(); } return; }
+  if (ev.key === 'Escape') { ev.preventDefault(); closeNav(true); return; }
+  const f = navMenu(), i = f.indexOf(document.activeElement);
+  if (ev.key === 'Tab' && i >= 0) navOpen = false, render(), a11yPass();
+  else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key) && f.length) {
+    ev.preventDefault(); const n = ev.key === 'Home' ? 0 : ev.key === 'End' ? f.length - 1 : ev.key === 'ArrowDown' ? (i + 1) % f.length : (i - 1 + f.length) % f.length; f[n].focus();
+  }
+});
 document.addEventListener('keydown', ev => {
   if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.matches && ev.target.matches('[role=button]:not(button)')) { ev.preventDefault(); ev.target.click(); }
 });
