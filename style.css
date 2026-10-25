@@ -76,3 +76,5 @@ h2,h3{line-height:1.2}h2{font-size:var(--t2)}h3{font-size:var(--t1)}
 .diag{list-style:none;padding:0}.diag li{padding:4px 0}.ok{color:var(--ok,#2a9d4a)}
 #offline{margin-left:8px}
 .tabs{display:flex;flex-wrap:wrap;gap:.4em}.tabs .on{font-weight:700;outline:2px solid #9146ff}
+
+.who2f .sug{display:flex;flex-wrap:wrap;align-items:center;gap:.5em;padding:.4em 0;border-top:1px solid var(--bd,#8884)}.who2f .who{cursor:pointer}.sugwhy{flex:1 1 12em;font-size:.9em}.sugact{display:flex;gap:.4em}

@@ -221,6 +221,15 @@ document.addEventListener('input', ev => {
   clearTimeout(dtimers[k]); dtimers[k] = setTimeout(() => saveNow(k), 800);
 });
 
+// encart « Qui suivre » (fil et explorer) : amis d'amis, sujets communs, suivi rapide ou « ignorer » ; relu depuis les données partagées à chaque rendu
+function whoToFollow() {
+  const l = net.suggestions(me, 4), why = x => x.reason === 'friends' ? `Suivi par ${x.via.map(n => '@' + esc(n)).join(', ')}${x.mutual > x.via.length ? ' et ' + (x.mutual - x.via.length) + ' autre(s)' : ''}`
+    : x.reason === 'topics' ? 'Parle aussi de ' + x.tags.map(esc).join(', ') : 'Compte actif de la communauté';
+  const intro = !net.profile(me).following.length ? '<p class="mut">Bienvenue ! Suis quelques comptes pour remplir ton fil 🥒</p>' : '';
+  return `<section class="card who2f" aria-label="Qui suivre"><b>👥 Qui suivre</b>${intro}` + (l.length ? l.map(x => `<div class="sug">${av(x.name)}<span class="who" data-user="${esc(x.name)}"><b>${esc(shown(x.name))}</b> <span class="mut">@${esc(x.name)}</span></span>
+    <span class="mut sugwhy">${why(x)}</span><span class="sugact"><button data-sfollow="${esc(x.name)}" aria-label="Suivre @${esc(x.name)}">＋ Suivre</button> <button data-sdismiss="${esc(x.name)}" aria-label="Ignorer la suggestion @${esc(x.name)}">Ignorer</button></span></div>`).join('')
+    : '<p class="mut">Plus de suggestions pour le moment : reviens quand le bocal se sera rempli.</p>') + '</section>';
+}
 function render() {
   const nav = $('#nav'), app = $('#app');
   $('#me').innerHTML = me ? `${STREAM ? '<b>🔴 STREAM</b> ' : ''}@${esc(me)}${net.isAdmin(me) ? ' 👑 admin' : ''} <button data-logout>Quitter</button>` : '';
@@ -265,11 +274,11 @@ function render() {
     return (fs.fresh ? `<button class="card newbar" data-newposts>⬆ ${fs.fresh} nouveau${fs.fresh > 1 ? 'x' : ''} post${fs.fresh > 1 ? 's' : ''}</button>` : '') + list(ps)
       + (fs.more ? '<button class="card morebar" id="more" data-more>Chargement de la suite…</button>' : ps.length ? '<p class="mut" role="status">Vous avez tout vu 🥒</p>' : '');
   };
-  if (view.page === 'feed') h = composer('Quoi de neuf ?') + tabs() + e + paged();
+  if (view.page === 'feed') h = composer('Quoi de neuf ?') + whoToFollow() + tabs() + e + paged();
   else if (view.page === 'lists') h = listsPage(e);
   else if (view.page === 'list') h = listPage(e, paged);
   else if (view.page === 'explore') {
-    h = composer('Quoi de neuf ?') + e + `<div class="card"><b>Tendances</b> ${net.trending().map(([t, c]) => `<span class="tag" data-search="${t}">${t} (${c})</span>`).join(' ') || '<span class="mut">aucune</span>'}</div>` + paged();
+    h = composer('Quoi de neuf ?') + whoToFollow() + e + `<div class="card"><b>Tendances</b> ${net.trending().map(([t, c]) => `<span class="tag" data-search="${t}">${t} (${c})</span>`).join(' ') || '<span class="mut">aucune</span>'}</div>` + paged();
   } else if (view.page === 'trends') {
     const medal = i => ['🥇', '🥈', '🥉'][i] || `#${i + 1}`;
     h = `<div class="card"><b>🔴 En direct · hashtags du moment</b><ol class="trend">${net.trendingLive().map(t => `<li><span class="tag" data-search="${t.tag}">${t.tag}</span> <span class="mut">${t.count} post${t.count > 1 ? 's' : ''}</span><i class="bar" style="width:${Math.max(6, Math.round(t.score / (net.trendingLive(1)[0].score || 1) * 100))}%"></i></li>`).join('') || '<li class="mut">aucun hashtag</li>'}</ol></div>
@@ -484,7 +493,7 @@ document.addEventListener('click', async ev => {
   } else if ('notiftest' in b.dataset) Notif.show({ id: 'test' + Date.now(), type: 'mention' }, 'Le bocal');
 });
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
+  const d = ev.target.closest('*[data-page],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
   if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
@@ -578,6 +587,8 @@ document.addEventListener('click', ev => {
   else if ('ladd' in D) attempt(async () => { const n = (v('#l-add') || '').trim().replace(/^@/, ''); if (!n) throw new Error('Pseudo à ajouter ?'); const t = net.profile(n).name; if (!net.listsWith(me, t).includes(+D.ladd)) await net.toggleListMember(me, +D.ladd, t); });
   else if ('lmem' in D) { const [i, n] = D.lmem.split(':'); attempt(() => net.toggleListMember(me, +i, n)); }
   else if ('user' in D) go('profile', D.user);
+  else if ('sfollow' in D) attempt(async () => { await net.toggleFollow(me, D.sfollow); if (feedScope()) feedLoad(true); });
+  else if ('sdismiss' in D) attempt(() => net.dismissSuggestion(me, D.sdismiss));
   else if ('follow' in D) attempt(() => net.toggleFollow(me, D.follow));
   else if ('chat' in D) go('dm', D.chat);
   else if ('dm' in D) attempt(async () => { await net.send(me, view.arg, v('#dm'), pend.dm); pend.dm = []; });

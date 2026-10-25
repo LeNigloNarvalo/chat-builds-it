@@ -454,6 +454,29 @@
         if (i >= 0) m.splice(i, 1); else m.push(t.name);
         save(); return i < 0;
       },
+      // « Qui suivre » : amis d'amis (comptes suivis par mes abonnements) + sujets communs (#hashtags de mes posts et likes) ;
+      // sans rien de tout cela (nouveau compte) : comptes populaires et actifs. Écarte moi, Streamer, suivis, bloqués, masqués et ignorés.
+      suggestions(by, limit) {
+        const me = user(by), out = [], tagsOf = ps => { const c = {}; for (const p of ps) for (const t of new Set((p.text.match(/#\w+/g) || []).map(x => x.toLowerCase()))) c[t] = (c[t] || 0) + 1; return c; };
+        const mine = tagsOf(db.posts.filter(p => p.author === me.name || has(p.likes, me.name)));
+        const followers = {}; for (const u of Object.values(db.users)) for (const f of u.following || []) followers[lc(f)] = (followers[lc(f)] || 0) + 1;
+        for (const c of Object.values(db.users)) {
+          if (c === me || c.admin || has(me.following, c.name) || has(me.dismissed, c.name) || has(me.blocked, c.name) || has(me.muted, c.name) || has(c.blocked, me.name)) continue;
+          const via = (me.following || []).filter(f => has((db.users[lc(f)] || {}).following, c.name)).map(f => (db.users[lc(f)] || {}).name || f);
+          const theirs = tagsOf(db.posts.filter(p => p.author === c.name)), shared = Object.keys(theirs).filter(t => mine[t]);
+          const recent = db.posts.some(p => p.author === c.name && now() - p.at < 7 * 86400000), fans = followers[lc(c.name)] || 0;
+          const score = via.length * 3 + shared.length * 2, pop = fans + (recent ? 1 : 0);
+          out.push({ name: c.name, via: via.slice(0, 3), mutual: via.length, tags: shared.slice(0, 3), score, pop, reason: via.length ? 'friends' : shared.length ? 'topics' : 'popular' });
+        }
+        const hasSignal = out.some(x => x.score > 0);
+        return out.filter(x => x.score > 0 || (!hasSignal && x.pop > 0) || (hasSignal && x.pop > 1))
+          .sort((a, b) => b.score - a.score || b.pop - a.pop || a.name.localeCompare(b.name)).slice(0, limit || 5);
+      },
+      dismissSuggestion(by, target) {
+        const me = user(by), t = user(target); need(me !== t, 'Impossible de s’ignorer soi-même');
+        const d = me.dismissed = me.dismissed || []; if (!has(d, t.name)) d.push(t.name);
+        save(); return d.length;
+      },
       isBlocked: (by, n) => has((db.users[lc(by)] || {}).blocked, n),
       isMuted: (by, n) => has((db.users[lc(by)] || {}).muted, n),
       isHidden: (by, n) => hiddenFor(by, n),
@@ -528,9 +551,9 @@
     if (!me) throw new Error('Utilisateur introuvable');
     const lcm = me.name.toLowerCase(), users = Object.create(null);
     for (const [k, u] of Object.entries(db.users)) {
-      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, email, emailPending, lists, ...pub } = u;
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, email, emailPending, lists, dismissed, ...pub } = u;
       if (lists) pub.lists = k === lcm ? lists : lists.filter(l => l.public);
-      if (k === lcm) Object.assign(pub, { blocked, muted, bookmarks, sanction, sanctions, dmRead, email, emailPending });
+      if (k === lcm) Object.assign(pub, { dismissed, blocked, muted, bookmarks, sanction, sanctions, dmRead, email, emailPending });
       else if (me.admin) Object.assign(pub, { sanction });
       users[k] = JSON.parse(JSON.stringify(pub));
     }

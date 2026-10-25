@@ -159,6 +159,20 @@ for (const n in T.PRESETS) assert.ok(T.ratio(T.PRESETS[n].fg, T.mix(T.PRESETS[n]
 await n.signup('constructor', 'pass9'); assert.throws(() => n.profile('valueOf')); assert.strictEqual(n.profile('constructor').name, 'constructor');
 const snap = require('./social.js').snapshot(n.db(), 'carol'); assert.ok(!JSON.stringify(snap).includes('"pass"'));
 console.log('ok');
+  // suggestions « Qui suivre »
+  { const m = Net({ d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } });
+    for (const u of ['moi', 'ami', 'fof', 'tag', 'nul']) await m.signup(u, 'pass1');
+    assert.deepStrictEqual(m.suggestions('moi'), []);
+    m.post('ami', 'hello'); m.toggleFollow('moi', 'ami'); m.toggleFollow('ami', 'fof');
+    m.post('moi', 'j’adore #cuisine'); m.post('tag', 'recette #cuisine');
+    const s = m.suggestions('moi'); assert.deepStrictEqual(s.map(x => x.name), ['fof', 'tag']);
+    assert.deepStrictEqual([s[0].reason, s[0].via, s[1].reason, s[1].tags], ['friends', ['ami'], 'topics', ['#cuisine']]);
+    m.dismissSuggestion('moi', 'fof'); assert.deepStrictEqual(m.suggestions('moi').map(x => x.name), ['tag']);
+    assert.ok(!('dismissed' in require('./social.js').snapshot(m.db(), 'tag').users.moi));
+    m.toggleFollow('moi', 'tag'); assert.deepStrictEqual(m.suggestions('moi'), []);
+    // nouveau compte : comptes populaires et actifs
+    await m.signup('neuf', 'pass1'); assert.ok(m.suggestions('neuf').some(x => x.name === 'ami' && x.reason === 'popular')); }
+  console.log('ok suggestions de comptes');
 })().catch(e => { console.error(e); process.exit(1); });
 
 // brouillons, planification, historique des versions
