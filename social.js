@@ -180,9 +180,36 @@
   const ANN_LEVELS = { info: 'ℹ️ Info', success: '🎉 Nouveauté', warning: '⚠️ Attention', critical: '🚨 Urgent' };
   const COMPONENTS = { feed: '📰 Fil et publications', dm: '✉️ Messages privés', media: '🖼 Médias et vidéos', login: '🔑 Connexion', api: '🔌 API et webhooks' };
   const IMPACTS = { degraded: '🟠 Service dégradé', outage: '🔴 Panne', maintenance: '🛠 Maintenance' }, INC_STATES = { investigating: '🔎 Analyse en cours', identified: '🎯 Cause identifiée', monitoring: '👀 Surveillance', resolved: '✅ Résolu' };
-  const MAINT_BLOCK = new Set(['post', 'editPost', 'quote', 'react', 'toggleLike', 'toggleRepost', 'send', 'sendRoom', 'editMessage', 'createRoom', 'createGroup', 'createEvent', 'createList', 'ask', 'answerQuestion', 'vote', 'addMedia', 'publishDraft', 'createOrg', 'submitOrgPost', 'toggleFollow', 'joinGroup', 'updateProfile', 'proposeIdea', 'voteIdea', 'commentIdea', 'followIdea']);
+  const MAINT_BLOCK = new Set(['setBirthDate', 'requestParentLink', 'answerParentLink', 'unlinkParent', 'setSupervision', 'removeContact', 'parentAnswer', 'parentAnswerFollower', 'post', 'editPost', 'quote', 'react', 'toggleLike', 'toggleRepost', 'send', 'sendRoom', 'editMessage', 'createRoom', 'createGroup', 'createEvent', 'createList', 'ask', 'answerQuestion', 'vote', 'addMedia', 'publishDraft', 'createOrg', 'submitOrgPost', 'toggleFollow', 'joinGroup', 'updateProfile', 'proposeIdea', 'voteIdea', 'commentIdea', 'followIdea']);
   // ---- feuille de route publique : nouveautés datées, idées des membres, votes et statuts ----
   const IDEA_STATES = { considered: '💭 Envisagé', progress: '🚧 En cours', delivered: '✅ Livré' }, UPD_TAGS = { new: '✨ Nouveauté', improved: '🔧 Amélioration', fixed: '🐛 Correctif', soon: '🔭 Bientôt' };
+  // ---- comptes supervisés : âge, restrictions des mineurs et contrôle parental ----
+  const ADULT_AGE = 18, MAX_CONTACTS = 200, MAX_WORDS = 30, DAY_MS = 86400000;
+  const parseBirth = s => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || '')); if (!m) return null; const o = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])); return o.getUTCFullYear() === +m[1] && o.getUTCMonth() === +m[2] - 1 && o.getUTCDate() === +m[3] ? { y: +m[1], m: +m[2], d: +m[3], ms: +o } : null; };
+  const ageAt = (birth, t) => { const b = parseBirth(birth); if (!b) return null; const n = new Date(t), mo = n.getUTCMonth() + 1; return n.getUTCFullYear() - b.y - (mo < b.m || (mo === b.m && n.getUTCDate() < b.d) ? 1 : 0); };
+  const minorU = (u, t) => !!(u && !u.admin && u.birth && ageAt(u.birth, t) < ADULT_AGE);
+  const hm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+  // horaires fixés par le parent : minutes locales = minutes UTC − décalage (getTimezoneOffset) mémorisé avec la plage ; la plage peut passer minuit
+  const inWindow = (sup, t) => {
+    if (!sup || sup.start == null || sup.end == null) return true;
+    const loc = (((Math.floor(t / 60000) - (sup.tz || 0)) % 1440) + 1440) % 1440;
+    return sup.start <= sup.end ? loc >= sup.start && loc < sup.end : loc >= sup.start || loc < sup.end;
+  };
+  // vue du parent : pour chaque enfant lié, réglages, demandes à valider et résumé d'activité des 7 derniers jours (jamais le contenu des messages envoyés)
+  function supervision(db, by, t) {
+    const me = db.users[String(by).toLowerCase()], low = x => String(x || '').toLowerCase();
+    const kids = Object.values(db.users).filter(c => c.parent && low(c.parent) === low(me.name)).map(c => {
+      const minor = minorU(c, t), s = c.sup || {}, since = t - 7 * DAY_MS, posts = db.posts.filter(p => p.author === c.name && !p.group);
+      const out = db.messages.filter(m => m.from === c.name && !m.call), inc = db.messages.filter(m => m.to === c.name && !m.call);
+      const days = Array.from({ length: 7 }, (_, i) => { const a = t - (6 - i) * DAY_MS - (t % DAY_MS), b = a + DAY_MS; return { day: a, posts: posts.filter(p => p.at >= a && p.at < b).length, messages: out.filter(m => m.at >= a && m.at < b).length }; });
+      const per = {}; for (const m of out.filter(m => m.at >= since)) per[m.to] = (per[m.to] || 0) + 1; for (const m of inc.filter(m => m.at >= since)) per[m.from] = (per[m.from] || 0) + 1;
+      const last = Math.max(0, ...posts.map(p => p.at), ...out.map(m => m.at));
+      return { name: c.name, display: c.display || c.name, age: ageAt(c.birth, t), minor, hours: s.start == null ? null : { start: s.start, end: s.end, tz: s.tz || 0 }, words: (s.words || []).slice(), contacts: (s.contacts || []).slice(),
+        pending: (s.pending || []).slice().reverse(), followReq: (c.followReq || []).filter(n => db.users[low(n)]).slice().reverse(), log: (s.log || []).slice(-20).reverse(), following: c.following.length, followers: Object.values(db.users).filter(u => u.following.includes(c.name)).length,
+        week: { posts: posts.filter(p => p.at >= since && !p.replyTo).length, replies: posts.filter(p => p.at >= since && p.replyTo).length, sent: out.filter(m => m.at >= since).length, received: inc.filter(m => m.at >= since).length, days, contacts: Object.entries(per).map(([n, c2]) => ({ name: (db.users[low(n)] || { name: n }).name, count: c2 })).sort((a, b) => b.count - a.count).slice(0, 8), last } };
+    });
+    return { children: kids, requests: (me.parentReq || []).slice() };
+  }
   const MAX_IDEAS = 500, MAX_UPDATES = 200, MAX_IDEA_COMMENTS = 200;
   const MAX_ANN = 50, MAX_INC = 100, SEV = { ok: 0, maintenance: 1, degraded: 2, outage: 3 };
   const activeMaint = (st, t) => { const m = st && st.maintenance; return m && m.on && (!m.until || m.until > t) ? m : null; };
@@ -218,8 +245,32 @@ function Net(storage, now) {
     const has = (list, n) => (list || []).some(x => lc(x) === lc(n));
     // masqué pour `by` : compte bloqué ou masqué par lui (ses posts, réponses et DM disparaissent)
     const hiddenFor = (by, author) => { const u = db.users[lc(by)]; return !!(u && author && lc(author) !== lc(by) && (has(u.blocked, author) || has(u.muted, author))); };
+    const checkBirth = b => { const p = parseBirth(b); need(p && p.ms <= now() && ageAt(b, now()) <= 120, 'Date de naissance invalide (format AAAA-MM-JJ)'); return p; };
+    const isMinor = u => minorU(u, now());
+    const hasParent = u => !!(u.parent && db.users[lc(u.parent)]);
+    const supOf = u => (u.sup = u.sup || { contacts: [], pending: [], words: [], log: [] });
+    const offHours = u => isMinor(u) && hasParent(u) && !inWindow(u.sup, now());
+    // demande à valider par le parent : une seule par (type, compte, sens), le parent est prévenu
+    const hold = (child, kind, other, extra) => {
+      const s = supOf(child), dir = extra.dir || '', o = user(other).name;
+      let p = s.pending.find(x => x.kind === kind && lc(x.other) === lc(o) && (x.dir || '') === dir);
+      if (p) Object.assign(p, extra, { at: now() });
+      else { p = Object.assign({ id: id(), kind, other: o, at: now() }, extra); s.pending.push(p); if (s.pending.length > 100) s.pending.shift(); notify(child.parent, o, 'parental', null, { what: kind, child: child.name }); }
+      save();
+    };
+    // un mineur n'écrit qu'à son parent, aux contacts validés, ou (sans parent lié) aux abonnements mutuels
+    const contactOk = (m, o) => !isMinor(m) || o.admin || lc(m.parent) === lc(o.name) || has((m.sup || {}).contacts, o.name) || (!hasParent(m) && has(m.following, o.name) && has(o.following, m.name));
+    const dmGate = (a, b, text) => { // a écrit à b : chaque mineur concerné doit avoir ce contact
+      for (const [m, o] of [[a, b], [b, a]]) {
+        if (contactOk(m, o)) continue;
+        if (hasParent(m)) { hold(m, 'dm', o.name, { dir: m === a ? 'out' : 'in', from: a.name, to: b.name, text: String(text || '').slice(0, 500) }); throw new Error(m === a ? 'Compte supervisé : votre parent doit d’abord valider ce contact (demande envoyée).' : `@${m.name} est un compte supervisé : son parent doit valider ce contact (demande envoyée).`); }
+        throw new Error(m === a ? 'Messages privés limités : vous ne pouvez écrire qu’aux comptes que vous suivez mutuellement' : `@${m.name} est un compte mineur : seuls ses abonnements mutuels peuvent lui écrire`);
+      }
+    };
+    let viaParent = false; // vrai seulement pendant une décision du parent (jamais un argument d'appel)
     const guard = (n, speak) => {
-      const s = user(n).sanction; if (!s) return;
+      const u = user(n); if (offHours(u)) throw new Error(`Hors des horaires autorisés par votre parent (${hm(u.sup.start)}–${hm(u.sup.end)}) : revenez plus tard`);
+      const s = u.sanction; if (!s) return;
       need(!(speak && s.type === 'mute' && s.until > now()), `Compte en mute (lecture seule) pendant encore ${Math.ceil((s.until - now()) / 60000)} min : vous ne pouvez ni publier ni écrire`);
       need(s.type !== 'ban', 'Votre compte est banni : action impossible');
       need(!(s.type === 'suspend' && s.until > now()), `Compte suspendu pendant encore ${Math.ceil((s.until - now()) / 60000)} min`);
@@ -230,6 +281,7 @@ function Net(storage, now) {
     const blog = (name, badge, action, by, reason) => { db.badgeLog = db.badgeLog || []; db.badgeLog.push({ id: id(), at: now(), user: name, badge, action, by: by || name, reason: reason || '' }); if (db.badgeLog.length > 3000) db.badgeLog.splice(0, db.badgeLog.length - 3000); };
     const purge = u => { // supprime un compte avec tout ce qui le concerne
         const n = u.name;
+        for (const c of Object.values(db.users)) { if (c.parent && lc(c.parent) === lc(n)) delete c.parent; if (c.parentReq) c.parentReq = c.parentReq.filter(x => lc(x) !== lc(n)); if (c.sup) { c.sup.contacts = (c.sup.contacts || []).filter(x => lc(x) !== lc(n)); c.sup.pending = (c.sup.pending || []).filter(x => lc(x.other) !== lc(n)); } }
         for (const g of db.groups.filter(x => lc(x.owner) === lc(n))) dropGroup(g); // ses communautés disparaissent avec lui
         for (const g of db.groups) for (const k of ['mods', 'members', 'requests', 'invites', 'banned']) g[k] = g[k].filter(x => lc(x) !== lc(n));
         db.verifs = (db.verifs || []).filter(v => lc(v.user) !== lc(n)); db.badgeLog = (db.badgeLog || []).filter(e => lc(e.user) !== lc(n));
@@ -439,15 +491,17 @@ function Net(storage, now) {
 
     const api = {
       db: () => db,
-      async signup(name, password, bio) {
+      async signup(name, password, bio, birth) {
         name = String(name || '').trim();
         need(/^[a-zA-Z0-9_]{3,20}$/.test(name), 'Pseudo : 3-20 caractères (lettres, chiffres, _)');
         need(name.toLowerCase() !== RESERVED, 'Pseudo réservé');
         need((password || '').length >= 4, 'Mot de passe trop court (4 min)');
+        if (birth) checkBirth(birth);
         const pass = await hashPw(password);
         load(); // relire après l'attente : un autre visiteur a pu s'inscrire entre-temps
         need(!db.users[name.toLowerCase()], 'Pseudo déjà pris');
         db.users[name.toLowerCase()] = { name, pass, bio: (bio || '').slice(0, 160), following: [], joined: now() };
+        if (birth) { db.users[name.toLowerCase()].birth = birth; if (isMinor(db.users[name.toLowerCase()])) db.users[name.toLowerCase()].isPrivate = true; } // les comptes mineurs sont privés d'office
         save(); return name;
       },
       // connexion limitée : MAX_FAILS échecs d'affilée verrouillent le pseudo LOCK_MS (compteur partagé)
@@ -835,9 +889,14 @@ function Net(storage, now) {
         need(me !== t, 'Impossible de se suivre soi-même'); guard(by);
         if (!has(me.following, t.name)) need(!blockedBy(me.name, t.name) && !has(me.blocked, t.name), 'Abonnement impossible (compte bloqué)');
         const i = me.following.indexOf(t.name);
-        if (i < 0 && t.isPrivate && !me.admin) { // compte privé : on demande l'accès (ou on annule sa demande)
+        if (i < 0 && !viaParent && isMinor(me) && hasParent(me)) { // abonnement d'un mineur supervisé : le parent doit le valider
+          const s = supOf(me), j = s.pending.findIndex(x => x.kind === 'follow' && lc(x.other) === lc(t.name));
+          if (j >= 0) s.pending.splice(j, 1); else hold(me, 'follow', t.name, {});
+          save(); return false;
+        }
+        if (i < 0 && t.isPrivate && !me.admin && !(isMinor(t) && lc(t.parent) === lc(me.name))) { // compte privé : on demande l'accès (ou on annule sa demande)
           const rq = t.followReq = t.followReq || [], j = rq.findIndex(x => lc(x) === lc(me.name));
-          if (j >= 0) rq.splice(j, 1); else { rq.push(me.name); notify(t.name, me.name, 'frequest'); }
+          if (j >= 0) rq.splice(j, 1); else { rq.push(me.name); notify(t.name, me.name, 'frequest'); if (isMinor(t) && hasParent(t)) notify(t.parent, me.name, 'parental', null, { what: 'follower', child: t.name }); }
           save(); return false;
         }
         if (i >= 0) me.following.splice(i, 1); else { me.following.push(t.name); notify(t.name, me.name, 'follow'); }
@@ -846,7 +905,7 @@ function Net(storage, now) {
       // ---- compte privé : les nouveaux abonnés doivent être approuvés ----
       isPrivate: n => !!user(n).isPrivate,
       setPrivateAccount(by, on) {
-        const u = user(by); u.isPrivate = !!on;
+        const u = user(by); need(on || !isMinor(u), 'Un compte mineur reste privé'); u.isPrivate = !!on;
         if (!on) for (const n of u.followReq || []) { const r = db.users[lc(n)]; if (r && !has(r.following, u.name)) { r.following.push(u.name); notify(r.name, u.name, 'faccept'); } }
         if (!on) u.followReq = [];
         save(); return u.isPrivate;
@@ -855,6 +914,7 @@ function Net(storage, now) {
       hasRequested: (by, target) => has((db.users[lc(target)] || {}).followReq, by),
       approveFollower(by, n) {
         const u = user(by), r = user(n); need(has(u.followReq, r.name), 'Aucune demande de ce compte');
+        need(viaParent || !(isMinor(u) && hasParent(u)), 'Compte supervisé : votre parent valide les nouveaux abonnés');
         u.followReq = u.followReq.filter(x => lc(x) !== lc(r.name));
         need(!has(r.blocked, u.name) && !has(u.blocked, r.name), 'Compte bloqué');
         if (!has(r.following, u.name)) { r.following.push(u.name); notify(r.name, u.name, 'faccept'); }
@@ -1222,6 +1282,7 @@ function Net(storage, now) {
         user(from); guard(from, true); const t = user(to);
         need(!blockedBy(from, to), 'Cet utilisateur vous a bloqué : message impossible');
         need(!has(user(from).blocked, to), 'Débloquez cet utilisateur pour lui écrire');
+        dmGate(user(from), t, text);
         const m = { id: id(), from: user(from).name, to: t.name, text, at: now() };
         if (replyTo) { const q = db.messages.find(x => x.id === +replyTo && [x.from, x.to].includes(m.from) && [x.from, x.to].includes(t.name)); need(q, 'Message cité introuvable'); m.replyTo = q.id; }
         if (images.length) m.images = images;
@@ -1235,7 +1296,7 @@ function Net(storage, now) {
       // historique des appels audio/vidéo : une ligne dans la conversation (manqué, refusé, terminé) ; l'appel manqué alerte comme un message
       logCall(from, to, kind, status, secs) {
         need(['audio', 'video'].includes(kind) && ['missed', 'declined', 'ended'].includes(status), 'Appel invalide');
-        const f = user(from), t = user(to); secs = Math.max(0, Math.min(86400, Math.round(+secs) || 0));
+        const f = user(from), t = user(to); need(!isMinor(f) && !isMinor(t), 'Les appels en direct sont désactivés pour les comptes mineurs'); secs = Math.max(0, Math.min(86400, Math.round(+secs) || 0));
         const label = { audio: 'audio', video: 'vidéo' }[kind], m = { id: id(), from: f.name, to: t.name, at: now(), call: { kind, status, secs } };
         m.text = status === 'missed' ? `📞 Appel ${label} manqué` : status === 'declined' ? `📞 Appel ${label} refusé` : `📞 Appel ${label} · ${Math.floor(secs / 60)} min ${String(secs % 60).padStart(2, '0')} s`;
         db.messages.push(m);
@@ -1361,7 +1422,7 @@ function Net(storage, now) {
       },
       // ---- groupes privés (2 à 8 membres) : messages, indicateur de lecture « Vu », blocage et signalement respectés ----
       createRoom(by, name, members) {
-        const me = user(by); guard(by, true);
+        const me = user(by); guard(by, true); need(!isMinor(me), 'Les groupes de messages sont réservés aux comptes majeurs');
         name = String(name || '').trim(); need(name && name.length <= 40, 'Nom du groupe : 1 à 40 caractères');
         const list = [...new Set((Array.isArray(members) ? members : []).map(n => user(n).name).filter(n => n !== me.name))];
         need(list.length >= 1 && list.length <= ROOM_MAX - 1, `Un groupe privé compte de 2 à ${ROOM_MAX} membres (vous inclus)`);
@@ -1376,6 +1437,7 @@ function Net(storage, now) {
         text = (text || '').trim(); const media = cleanMedia(images); images = cleanImages(images);
         need((text || images.length || media.length) && text.length <= 500, 'Message invalide');
         const me = user(by), r = api.room(by, rid); guard(by, true);
+        need(!isMinor(me) || r.members.every(n => !db.users[lc(n)] || lc(n) === lc(me.name) || contactOk(me, db.users[lc(n)])), 'Compte mineur : ce groupe contient des comptes non validés');
         const m = { id: id(), from: me.name, text, at: now() }; if (images.length) m.images = images; if (media.length) m.media = media;
         if (replyTo) { need(r.msgs.some(x => x.id === +replyTo), 'Message cité introuvable'); m.replyTo = +replyTo; }
         r.msgs.push(m); if (r.msgs.length > 500) r.msgs = r.msgs.slice(-500);
@@ -2152,6 +2214,93 @@ function Net(storage, now) {
         else delete i.deliveredAt;
         audit(by, 'idea-status', null, `idée « ${i.title} » → ${status}`); save(); return i;
       },
+      // ---- comptes supervisés : âge, restrictions des mineurs, lien et contrôle parental ----
+      parentalView: by => db.parental || supervision(db, user(by).name, now()),
+      isMinor: n => isMinor(user(n)),
+      ageOf: n => ageAt(user(n).birth, now()),
+      hasBirth: n => !!user(n).birth,
+      parentOf: n => { const u = user(n); return isMinor(u) && hasParent(u) ? db.users[lc(u.parent)].name : null; },
+      // heures d'accès autorisées en ce moment ? (toujours vrai hors compte mineur supervisé)
+      allowedNow: n => !offHours(user(n)),
+      // date de naissance : une seule fois (pour les comptes créés sans, p. ex. via Google ou GitHub), puis elle ne change plus
+      setBirthDate(by, birth) {
+        const u = user(by); need(!u.birth, 'Date de naissance déjà enregistrée : elle ne peut plus être modifiée'); checkBirth(birth);
+        u.birth = birth; if (isMinor(u)) u.isPrivate = true; save(); return isMinor(u);
+      },
+      // le parent (compte majeur) demande à superviser un compte mineur ; le mineur accepte ou refuse
+      requestParentLink(by, child) {
+        const p = user(by), c = user(child); guard(by);
+        need(p !== c, 'Impossible de se superviser soi-même'); need(p.birth && !isMinor(p), 'Seul un compte majeur (date de naissance renseignée) peut superviser'); need(isMinor(c), 'Ce compte n’est pas un compte mineur');
+        need(!hasParent(c), 'Ce compte a déjà un parent lié'); need(!has(c.blocked, p.name) && !has(p.blocked, c.name), 'Demande impossible (compte bloqué)');
+        c.parentReq = c.parentReq || []; need(!has(c.parentReq, p.name), 'Demande déjà envoyée'); need(c.parentReq.length < 10, 'Trop de demandes en attente');
+        c.parentReq.push(p.name); notify(c.name, p.name, 'parental', null, { what: 'link' }); save();
+      },
+      answerParentLink(by, parent, accept) {
+        const c = user(by), p = user(parent); need(has(c.parentReq, p.name), 'Aucune demande de ce compte');
+        c.parentReq = c.parentReq.filter(x => lc(x) !== lc(p.name));
+        if (accept) { need(isMinor(c), 'Ce compte est majeur : aucune supervision'); need(!hasParent(c), 'Un parent est déjà lié'); need(p.birth && !isMinor(p), 'Ce compte ne peut pas superviser'); c.parent = p.name; supOf(c).log.push({ at: now(), text: `Compte lié à @${p.name}` }); notify(p.name, c.name, 'parental', null, { what: 'linked', child: c.name }); }
+        save(); return !!accept;
+      },
+      // un parent délie son enfant ; un enfant devenu majeur peut délier son parent
+      unlinkParent(by, child) {
+        const me = user(by), c = user(child); need(hasParent(c), 'Aucun parent lié');
+        need(lc(c.parent) === lc(me.name) || (me === c && !isMinor(c)), 'Seul le parent peut délier un compte mineur');
+        const sp = c.parent; delete c.parent; if (c.sup) { c.sup.pending = []; c.sup.log.push({ at: now(), text: `Lien avec @${sp} retiré` }); }
+        delete c.sup.start; delete c.sup.end; save();
+      },
+      // horaires (hours: {start:'07:00', end:'21:00', tz}|null) et mots masqués à l'enfant
+      setSupervision(by, child, o) {
+        const c = user(child); need(lc(c.parent) === lc(user(by).name), 'Vous ne supervisez pas ce compte'); o = o || {}; const s = supOf(c);
+        if ('hours' in o) {
+          if (!o.hours) { delete s.start; delete s.end; delete s.tz; }
+          else {
+            const t = x => { const m = /^(\d{2}):(\d{2})$/.exec(String(x)); need(m && +m[1] < 24 && +m[2] < 60, 'Heure invalide (HH:MM)'); return +m[1] * 60 + +m[2]; };
+            const a = t(o.hours.start), b = t(o.hours.end); need(a !== b, 'Début et fin doivent différer'); s.start = a; s.end = b; s.tz = Math.max(-840, Math.min(840, Math.round(+o.hours.tz) || 0));
+          }
+          s.log.push({ at: now(), text: s.start == null ? 'Horaires : aucune limite' : `Horaires : ${hm(s.start)}–${hm(s.end)}` });
+        }
+        if ('words' in o) {
+          const w = [...new Set((Array.isArray(o.words) ? o.words : String(o.words || '').split(/[,\n]/)).map(x => String(x).trim().toLowerCase()).filter(Boolean))];
+          need(w.length <= MAX_WORDS && w.every(x => x.length <= 30), `Maximum ${MAX_WORDS} mots de 30 caractères`); s.words = w; s.log.push({ at: now(), text: `Mots masqués : ${w.length}` });
+        }
+        if (s.log.length > 100) s.log.splice(0, s.log.length - 100);
+        save();
+      },
+      removeContact(by, child, name) {
+        const c = user(child); need(lc(c.parent) === lc(user(by).name), 'Vous ne supervisez pas ce compte'); const s = supOf(c);
+        s.contacts = s.contacts.filter(x => lc(x) !== lc(name)); save();
+      },
+      // validation d'une demande en attente (abonnement ou contact de messagerie) ; l'acceptation exécute l'action et livre le message retenu
+      parentAnswer(by, child, pid, accept) {
+        const par = user(by), c = user(child); need(lc(c.parent) === lc(par.name), 'Vous ne supervisez pas ce compte');
+        const s = supOf(c), p = s.pending.find(x => x.id === +pid); need(p, 'Demande introuvable ou déjà traitée');
+        s.pending = s.pending.filter(x => x !== p); const o = db.users[lc(p.other)];
+        s.log.push({ at: now(), text: `${accept ? 'Accepté' : 'Refusé'} : ${p.kind === 'follow' ? 'abonnement à' : 'contact'} @${p.other}` });
+        if (accept && o) {
+          if (p.kind === 'follow') {
+            if (!has(c.following, o.name) && !has(c.blocked, o.name) && !has(o.blocked, c.name)) {
+              if (o.isPrivate && !o.admin) { o.followReq = o.followReq || []; if (!has(o.followReq, c.name)) { o.followReq.push(c.name); notify(o.name, c.name, 'frequest'); } }
+              else { c.following.push(o.name); notify(o.name, c.name, 'follow'); }
+            }
+          } else {
+            if (!has(s.contacts, o.name)) s.contacts.push(o.name); need(s.contacts.length <= MAX_CONTACTS, 'Trop de contacts validés');
+            const f = db.users[lc(p.from)], t = db.users[lc(p.to)], text = String(p.text || '').trim();
+            if (f && t && text && !has(f.blocked, t.name) && !has(t.blocked, f.name)) { // le message retenu part maintenant
+              const m = { id: id(), from: f.name, to: t.name, text, at: now() }; db.messages.push(m);
+              const open = db.notifs.find(n => n.type === 'dm' && n.to === t.name && n.from === f.name && !n.read);
+              if (open) { open.count = (open.count || 1) + 1; open.at = m.at; } else db.notifs.push({ id: id(), to: t.name, from: f.name, type: 'dm', postId: null, at: m.at, read: false, count: 1 });
+            }
+          }
+          notify(c.name, par.name, 'parental', null, { what: 'accepted', child: c.name });
+        }
+        save();
+      },
+      // nouveaux abonnés d'un compte mineur : seul le parent décide
+      parentAnswerFollower(by, child, name, accept) {
+        const par = user(by), c = user(child); need(lc(c.parent) === lc(par.name), 'Vous ne supervisez pas ce compte');
+        viaParent = true;
+        try { return accept ? api.approveFollower(c.name, name) : api.declineFollower(c.name, name); } finally { viaParent = false; }
+      },
       notifications(by, markRead) {
         const bell = normPrefs(user(by).notifPrefs).types;
         const l = db.notifs.filter(n => n.to === user(by).name && !hiddenFor(by, n.from) && !(bell[n.type] && !bell[n.type].bell)).sort((a, b) => b.id - a.id);
@@ -2176,17 +2325,19 @@ function Net(storage, now) {
 
   // Vue d'un compte sur les données (envoyée par le serveur) : jamais de mot de passe, d'époque de session,
   // de messages ou notifications d'autrui, ni de listes privées (favoris, blocages, sanctions) des autres comptes.
-  function snapshot(db, by) {
+  function snapshot(db, by, t) {
+    t = t || Date.now();
     const me = db.users[String(by || '').toLowerCase()];
     if (!me) throw new Error('Utilisateur introuvable');
     const lcm = me.name.toLowerCase(), users = Object.create(null);
     for (const [k, u] of Object.entries(db.users)) {
-      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, notifPrefs, privacy, deleteAt, onboarding, fy, annSeen, roadSeen, ...pub } = u;
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, sharedLists, searches, notifPrefs, privacy, deleteAt, onboarding, fy, annSeen, roadSeen, birth, sup, parent, parentReq, ...pub } = u;
+      pub.minor = minorU(u, t);
       if (lists) pub.lists = k === lcm ? lists : lists.filter(l => l.public || (l.share && (me.sharedLists || []).some(r => r.owner.toLowerCase() === k && r.id === l.id && r.token === l.share))).map(l => ({ ...l, share: null }));
       if (k !== lcm && !privOk(db, me.name, u.name, 'profile')) Object.assign(pub, { bio: '', link: '', banner: '', display: '', photo: '', locked: true });
       if (k !== lcm && !privOk(db, me.name, u.name, 'posts')) pub.lockedPosts = true;
       pub.followReq = k === lcm ? (u.followReq || []).slice() : (u.followReq || []).filter(x => x === me.name);
-      if (k === lcm) Object.assign(pub, { annSeen, roadSeen, privacy: normPrivacy(privacy), deleteAt, onboarding, fy, dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
+      if (k === lcm) Object.assign(pub, { birth, parent, parentReq, sup: sup && { ...sup, pending: (sup.pending || []).map(({ text, ...q }) => q) }, annSeen, roadSeen, privacy: normPrivacy(privacy), deleteAt, onboarding, fy, dismissed, topics, searches, notifPrefs, sharedLists, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
       else if (me.admin) Object.assign(pub, { sanction, sanctions });
       users[k] = JSON.parse(JSON.stringify(pub));
     }
@@ -2201,8 +2352,11 @@ function Net(storage, now) {
       return c;
     });
     const modOf = new Set(db.groups.filter(g => g.owner === me.name || g.mods.includes(me.name)).map(g => g.id));
+    // compte mineur : contenu sensible (avertissement) et mots choisis par le parent masqués (texte, médias, sondage), sauf ses propres posts
+    const minorView = minorU(me, t), words = minorView && me.parent && db.users[String(me.parent).toLowerCase()] ? ((me.sup || {}).words || []) : [];
+    const mask = p => minorView && p.author !== me.name && (p.warn || words.some(w => (p.text || '').toLowerCase().includes(w))) ? Object.assign({}, p, { text: '', images: [], media: [], poll: undefined, history: [], quoteOf: undefined, masked: p.warn ? 'sensitive' : 'word' }) : p;
     return {
-      users, posts: db.posts.filter(p => p.group ? readable.has(p.group) && (!p.pending || p.author === me.name || modOf.has(p.group)) : privOk(db, me.name, p.author, 'posts')).map(p => p.hidden && !me.admin && p.author !== me.name && !modOf.has(p.group) ? Object.assign({}, p, { text: '', images: [], poll: undefined, history: [], quoteOf: undefined }) : p), groups, events: db.events.filter(e => !e.group || readable.has(e.group)), reposts: db.reposts.filter(r => { const p = db.posts.find(x => x.id === r.postId); return !p || p.group || privOk(db, me.name, p.author, 'posts'); }), seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), media: (db.media || []).filter(m => m.owner === me.name).map(({ src, ...m }) => m), attempts: {},
+      users, posts: db.posts.filter(p => p.group ? readable.has(p.group) && (!p.pending || p.author === me.name || modOf.has(p.group)) : privOk(db, me.name, p.author, 'posts')).map(p => p.hidden && !me.admin && p.author !== me.name && !modOf.has(p.group) ? Object.assign({}, p, { text: '', images: [], poll: undefined, history: [], quoteOf: undefined }) : mask(p)), groups, events: db.events.filter(e => !e.group || readable.has(e.group)), reposts: db.reposts.filter(r => { const p = db.posts.find(x => x.id === r.postId); return !p || p.group || privOk(db, me.name, p.author, 'posts'); }), seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), media: (db.media || []).filter(m => m.owner === me.name).map(({ src, ...m }) => m), attempts: {},
       messages: db.messages.filter(m => m.from === me.name || m.to === me.name),
       notifs: db.notifs.filter(n => n.to === me.name),
       rooms: db.rooms.filter(r => r.members.includes(me.name)).map(r => ({ ...r, msgs: r.msgs.slice(-200) })),
@@ -2215,6 +2369,7 @@ function Net(storage, now) {
       peerRead: Object.fromEntries(Object.values(db.users).filter(u => u.name !== me.name && !(u.blocked || []).includes(me.name) && !(me.blocked || []).includes(u.name) && (u.dmRead || {})[lcm]).map(u => [u.name.toLowerCase(), u.dmRead[lcm]])),
       status: statusView(db, Date.now()),
       roadmap: db.roadmap || { updates: [], ideas: [] },
+      parental: supervision(db, me.name, t),
       audit: me.admin ? (db.audit || []).slice(-300) : [], totals: me.admin ? { hiddenPosts: db.posts.filter(p => !p.replyTo && p.group && !readable.has(p.group)).length, hiddenMessages: db.messages.filter(m => m.from !== me.name && m.to !== me.name).length } : undefined,
       verifs: me.admin ? (db.verifs || []).slice(-200) : (db.verifs || []).filter(v => v.user === me.name),
       badgeLog: me.admin ? (db.badgeLog || []).slice(-500) : (db.badgeLog || []).filter(e => e.user === me.name),
@@ -2224,6 +2379,6 @@ function Net(storage, now) {
     };
   }
 
-  const exported = { IDEA_STATES, UPD_TAGS, ANN_LEVELS, COMPONENTS, IMPACTS, INC_STATES, MAINT_BLOCK, AM, normImport, MSG_EMOJIS, Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
+  const exported = { ADULT_AGE, parseBirth, ageAt, inWindow, hm, IDEA_STATES, UPD_TAGS, ANN_LEVELS, COMPONENTS, IMPACTS, INC_STATES, MAINT_BLOCK, AM, normImport, MSG_EMOJIS, Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
   if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);
