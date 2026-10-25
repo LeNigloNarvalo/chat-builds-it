@@ -8,6 +8,9 @@
     let version = -1, me = null, online = true, onChange = () => {}, chain = Promise.resolve(), reading = false;
     const session = () => { const [n, t] = (store.getItem(SESSION) || '').split('|'); return t ? { name: n, token: t } : null; };
     const forget = () => { store.removeItem(SESSION); me = null; version = -1; replica.d = {}; };
+    // message clair quand le serveur ne renvoie pas d'erreur lisible (proxy, redémarrage, panne)
+    const failure = status => status === 404 ? 'Service introuvable : le serveur Cornichon est-il bien lancé ?' : status === 429 ? 'Trop de requêtes : réessayez dans une minute'
+      : status >= 502 && status <= 504 ? 'Le serveur redémarre ou est surchargé : réessayez dans un instant' : 'Erreur du serveur (' + status + ') : réessayez dans un instant';
     async function req(path, method, data) {
       const s = session(), h = { 'Content-Type': 'application/json' };
       if (s) h.Authorization = 'Bearer ' + s.token;
@@ -16,7 +19,7 @@
       online = true;
       const j = await r.json().catch(() => ({}));
       if (r.status === 401 && s) { forget(); onChange(); }
-      if (!r.ok) throw new Error(j.error || 'Erreur du serveur');
+      if (!r.ok) throw new Error(j.error || failure(r.status));
       return j;
     }
     // récupère la vue du serveur si elle a changé ; renvoie true si les données ont bougé

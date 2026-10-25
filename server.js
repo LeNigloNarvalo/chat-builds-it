@@ -14,7 +14,9 @@ const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 
 function createServer(opts = {}) {
   const dir = opts.dir || __dirname;
-  const db = new DatabaseSync(opts.db || process.env.CORNICHON_DB || path.join(__dirname, 'data', 'cornichon.db'));
+  const dbFile = opts.db || process.env.CORNICHON_DB || path.join(__dirname, 'data', 'cornichon.db');
+  if (dbFile !== ':memory:') fs.mkdirSync(path.dirname(dbFile), { recursive: true });
+  const db = new DatabaseSync(dbFile);
   db.exec(`PRAGMA journal_mode=WAL;
     CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, name TEXT NOT NULL, epoch INTEGER NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL);`);
@@ -105,8 +107,9 @@ function createServer(opts = {}) {
       res.end(fs.readFileSync(path.join(dir, file)));
     } catch (e) {
       if (res.headersSent) return res.end();
+      if (e.code === undefined && e.constructor !== Error) console.error('Erreur interne :', e);
       // messages de l'application (Error simples) renvoyés tels quels ; erreurs internes jamais détaillées
-      send(res, e.code >= 400 ? e.code : e.constructor === Error ? 400 : 500, { error: e.code >= 400 || e.constructor === Error ? e.message : 'Requête invalide' });
+      send(res, e.code >= 400 ? e.code : e.constructor === Error ? 400 : 500, { error: e.code >= 400 || e.constructor === Error ? e.message : 'Erreur interne du serveur : réessayez dans un instant' });
     }
   });
   server.on('close', () => db.close());
@@ -116,6 +119,9 @@ function createServer(opts = {}) {
 module.exports = { createServer };
 if (require.main === module) {
   fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true });
+  // une erreur inattendue ne doit pas faire tomber tout le serveur (sinon : « Erreur du serveur » partout)
+  process.on('uncaughtException', e => console.error('Exception non gérée :', e));
+  process.on('unhandledRejection', e => console.error('Promesse rejetée :', e));
   const port = +process.env.PORT || 8080;
   createServer().listen(port, process.env.HOST || '0.0.0.0', () => console.log(`🥒 Cornichon sur http://localhost:${port}`));
 }
