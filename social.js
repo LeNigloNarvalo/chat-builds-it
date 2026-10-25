@@ -3,7 +3,7 @@
 (function (root) {
   const KEY = 'twitchgram.v1';
   const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], drafts: [], seq: 1, attempts: Object.create(null) });
-  const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000;
+  const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000, POLL_MAX_MIN = 7 * 1440;
 
   const RESERVED = 'streamer';
   // signalements : motifs, sanctions de modération (durée de suspension en heures)
@@ -61,13 +61,22 @@
     const scoreOf = p => { const h = Math.max(0, now() - p.at) / 36e5; return (1 + p.likes.length * 2 + db.posts.filter(r => r.replyTo === p.id).length * 3) * Math.pow(0.5, h / 3); };
 
     // création d'un post (sans sauvegarde) : partagée par la publication directe, les brouillons et la publication planifiée
-    const makePost = (author, text, replyTo, images) => {
+    const makePost = (author, text, replyTo, images, poll) => {
         text = (text || '').trim(); images = cleanImages(images);
         need((text || images.length) && text.length <= 280, 'Message vide ou > 280 caractères');
         user(author); guard(author);
         if (replyTo) { const tp = db.posts.find(p => p.id === replyTo); need(tp, 'Post introuvable'); need(!blockedBy(author, tp.author), 'Cet utilisateur vous a bloqué : réponse impossible'); }
         const p = { id: id(), author: user(author).name, text, at: now(), likes: [], replyTo: replyTo || null };
         if (images.length) p.images = images;
+        if (poll) {
+          need(!replyTo, 'Un sondage ne peut pas être une réponse');
+          const opts = (poll.options || []).map(o => String(o || '').trim()).filter(Boolean);
+          need(opts.length >= 2 && opts.length <= 4, 'Un sondage a 2 à 4 choix');
+          need(opts.every(o => o.length <= 60), 'Choix limités à 60 caractères');
+          need(new Set(opts.map(lc)).size === opts.length, 'Les choix doivent être différents');
+          const min = +poll.minutes; need(Number.isFinite(min) && min >= 1 && min <= POLL_MAX_MIN, 'Durée du sondage : 1 minute à 7 jours');
+          p.poll = { options: opts.map(text => ({ text, votes: [] })), endsAt: now() + Math.round(min * 60000), closed: false };
+        }
         db.posts.push(p);
         if (replyTo) notify(db.posts.find(x => x.id === replyTo).author, p.author, 'reply', p.id);
         for (const m of text.match(/@\w+/g) || []) { const t = db.users[m.slice(1).toLowerCase()]; if (t) notify(t.name, p.author, 'mention', p.id); }
@@ -180,7 +189,24 @@
         db.users[RESERVED] = { name: 'Streamer', pass, bio: 'Compte du stream 🔴', following: [], joined: now(), admin: true, display: 'Streamer', avatar: '#9146ff', banner: 'grad:0' };
         save(); return 'Streamer';
       },
-      post(author, text, replyTo, images) { const p = makePost(author, text, replyTo, images); save(); return p; },
+      post(author, text, replyTo, images, poll) { const p = makePost(author, text, replyTo, images, poll); save(); return p; },
+      // vote unique par compte : le choix est définitif ; refusé une fois le sondage clos
+      vote(by, postId, choice) {
+        const u = user(by); guard(by);
+        const p = db.posts.find(x => x.id === postId); need(p && p.poll, 'Sondage introuvable');
+        need(!p.poll.closed && p.poll.endsAt > now(), 'Ce sondage est clos');
+        need(Number.isInteger(choice) && p.poll.options[choice], 'Choix invalide');
+        need(!p.poll.options.some(o => o.votes.includes(u.name)), 'Vous avez déjà voté');
+        need(!blockedBy(u.name, p.author), 'Cet utilisateur vous a bloqué : vote impossible');
+        p.poll.options[choice].votes.push(u.name); save(); return p.poll;
+      },
+      // clôture les sondages arrivés à échéance et prévient leur auteur (appelée par l'horloge du serveur)
+      closePolls() {
+        let n = 0;
+        for (const p of db.posts) if (p.poll && !p.poll.closed && p.poll.endsAt <= now()) { p.poll.closed = true; notify(p.author, '', 'poll', p.id); n++; }
+        if (n) save();
+        return n;
+      },
       deletePost(by, postId) {
         const p = db.posts.find(x => x.id === postId);
         need(p && (p.author === by || (db.users[by.toLowerCase()] || {}).admin), 'Suppression interdite');
@@ -233,7 +259,7 @@
       },
       // appelée par le serveur (horloge du serveur) : publie les brouillons dont la date est arrivée ; un échec (compte suspendu…) rend le brouillon à son auteur
       publishDue() {
-        let n = 0, changed = false;
+        let n = api.closePolls() ? 1 : 0, changed = false;
         for (const d of db.drafts.slice()) {
           if (!d.scheduledAt || d.scheduledAt > now()) continue;
           try { makePost(d.author, d.text, null, d.images); db.drafts = db.drafts.filter(x => x !== d); n++; }

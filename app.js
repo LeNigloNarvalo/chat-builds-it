@@ -163,8 +163,9 @@ function postHTML(p, thread) {
   const edited = p.editedAt ? `<button class="lnk" data-hist="${p.id}" aria-expanded="${view.hist === p.id}">modifié · v${hist.length + 1}</button>` : '';
   const histHTML = p.editedAt && view.hist === p.id ? `<div class="hist"><b>Historique des modifications</b>${hist.map((h, i) => `<div class="mut">v${i + 1} · ${ago(h.at)} · ${esc(h.text)} ${net.canEdit(me, p.id) ? `<button class="lnk" data-restore="${p.id}:${i}">restaurer</button>` : ''}</div>`).join('')}<div>v${hist.length + 1} (actuelle) · ${esc(p.text)}</div></div>` : '';
   const body = editing ? `<textarea id="edit-txt" maxlength="280">${esc(view.restore && view.restore.id === p.id ? view.restore.text : p.text)}</textarea><button data-saveedit="${p.id}">💾 Enregistrer</button> <button data-canceledit>Annuler</button> <span class="mut">${Math.ceil(net.editLeft(p.id) / 60000)} min restantes</span>` : `${p.text ? `<p>${rich(p.text)}</p>` : ''}${gallery(p.images, 'p', p.id)}`;
+  const pollH = pollHTML(p);
   return `<div class="card post">${av(p.author)}<span class="who" data-user="${p.author}">${esc(shown(p.author))}</span> <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span> ${edited}
-  ${body}${histHTML}${view.reporting === p.id ? reportForm(p.id) : ''}<div class="acts"><button data-like="${p.id}" class="${liked ? 'on' : ''}">♥ ${p.likes.length}</button>
+  ${body}${pollH}${histHTML}${view.reporting === p.id ? reportForm(p.id) : ''}<div class="acts"><button data-like="${p.id}" class="${liked ? 'on' : ''}">♥ ${p.likes.length}</button>
   <button data-open="${p.id}">💬 ${n}</button>${!p.replyTo && p.author !== me ? `<button data-repost="${p.id}" class="${rp ? 'on' : ''}" aria-pressed="${rp}" aria-label="${rp ? 'Annuler le repartage' : 'Repartager sur mon profil'}">🔁 ${rc}</button>` : rc ? `<span class="mut">🔁 ${rc}</span>` : ''}
   ${p.author !== me && !net.isAdmin(p.author) ? `<button data-report="${p.id}" class="${net.hasReported(me, p.id) ? 'on' : ''}" aria-label="${net.hasReported(me, p.id) ? 'Post déjà signalé' : 'Signaler le post'}" ${net.hasReported(me, p.id) ? 'disabled' : ''}>🚩</button>` : ''}<button data-bm="${p.id}" class="${saved ? 'on' : ''}" aria-pressed="${saved}" aria-label="${saved ? 'Retirer des favoris' : 'Mettre en favori'}">${saved ? '🔖' : '📑'}</button>${net.canEdit(me, p.id) && !editing ? `<button data-edit="${p.id}" aria-label="Modifier le post">✏️</button>` : ''}${p.author === me || net.isAdmin(me) ? `<button data-del="${p.id}">🗑</button>` : ''}</div></div>`;
 }
@@ -189,8 +190,29 @@ let curDraft = null, draftMsg = '';
 const dtimers = {};
 const localInput = ms => { const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60000); return d.toISOString().slice(0, 16); };
 const when = ms => new Date(ms).toLocaleString('fr-FR', { dateStyle: 'full', timeStyle: 'short' });
+const pollDraft = { on: false, opts: ['', ''], minutes: 60 };
+const DURS = [[5, '5 minutes'], [60, '1 heure'], [360, '6 heures'], [1440, '1 jour'], [4320, '3 jours'], [10080, '7 jours']];
+const pollBox = () => !pollDraft.on ? `<button class="lnk" data-pollon>📊 Ajouter un sondage</button>` : `<fieldset class="pollbox"><legend>📊 Sondage</legend>
+  ${pollDraft.opts.map((o, i) => `<input data-pollopt="${i}" maxlength="60" aria-label="Choix ${i + 1}" placeholder="Choix ${i + 1}" value="${esc(o)}">`).join('')}
+  <div class="row">${pollDraft.opts.length < 4 ? '<button data-polladd>+ Ajouter un choix</button>' : ''}${pollDraft.opts.length > 2 ? '<button data-pollrm>− Retirer un choix</button>' : ''}
+  <label class="inl">Durée <select id="poll-min">${DURS.map(([m, l]) => `<option value="${m}" ${m === pollDraft.minutes ? 'selected' : ''}>${l}</option>`).join('')}</select></label> <button data-polloff>Retirer le sondage</button></div></fieldset>`;
+const pollRead = () => { document.querySelectorAll('[data-pollopt]').forEach(i => { pollDraft.opts[+i.dataset.pollopt] = i.value; }); const m = document.getElementById('poll-min'); if (m) pollDraft.minutes = +m.value; };
+const rerender = () => { const t = document.getElementById('txt'), x = t ? t.value : ''; render(); const n = document.getElementById('txt'); if (n && x) n.value = x; };
+const pollReset = () => { pollDraft.on = false; pollDraft.opts = ['', '']; pollDraft.minutes = 60; };
+function pollHTML(p) {
+  const pl = p.poll; if (!pl) return '';
+  const total = pl.options.reduce((s, o) => s + o.votes.length, 0), mine = pl.options.findIndex(o => me && o.votes.includes(me));
+  const open = !pl.closed && pl.endsAt > Date.now(), showRes = !open || mine >= 0 || !me;
+  const left = Math.max(0, pl.endsAt - Date.now()), lt = left >= 86400000 ? Math.ceil(left / 86400000) + ' j' : left >= 3600000 ? Math.ceil(left / 3600000) + ' h' : Math.max(1, Math.ceil(left / 60000)) + ' min';
+  const top = Math.max(...pl.options.map(o => o.votes.length));
+  return `<div class="poll" role="group" aria-label="Sondage">${pl.options.map((o, i) => {
+    const c = o.votes.length, pc = total ? Math.round(c * 100 / total) : 0;
+    return showRes ? `<div class="pbar${!open && c === top && c ? ' win' : ''}${i === mine ? ' mine' : ''}" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pc}" aria-label="${esc(o.text)} : ${pc} %"><span class="fill" style="width:${pc}%"></span><span class="lbl">${i === mine ? '✔ ' : ''}${esc(o.text)}</span><b>${pc} % · ${c}</b></div>`
+      : `<button class="popt" data-vote="${p.id}:${i}">${esc(o.text)}</button>`;
+  }).join('')}<div class="mut">${total} vote${total > 1 ? 's' : ''} · ${open ? 'se termine dans ' + lt : 'sondage clos'}</div></div>`;
+}
 const composer = (ph, reply) => reply ? `<div class="card"><textarea id="txt" maxlength="280" placeholder="${ph}"></textarea>${attachBox('post')}<button data-send="${reply}">Publier</button></div>`
-  : `<div class="card"><textarea id="txt" data-draft="new" maxlength="280" placeholder="${ph}"></textarea>${attachBox('post')}<div class="row"><button data-send="">Publier</button>
+  : `<div class="card"><textarea id="txt" data-draft="new" maxlength="280" placeholder="${ph}"></textarea>${attachBox('post')}${pollBox()}<div class="row"><button data-send="">Publier</button>
   <label class="inl">ou le <input type="datetime-local" id="plan-at" aria-label="Date de publication planifiée" value="${localInput(Date.now() + 3600000)}"></label><button data-plan>📅 Planifier</button></div>
   <p class="mut" id="dr-note" role="status">Brouillon enregistré automatiquement · <button class="lnk" data-page="drafts">voir mes brouillons</button></p></div>`;
 function draftsPage(e) {
@@ -292,8 +314,8 @@ function render() {
     h = `<div class="card"><input id="q" placeholder="Pseudo, mot, #tag" value="${esc(view.arg || '')}"><button data-dosearch>Chercher</button></div>` +
       r.users.map(u => `<div class="card">${av(u.name)}<span class="who" data-user="${u.name}">${esc(shown(u.name))}</span> <span class="mut">${esc(u.bio)}</span></div>`).join('') + list(r.posts);
   } else if (view.page === 'notifs') {
-    const L = { sanction: 'a pris une mesure de modération contre votre compte', like: 'a aimé votre post', reply: 'a répondu à votre post', mention: 'vous a mentionné', follow: 'vous suit', repost: 'a repartagé votre post' };
-    h = net.notifications(me, true).map(n => `<div class="card" ${n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}><b>${esc(n.from)}</b> ${L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') || '<p class="mut">Aucune notification.</p>';
+    const L = { sanction: 'a pris une mesure de modération contre votre compte', like: 'a aimé votre post', reply: 'a répondu à votre post', mention: 'vous a mentionné', follow: 'vous suit', repost: 'a repartagé votre post', poll: 'Votre sondage est terminé : voir les résultats' };
+    h = net.notifications(me, true).map(n => `<div class="card" ${n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}>${n.from ? `<b>${esc(n.from)}</b> ` : '📊 '}${L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') || '<p class="mut">Aucune notification.</p>';
   } else if (view.page === 'thread') {
     const p = net.db().posts.find(x => x.id === view.arg);
     h = p ? postHTML(p) + composer('Votre réponse…', p.id) + e + net.replies(p.id, me).map(r => postHTML(r)).join('') : '<p class="mut">Post supprimé.</p>';
@@ -493,7 +515,7 @@ document.addEventListener('click', async ev => {
   } else if ('notiftest' in b.dataset) Notif.show({ id: 'test' + Date.now(), type: 'mention' }, 'Le bocal');
 });
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
+  const d = ev.target.closest('*[data-page],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
   if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
@@ -535,8 +557,15 @@ document.addEventListener('click', ev => {
   else if ('lbclose' in D) closeLb();
   else if ('lbnav' in D) { lb.i = (lb.i + +D.lbnav + lb.images.length) % lb.images.length; lightbox(); }
   else if ('page' in D) { err = ''; notice = ''; draftMsg = ''; go(D.page); $('#app').focus(); }
+  else if ('pollon' in D) { pollRead(); pollDraft.on = true; rerender(); }
+  else if ('polloff' in D) { pollReset(); rerender(); }
+  else if ('polladd' in D) { pollRead(); if (pollDraft.opts.length < 4) pollDraft.opts.push(''); rerender(); }
+  else if ('pollrm' in D) { pollRead(); if (pollDraft.opts.length > 2) pollDraft.opts.pop(); rerender(); }
+  else if ('vote' in D) { const [pid, ch] = D.vote.split(':').map(Number); attempt(() => net.vote(me, pid, ch)); }
   else if ('send' in D) attempt(async () => {
-    clearTimeout(dtimers.new); await net.post(me, v('#txt'), D.send ? +D.send : null, pend.post); pend.post = [];
+    clearTimeout(dtimers.new); let poll = null;
+    if (!D.send && pollDraft.on) { pollRead(); poll = { options: pollDraft.opts, minutes: pollDraft.minutes }; }
+    await net.post(me, v('#txt'), D.send ? +D.send : null, pend.post, poll); pend.post = []; if (poll) pollReset();
     if (!D.send && curDraft) { const id = curDraft; curDraft = null; await net.deleteDraft(me, id).catch(() => {}); }
     if (feedScope()) feedLoad(true);
   });

@@ -210,9 +210,9 @@ console.log('ok');
   assert.ok(m.name && m.start_url && m.display === 'standalone' && m.icons.length && fs.existsSync(__dirname + '/' + m.icons[0].src));
   const sw = fs.readFileSync(__dirname + '/sw.js', 'utf8'); assert.ok(/addEventListener\('fetch'/.test(sw) && /api\/feed/.test(sw) && /notificationclick/.test(sw));
   const store = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = String(v); } };
-  assert.deepStrictEqual(Notif.load(store), { enabled: false, types: { mention: true, reply: true, follow: true } });
+  assert.deepStrictEqual(Notif.load(store), { enabled: false, types: { mention: true, reply: true, follow: true, poll: true } });
   const L = [{ id: 1, type: 'mention', read: false }, { id: 2, type: 'like', read: false }, { id: 3, type: 'follow', read: false }, { id: 4, type: 'reply', read: true }, { id: 5, type: 'reply', read: false }];
-  const on = { enabled: true, types: { mention: true, reply: true, follow: false } };
+  const on = { enabled: true, types: { mention: true, reply: true, follow: false, poll: true } };
   assert.deepStrictEqual(Notif.pick(L, on, null), { show: [], seen: 5 }); // première ouverture : rien d'ancien
   assert.deepStrictEqual(Notif.pick(L, on, 0).show.map(n => n.id), [1, 5]); // pas de like, pas d'abonné (désactivé), pas de déjà lu
   assert.strictEqual(Notif.pick(L, { enabled: false, types: on.types }, 0).show.length, 0);
@@ -240,4 +240,20 @@ console.log('ok');
   await n.deleteAccount('max', 'pass2'); assert.strictEqual(n.list('lia', priv.id, 'lia').members.length, 0);
   n.deleteList('lia', pub.id); assert.strictEqual(n.lists('lia', 'lia').length, 1);
   console.log('ok listes de comptes');
+})().catch(e => { console.error(e); process.exit(1); });
+
+(async () => {
+  let clock = 1000; const m = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
+  const n = Net(m, () => clock); await n.signup('ana', 'pass1'); await n.signup('bob', 'pass2');
+  assert.throws(() => n.post('ana', 'Q', null, [], { options: ['seul'], minutes: 5 }), /2 à 4/);
+  assert.throws(() => n.post('ana', 'Q', null, [], { options: ['a', 'b', 'c', 'd', 'e'], minutes: 5 }), /2 à 4/);
+  assert.throws(() => n.post('ana', 'Q', null, [], { options: ['a', 'A'], minutes: 5 }), /différents/);
+  const p = n.post('ana', 'Pizza ?', null, [], { options: ['oui', 'non'], minutes: 5 });
+  n.vote('bob', p.id, 0); assert.throws(() => n.vote('bob', p.id, 1), /déjà/); assert.throws(() => n.vote('ana', p.id, 9), /invalide/);
+  assert.strictEqual(n.closePolls(), 0); clock += 5 * 60000;
+  assert.strictEqual(n.closePolls(), 1); assert.strictEqual(n.closePolls(), 0); // clôture une seule fois
+  assert.throws(() => n.vote('ana', p.id, 1), /clos/);
+  const nt = n.notifications('ana').filter(x => x.type === 'poll'); assert.strictEqual(nt.length, 1); assert.strictEqual(nt[0].postId, p.id);
+  assert.strictEqual(n.db().posts[0].poll.options[0].votes[0], 'bob');
+  console.log('ok sondages');
 })().catch(e => { console.error(e); process.exit(1); });
