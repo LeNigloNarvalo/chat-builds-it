@@ -1463,12 +1463,12 @@ curl -H "Authorization: Bearer cnch_…" -H "Content-Type: application/json" \\
 // ---- communautés thématiques ----
 const ROLES = { owner: '👑 propriétaire', mod: '🛡 modérateur', member: 'membre', pending: '⏳ demande envoyée', invited: '✉️ invité' };
 const gcount = g => g.count != null ? g.count : g.members.length;
-const gbadge = g => g.public ? '🌐 publique' : '🔒 privée';
+const gbadge = g => (g.public ? '🌐 publique' : '🔒 privée') + (g.approval && g.public ? ' · 🔑 sur demande' : '');
 function groupActions(g, r) {
   return r === 'owner' ? '' : r === 'mod' || r === 'member' ? `<button data-cmleave="${g.id}">Quitter</button>`
     : r === 'pending' ? `<button data-cmleave="${g.id}">Annuler la demande</button>`
-    : r === 'invited' ? `<button data-cmrespond="${g.id}:1">✔ Accepter l’invitation</button> <button data-cmrespond="${g.id}:0">Refuser</button>`
-    : g.public ? `<button data-cmjoin="${g.id}">＋ Rejoindre</button>` : `<button data-cmjoin="${g.id}">🔑 Demander à rejoindre</button>`;
+    : r === 'invited' ? `<button data-gx="joinui:${g.id}">✔ Accepter l’invitation</button> <button data-cmrespond="${g.id}:0">Refuser</button>`
+    : g.public && !g.approval ? `<button data-gx="joinui:${g.id}">＋ Rejoindre</button>` : `<button data-gx="joinui:${g.id}">🔑 Demander à rejoindre</button>`;
 }
 function groupsPage(e) {
   const all = net.groups(), role = g => net.groupRole(me, g.id), q = (view.q || '').toLowerCase();
@@ -1479,7 +1479,9 @@ function groupsPage(e) {
     <input id="g-name" maxlength="40" placeholder="Nom (ex. Speedrun, Jardinage…)" aria-label="Nom de la communauté">
     <input id="g-desc" maxlength="160" placeholder="Description (de quoi parle-t-on ici ?)" aria-label="Description">
     <textarea id="g-rules" maxlength="600" placeholder="Règles de la communauté (une par ligne)" aria-label="Règles"></textarea>
-    <label class="inl"><input type="checkbox" id="g-pub" checked> publique (décoche pour une communauté privée sur demande)</label> <button data-cmnew>Créer la communauté</button></div>${e}`
+    <label class="inl"><input type="checkbox" id="g-pub" checked> publique (décoche pour une communauté privée sur demande)</label>
+    <label class="inl"><input type="checkbox" id="g-appr"> adhésion sur demande, même en public</label>
+    <textarea id="g-qs" maxlength="620" placeholder="Questions d’entrée (une par ligne, 5 max) : posées aux personnes qui demandent à rejoindre" aria-label="Questions d’entrée"></textarea> <button data-cmnew>Créer la communauté</button></div>${e}`
     + (invited.length ? `<div class="card"><b>✉️ Invitations reçues (${invited.length})</b></div>` + invited.map(row).join('') : '')
     + `<div class="card"><b>Mes communautés (${mine.length})</b></div>` + (mine.map(row).join('') || '<p class="mut">Tu n’es dans aucune communauté : crée la première ou rejoins-en une ci-dessous.</p>')
     + `<div class="card"><b>Découvrir</b> <input id="g-q" placeholder="Filtrer par nom ou sujet" value="${esc(view.q || '')}" aria-label="Filtrer les communautés"></div>` + (rest.map(row).join('') || '<p class="mut">Rien à découvrir pour l’instant.</p>');
@@ -1783,15 +1785,42 @@ function groupPage(e, paged) {
   let g; try { g = net.group(view.arg); } catch (x) { return '<div class="card"><p class="mut">Cette communauté n’existe pas ou a été supprimée.</p><button data-page="groups">Communautés</button></div>'; }
   const r = net.groupRole(me, g.id), member = ['owner', 'mod', 'member'].includes(r), mod = r === 'owner' || r === 'mod', tab = view.tab || 'feed', owner = r === 'owner';
   const reqs = g.requests.filter(n => n !== me).length;
-  const tabs = [['feed', '📰 Fil'], ['members', `👥 Membres ${gcount(g)}`], ['rules', '📜 Règles']].concat(mod ? [['manage', `🛠 Gestion ${reqs || ''}`], ['automod', '🤖 Automod']] : []);
+  const perms = net.groupPerms(g.id), canWiki = owner || (r === 'mod' && perms.mod.wiki) || (r === 'member' && perms.member.wiki), wiki = (g.public || member) ? net.wiki(me, g.id) : [], pinned = wiki.filter(x => x.pinned);
+  const tabs = [['feed', '📰 Fil'], ['members', `👥 Membres ${gcount(g)}`], ['rules', '📜 Règles'], ['wiki', `📚 Wiki ${wiki.length || ''}`]].concat(!member && r !== 'pending' ? [['join', r === 'invited' ? '✉️ Invitation' : g.public && !g.approval ? '＋ Rejoindre' : '🔑 Demande']] : []).concat(mod ? [['manage', `🛠 Gestion ${reqs || ''}`], ['automod', '🤖 Automod'], ['journal', '🧾 Journal']] : []).concat(owner ? [['roles', '🔑 Rôles']] : []);
   const head = `<div class="card"><p><button data-page="groups">← Communautés</button></p><h2>${g.public ? '🌐' : '🔒'} ${esc(g.name)}</h2><p>${esc(g.desc) || '<span class="mut">Pas de description</span>'}</p>
-    <p class="mut">${gbadge(g)} · ${gcount(g)} membre${gcount(g) > 1 ? 's' : ''} · créée par @${esc(g.owner)}${r ? ' · tu es ' + ROLES[r] : ''}</p><div class="row">${groupActions(g, r)}${member ? `<button data-ev="ofgroup:${g.id}">📅 Événements</button>` : ''}</div></div>
+    <p class="mut">${gbadge(g)} · ${gcount(g)} membre${gcount(g) > 1 ? 's' : ''} · créée par @${esc(g.owner)}${r ? ' · tu es ' + ROLES[r] : ''}</p><div class="row">${groupActions(g, r)}${member ? `<button data-ev="ofgroup:${g.id}">📅 Événements</button>` : ''}</div>${pinned.length ? `<div class="row" aria-label="Pages épinglées"><span class="mut">📌 Épinglé :</span>${pinned.map(x => `<button class="lnk" data-gx="wikiopen:${x.id}">${esc(x.title)}</button>`).join('')}</div>` : ''}</div>
     <div class="card tabs" role="tablist" aria-label="Sections de la communauté">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${tab === k}" class="${tab === k ? 'on' : ''}" data-cmtab="${k}">${l}</button>`).join('')}</div>${e}`;
   const person = n => { const rl = g.owner.toLowerCase() === n.toLowerCase() ? 'owner' : g.mods.some(m => m.toLowerCase() === n.toLowerCase()) ? 'mod' : 'member';
     return `<div class="card person"><span class="who" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)} · ${ROLES[rl]}</span></span>
     ${mod && rl !== 'owner' && n !== me && (rl === 'member' || owner) ? `<button data-cmrm="${g.id}:${esc(n)}:0">Retirer</button> <button data-cmrm="${g.id}:${esc(n)}:1">Bannir</button>` : ''}${owner && rl !== 'owner' ? ` <button data-cmmod="${g.id}:${esc(n)}:${rl === 'mod' ? 0 : 1}">${rl === 'mod' ? 'Retirer des modérateurs' : '🛡 Nommer modérateur'}</button>` : ''}</div>`; };
   const canInvite = g.public ? member : mod;
-  if (tab === 'rules') return head + `<div class="card"><h3>📜 Règles</h3><p class="rules">${esc(g.rules) || '<span class="mut">Aucune règle précisée.</span>'}</p><p class="mut">Modération : ${[g.owner, ...g.mods].map(n => '@' + esc(n)).join(', ')}</p></div>`;
+  const note = (err ? `<p class="err" role="alert">${esc(err)}</p>` : '') + (notice ? `<p class="ok" role="status">${esc(notice)}</p>` : '');
+  if (tab === 'rules') { const acc = (g.accepted || {})[me.toLowerCase()]; return head + `<div class="card"><h3>📜 Règles</h3><p class="rules">${esc(g.rules) || '<span class="mut">Aucune règle précisée.</span>'}</p><p class="mut">Modération : ${[g.owner, ...g.mods].map(n => '@' + esc(n)).join(', ')}</p>${member && g.rules && acc ? `<p class="mut">✔ Tu as accepté ces règles le ${esc(I18n.date(acc, { dateStyle: 'medium' }))}.</p>` : ''}</div>`; }
+  if (tab === 'join' && !member) {
+    const inv = r === 'invited', direct = (g.public && !g.approval) || inv, qs = g.questions || [];
+    return head + `<div class="card"><h3>${direct ? '＋ Rejoindre la communauté' : '🔑 Demander à rejoindre'}</h3>${note}
+      ${g.rules ? `<p class="mut">Pour entrer, lis et accepte les règles :</p><p class="rules">${esc(g.rules)}</p><label class="inl"><input type="checkbox" id="g-acc"> J’ai lu et j’accepte les règles de la communauté</label>` : '<p class="mut">Cette communauté n’a pas de règles particulières.</p>'}
+      ${!direct && qs.length ? `<p><b>Questions d’entrée</b> <span class="mut">(visibles par l’équipe de modération)</span></p>${qs.map((q, i) => `<label>${esc(q)}<textarea id="g-ans${i}" maxlength="300" aria-label="Réponse à la question ${i + 1}"></textarea></label>`).join('')}` : ''}
+      ${!direct ? '<p class="mut">Ta demande sera examinée par l’équipe de modération, qui te répondra par notification.</p>' : ''}
+      <div class="row"><button data-gx="join:${g.id}">${direct ? '＋ Rejoindre' : '📨 Envoyer ma demande'}</button></div></div>`;
+  }
+  if (tab === 'wiki') {
+    if (!g.public && !member) return head + '<div class="card"><p class="mut">Le wiki est réservé aux membres.</p></div>';
+    const ed = view.wiki, list = wiki.map(x => `<div class="card" id="wk-${x.id}"><b>${x.pinned ? '📌 ' : ''}${esc(x.title)}</b> <span class="mut">· modifié ${ago(x.updatedAt)} par @${esc(x.by)}</span>
+      <div class="rules">${esc(x.body)}</div>${canWiki ? `<div class="row"><button data-gx="wikiedit:${x.id}">✏️ Modifier</button> <button data-gx="wikipin:${x.id}:${x.pinned ? 0 : 1}" aria-pressed="${!!x.pinned}">${x.pinned ? '📌 Désépingler' : '📍 Épingler'}</button> <button data-gx="wikidel:${x.id}">🗑 Supprimer</button></div>` : ''}</div>`).join('');
+    const form = canWiki ? `<div class="card"><b>${ed && ed.id ? '✏️ Modifier la page' : '➕ Nouvelle page (FAQ, guide…)'}</b>${note}<input id="wk-title" maxlength="60" placeholder="Titre (ex. FAQ, Guide du débutant)" value="${esc(ed ? ed.title : '')}" aria-label="Titre de la page"><textarea id="wk-body" maxlength="4000" placeholder="Contenu de la page" aria-label="Contenu de la page">${esc(ed ? ed.body : '')}</textarea>
+      <div class="row"><button data-gx="wikisave">💾 ${ed && ed.id ? 'Enregistrer' : 'Publier la page'}</button>${ed ? ' <button data-gx="wikicancel">Annuler</button>' : ''}</div></div>` : '';
+    return head + `<div class="card"><h3>📚 Wiki</h3><p class="mut">Pages de référence de la communauté ; les pages épinglées (📌) apparaissent en haut de la communauté.</p></div>` + (list || '<div class="card"><p class="mut">Aucune page pour l’instant.</p></div>') + form;
+  }
+  if (tab === 'journal' && mod) {
+    const log = net.groupLog(me, g.id), K = { create: '🌱', rename: '✏️', desc: '✏️', rules: '📜', questions: '❓', approval: '🔑', visibility: '🌐', approve: '✔', decline: '✕', remove: '🚪', ban: '⛔', unban: '♻️', promote: '🛡', demote: '⬇️', perm: '🔐', 'wiki-new': '📚', 'wiki-edit': '📚', 'wiki-pin': '📌', 'wiki-unpin': '📌', 'wiki-del': '🗑', 'automod-rule': '🤖' };
+    return head + `<div class="card"><h3>🧾 Journal de l’équipe</h3><p class="mut">Toutes les actions de l’équipe de modération (${log.length}), de la plus récente à la plus ancienne. Visible par les modérateurs seulement.</p>${log.map(l => `<div class="row"><span>${K[l.kind] || '•'}</span><span><b>@${esc(l.by)}</b> · ${esc(l.detail)}${l.target ? ` <span class="mut">→ ${esc(l.target)}</span>` : ''} <span class="mut">· ${ago(l.at)}</span></span></div>`).join('') || '<p class="mut">Aucune action pour l’instant.</p>'}</div>`;
+  }
+  if (tab === 'roles' && owner) {
+    const P = Social.GPERMS, rows = Object.entries(P).map(([k, o]) => `<tr><td>${o.icon} ${esc(o.label)}</td>${['mod', 'member'].map(rl => `<td>${o.roles.includes(rl) ? `<input type="checkbox" data-gx="perm:${rl}:${k}" ${perms[rl][k] ? 'checked' : ''} aria-label="${esc(o.label)} — ${rl === 'mod' ? 'modérateurs' : 'membres'}">` : '<span class="mut" title="Toujours autorisé ou non applicable">—</span>'}</td>`).join('')}</tr>`).join('');
+    return head + `<div class="card"><h3>🔑 Rôles et permissions</h3>${note}<p class="mut">👑 Le propriétaire a tous les droits. Règle ici ce que peuvent faire les 🛡 modérateurs et les membres. Chaque changement est inscrit au journal.</p>
+      <table class="perms"><thead><tr><th scope="col">Permission</th><th scope="col">🛡 Modérateurs</th><th scope="col">Membres</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
   if (tab === 'members') {
     if (!member && !g.public) return head + '<div class="card"><p class="mut">La liste des membres est réservée aux membres.</p></div>';
     const names = [g.owner, ...g.mods, ...g.members.filter(n => n !== g.owner && !g.mods.includes(n))];
@@ -1800,11 +1829,12 @@ function groupPage(e, paged) {
   if (tab === 'automod' && mod) return head + automodPanel(g);
   if (tab === 'manage' && mod) {
     const ok = notice ? `<p class="ok" role="status">${esc(notice)}</p>` : '';
-    return head + `<div class="card"><b>📩 Demandes d’adhésion (${g.requests.length})</b></div>` + (g.requests.map(n => `<div class="card person"><span class="who" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)}</span></span> <button data-cmreq="${g.id}:${esc(n)}:1">✔ Accepter</button> <button data-cmreq="${g.id}:${esc(n)}:0">✕ Refuser</button></div>`).join('') || '<p class="mut">Aucune demande en attente.</p>')
+    return head + `<div class="card"><b>📩 Demandes d’adhésion (${g.requests.length})</b></div>` + (g.requests.map(n => `<div class="card person"><span class="who" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)}</span>${((g.answers || {})[n.toLowerCase()] || []).map((a, i) => `<div class="mut">❓ ${esc((g.questions || [])[i] || 'Question')}<br>💬 ${esc(a)}</div>`).join('')}</span> <button data-cmreq="${g.id}:${esc(n)}:1">✔ Accepter</button> <button data-cmreq="${g.id}:${esc(n)}:0">✕ Refuser</button></div>`).join('') || '<p class="mut">Aucune demande en attente.</p>')
       + `<div class="card"><b>✉️ Invitations en attente (${g.invites.length})</b>${g.invites.map(n => `<div class="row"><span>@${esc(n)}</span><button data-cmcancel="${g.id}:${esc(n)}">Annuler</button></div>`).join('') || '<p class="mut">Aucune.</p>'}</div>`
       + `<div class="card"><b>⛔ Bannis (${g.banned.length})</b>${g.banned.map(n => `<div class="row"><span>@${esc(n)}</span><button data-cmunban="${g.id}:${esc(n)}">Débannir</button></div>`).join('') || '<p class="mut">Aucun.</p>'}</div>`
       + `<div class="card"><b>✏️ Informations</b>${owner ? `<input id="g-ename" maxlength="40" value="${esc(g.name)}" aria-label="Nom de la communauté">` : ''}<input id="g-edesc" maxlength="160" value="${esc(g.desc)}" aria-label="Description"><textarea id="g-erules" maxlength="600" aria-label="Règles">${esc(g.rules)}</textarea>
-        ${owner ? `<label class="inl"><input type="checkbox" id="g-epub" ${g.public ? 'checked' : ''}> publique</label> ` : ''}<button data-cmsave="${g.id}">💾 Enregistrer</button> ${owner ? `<button data-cmdel="${g.id}">🗑 Supprimer la communauté</button>` : ''}${ok}</div>`;
+        <textarea id="g-eqs" maxlength="620" aria-label="Questions d’entrée (une par ligne)" placeholder="Questions d’entrée (une par ligne, 5 max)">${esc((g.questions || []).join('\n'))}</textarea>
+        ${owner ? `<label class="inl"><input type="checkbox" id="g-epub" ${g.public ? 'checked' : ''}> publique</label> <label class="inl"><input type="checkbox" id="g-eappr" ${g.approval ? 'checked' : ''}> adhésion sur demande (même en public)</label> ` : ''}<button data-cmsave="${g.id}">💾 Enregistrer</button> ${owner ? `<button data-cmdel="${g.id}">🗑 Supprimer la communauté</button>` : ''}${ok}</div>`;
   }
   if (!member) return head + (g.public ? paged() : `<div class="card"><p class="mut">🔒 Communauté privée : ${r === 'pending' ? 'ta demande est en attente de validation par les modérateurs.' : r === 'invited' ? 'accepte l’invitation pour y entrer.' : 'demande à la rejoindre pour voir son fil et y publier. Lis d’abord ses règles dans l’onglet 📜.'}</p></div>`);
   const composer = `<div class="card"><textarea id="txt" maxlength="280" placeholder="Publier dans ${esc(g.name)}…" aria-label="Publier dans ${esc(g.name)}"></textarea>${attachBox('post')}${warnBox()}${pollBox()}<div class="row"><button data-cmsend="${g.id}">Publier dans la communauté</button> <button class="lnk" data-cmtab="rules">📜 Règles</button></div></div>`;
@@ -1850,6 +1880,23 @@ document.addEventListener('click', ev => {
   else if (verb === 'reject') { if (confirm('Refuser définitivement ce post ?')) attempt(() => net.automodReject(me, gid, +a1)); }
 });
 window.addEventListener('storage', ev => { if (view.page === 'group' && view.tab === 'automod' && ev.key === Social.KEY) refresh(); });
+// ---- communautés avancées : adhésion (règles à accepter, questions d'entrée), wiki, permissions des rôles ----
+document.addEventListener('click', ev => {
+  const b = ev.target.closest('button[data-gx]'); if (!b || !me) return;
+  const [verb, a, c] = b.dataset.gx.split(':'), v = id => ($(id) || {}).value, gid = verb === 'join' || verb === 'joinui' ? +a : +view.arg;
+  if (verb === 'joinui') { err = ''; notice = ''; go('group', gid); view.tab = 'join'; render(); }
+  else if (verb === 'join') attempt(async () => { const n = (net.group(gid).questions || []).length, acc = $('#g-acc'); const res = await net.joinGroup(me, gid, { accepted: acc ? acc.checked : true, answers: Array.from({ length: n }, (_, i) => v('#g-ans' + i)) }); view.tab = 'feed'; fs.scope = null; notice = res === 'pending' ? 'Demande envoyée ✔ : l’équipe te répondra.' : 'Bienvenue dans la communauté ✔'; });
+  else if (verb === 'wikiopen') { view.tab = 'wiki'; render(); const x = document.getElementById('wk-' + a); if (x) x.scrollIntoView({ block: 'center' }); }
+  else if (verb === 'wikiedit') { const pg = net.wiki(me, gid).find(x => x.id === +a); if (pg) { view.wiki = { id: pg.id, title: pg.title, body: pg.body }; err = ''; render(); } }
+  else if (verb === 'wikicancel') { view.wiki = null; err = ''; render(); }
+  else if (verb === 'wikisave') attempt(async () => { await net.wikiSave(me, gid, { id: view.wiki && view.wiki.id, title: v('#wk-title'), body: v('#wk-body') }); view.wiki = null; notice = 'Page enregistrée ✔'; });
+  else if (verb === 'wikipin') attempt(() => net.wikiPin(me, gid, +a, c === '1'));
+  else if (verb === 'wikidel') { if (confirm('Supprimer cette page du wiki ?')) attempt(() => net.wikiDelete(me, gid, +a)); }
+});
+document.addEventListener('change', ev => {
+  const x = ev.target.closest('input[data-gx^="perm:"]'); if (!x || !me || view.page !== 'group') return;
+  const [, role, perm] = x.dataset.gx.split(':'); attempt(() => net.setGroupPerm(me, +view.arg, role, perm, x.checked));
+});
 // ---- annonces de l'équipe, page de statut et mode maintenance ----
 // connecté : données de la vue du serveur ; déconnecté : état public (GET /api/status), rafraîchi toutes les 30 s
 const pubStatus = { data: null };
@@ -2408,7 +2455,7 @@ document.addEventListener('click', ev => {
   else if ('lmem' in D) { const [i, n] = D.lmem.split(':'); attempt(() => net.toggleListMember(me, +i, n)); }
   else if ('cmopen' in D) { err = ''; go('group', +D.cmopen); }
   else if ('cmtab' in D) { view.tab = D.cmtab; err = ''; fs.scope = null; render(); }
-  else if ('cmnew' in D) attempt(async () => { const g = await net.createGroup(me, v('#g-name'), v('#g-desc'), v('#g-rules'), $('#g-pub').checked); go('group', g.id); });
+  else if ('cmnew' in D) attempt(async () => { const g = await net.createGroup(me, v('#g-name'), v('#g-desc'), v('#g-rules'), $('#g-pub').checked); const qs = v('#g-qs'), ap = $('#g-appr').checked; if (ap || (qs || '').trim()) await net.updateGroup(me, g.id, { approval: ap, questions: qs }); go('group', g.id); });
   else if ('cmjoin' in D) attempt(async () => { await net.joinGroup(me, +D.cmjoin); fs.scope = null; });
   else if ('cmleave' in D) attempt(async () => { await net.leaveGroup(me, +D.cmleave); fs.scope = null; });
   else if ('cmreq' in D) { const [i, n, a] = D.cmreq.split(':'); attempt(() => net.handleRequest(me, +i, n, a === '1')); }
@@ -2418,7 +2465,7 @@ document.addEventListener('click', ev => {
   else if ('cmrm' in D) { const [i, n, b] = D.cmrm.split(':'); if (confirm(b === '1' ? `Bannir @${n} de la communauté ?` : `Retirer @${n} de la communauté ?`)) attempt(() => net.removeFromGroup(me, +i, n, b === '1')); }
   else if ('cmunban' in D) { const [i, n] = D.cmunban.split(':'); attempt(() => net.unbanFromGroup(me, +i, n)); }
   else if ('cmmod' in D) { const [i, n, o] = D.cmmod.split(':'); attempt(() => net.setGroupMod(me, +i, n, o === '1')); }
-  else if ('cmsave' in D) attempt(async () => { const id = +D.cmsave, g = net.group(id), o = { desc: v('#g-edesc'), rules: v('#g-erules') }; if (net.groupRole(me, id) === 'owner') { o.name = v('#g-ename'); o.public = $('#g-epub').checked; } await net.updateGroup(me, id, o); notice = 'Communauté enregistrée ✔'; });
+  else if ('cmsave' in D) attempt(async () => { const id = +D.cmsave, g = net.group(id), o = { desc: v('#g-edesc'), rules: v('#g-erules'), questions: v('#g-eqs') }; if (net.groupRole(me, id) === 'owner') { o.name = v('#g-ename'); o.public = $('#g-epub').checked; o.approval = $('#g-eappr').checked; } await net.updateGroup(me, id, o); notice = 'Communauté enregistrée ✔'; });
   else if ('cmdel' in D) { if (confirm('Supprimer cette communauté et tous ses posts ?')) attempt(async () => { await net.deleteGroup(me, +D.cmdel); go('groups'); }); }
   else if ('cmsend' in D) attempt(async () => {
     let poll = null; if (pollDraft.on) { pollRead(); poll = { options: pollDraft.opts, minutes: pollDraft.minutes }; }

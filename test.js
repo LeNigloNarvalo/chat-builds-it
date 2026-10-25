@@ -306,9 +306,9 @@ console.log('ok');
   const pub = n.createGroup('own', 'Speedrun', 'Courir vite', '1. Pas de spoil', true), priv = n.createGroup('own', 'Secret', '', 'Entre amis', false);
   assert.throws(() => n.createGroup('mod', 'speedrun'), /déjà/);
   // adhésion libre (publique) / sur demande (privée)
-  assert.strictEqual(n.joinGroup('mod', pub.id), 'member'); assert.throws(() => n.joinGroup('mod', pub.id), /déjà/);
-  n.joinGroup('mem', pub.id); n.setGroupMod('own', pub.id, 'mod', true); assert.throws(() => n.setGroupMod('mod', pub.id, 'mem', true), /propriétaire/);
-  assert.strictEqual(n.joinGroup('mem', priv.id), 'pending'); assert.throws(() => n.joinGroup('mem', priv.id), /déjà envoyée/);
+  assert.strictEqual(n.joinGroup('mod', pub.id, { accepted: true }), 'member'); assert.throws(() => n.joinGroup('mod', pub.id, { accepted: true }), /déjà/);
+  n.joinGroup('mem', pub.id, { accepted: true }); n.setGroupMod('own', pub.id, 'mod', true); assert.throws(() => n.setGroupMod('mod', pub.id, 'mem', true), /propriétaire/);
+  assert.strictEqual(n.joinGroup('mem', priv.id, { accepted: true }), 'pending'); assert.throws(() => n.joinGroup('mem', priv.id, { accepted: true }), /déjà envoyée/);
   assert.throws(() => n.handleRequest('out', priv.id, 'mem', true), /modérateurs/);
   assert.strictEqual(n.notifications('own').filter(x => x.type === 'group' && x.what === 'request').length, 1);
   n.handleRequest('own', priv.id, 'mem', true); assert.strictEqual(n.groupRole('mem', priv.id), 'member');
@@ -326,13 +326,13 @@ console.log('ok');
   // invitations, modération, bannissement
   assert.throws(() => n.inviteToGroup('mem', priv.id, 'out'), /modérateurs/);
   assert.strictEqual(n.inviteToGroup('own', priv.id, 'out'), 'invited'); assert.strictEqual(n.groupRole('out', priv.id), 'invited');
-  assert.strictEqual(n.respondInvite('out', priv.id, true), true); assert.strictEqual(n.groupRole('out', priv.id), 'member');
-  n.joinGroup('ban', pub.id); n.post('ban', 'spam', null, [], null, pub.id);
+  assert.strictEqual(n.respondInvite('out', priv.id, true, { accepted: true }), true); assert.strictEqual(n.groupRole('out', priv.id), 'member');
+  n.joinGroup('ban', pub.id, { accepted: true }); n.post('ban', 'spam', null, [], null, pub.id);
   const bp = n.groupFeed('mod', pub.id)[0]; n.deletePost('mod', bp.id); assert.strictEqual(n.groupFeed('own', pub.id).length, 1); // un modérateur supprime
   assert.throws(() => n.deletePost('mem', n.groupFeed('own', pub.id)[0].id + 0 && bp.id), /interdite|interdit/i);
   assert.throws(() => n.removeFromGroup('mem', pub.id, 'ban'), /modérateurs/); assert.throws(() => n.removeFromGroup('mod', pub.id, 'own'), /propriétaire/);
-  n.removeFromGroup('mod', pub.id, 'ban', true); assert.throws(() => n.joinGroup('ban', pub.id), /banni/); assert.throws(() => n.inviteToGroup('own', pub.id, 'ban'), /banni/);
-  n.unbanFromGroup('own', pub.id, 'ban'); assert.strictEqual(n.joinGroup('ban', pub.id), 'member');
+  n.removeFromGroup('mod', pub.id, 'ban', true); assert.throws(() => n.joinGroup('ban', pub.id, { accepted: true }), /banni/); assert.throws(() => n.inviteToGroup('own', pub.id, 'ban'), /banni/);
+  n.unbanFromGroup('own', pub.id, 'ban'); assert.strictEqual(n.joinGroup('ban', pub.id, { accepted: true }), 'member');
   // quitter / propriétaire / suppression
   assert.throws(() => n.leaveGroup('own', pub.id), /propriétaire/); n.leaveGroup('ban', pub.id); assert.strictEqual(n.groupRole('ban', pub.id), null);
   n.updateGroup('mod', pub.id, { rules: 'Nouvelle règle' }); assert.throws(() => n.updateGroup('mod', pub.id, { name: 'Autre' }), /propriétaire/);

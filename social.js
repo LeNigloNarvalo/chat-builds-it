@@ -4,6 +4,9 @@
   const AM = typeof require !== 'undefined' ? require('./automod.js') : root.Automod;
   const KEY = 'twitchgram.v1';
   const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], appeals: [], tickets: [], verifs: [], badgeLog: [], drafts: [], media: [], groups: [], events: [], rooms: [], msgReports: [], audit: [], seq: 1, attempts: Object.create(null) });
+  const GPERMS = { post: { icon: '✍️', label: 'Publier dans le fil', roles: ['member'] }, invite: { icon: '✉️', label: 'Inviter des comptes', roles: ['mod', 'member'] }, approve: { icon: '📩', label: 'Traiter les demandes d’adhésion', roles: ['mod'] }, remove: { icon: '🚪', label: 'Retirer des membres', roles: ['mod'] }, ban: { icon: '⛔', label: 'Bannir et débannir', roles: ['mod'] }, wiki: { icon: '📚', label: 'Modifier le wiki', roles: ['mod', 'member'] }, rules: { icon: '📜', label: 'Modifier règles, description et questions d’entrée', roles: ['mod'] }, automod: { icon: '🤖', label: 'Gérer la modération automatique', roles: ['mod'] } };
+  const GPERM_MEMBER_DEFAULT = (k, g) => k === 'post' ? true : k === 'invite' ? !!g.public : false;
+  const GLOG_MAX = 300, GQ_MAX = 5, WIKI_MAX = 20, WIKI_PINS = 5;
   const MSG_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '🎉'], MAX_PINS = 3, MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000, POLL_MAX_MIN = 7 * 1440, MAX_OWN_GROUPS = 10, MAX_RULES = 600;
 
   const EV_ANSWERS = ['yes', 'maybe', 'no'], EV_REMINDS = [0, 15, 60, 180, 1440], EV_GRACE = 3 * 3600000, MAX_EVENTS = 30;
@@ -331,6 +334,14 @@ function Net(storage, now) {
     const canMod = (g, n) => ['owner', 'mod'].includes(roleIn(g, n));
     const canRead = (g, n) => g.public || isMember(g, n);
     const needMod = (g, by) => need(canMod(g, user(by).name), 'Réservé aux modérateurs de la communauté');
+    // permissions par rôle (le propriétaire a tout) : réglées par le propriétaire, valeurs par défaut sinon
+    const permsOf = g => { const sv = g.perms || {}, out = { mod: {}, member: {} }; for (const k of Object.keys(GPERMS)) { for (const r of GPERMS[k].roles) out[r][k] = sv[r] && sv[r][k] !== undefined ? !!sv[r][k] : r === 'mod' ? true : GPERM_MEMBER_DEFAULT(k, g); } return out; };
+    const can = (g, n, perm) => { const r = roleIn(g, n); if (r === 'owner') return true; if (r !== 'mod' && r !== 'member') return false; return !!permsOf(g)[r][perm]; };
+    const needCan = (g, by, perm) => { const n = user(by).name; need(canMod(g, n) || (GPERMS[perm].roles.includes('member') && isMember(g, n)), 'Réservé aux modérateurs de la communauté'); need(can(g, n, perm), 'Permission manquante : ' + GPERMS[perm].label.toLowerCase()); };
+    const needsApproval = g => !g.public || !!g.approval;
+    const glog = (g, by, kind, target, detail) => { g.log = g.log || []; g.log.unshift({ id: (g.logSeq = (g.logSeq || 0) + 1), at: now(), by: user(by).name, kind, target: target || null, detail: detail || '' }); g.log = g.log.slice(0, GLOG_MAX); };
+    const cleanQuestions = q => { const l = (Array.isArray(q) ? q : String(q == null ? '' : q).split('\n')).map(x => String(x).replace(/\s+/g, ' ').trim()).filter(Boolean); need(l.length <= GQ_MAX, `${GQ_MAX} questions d’entrée maximum`); need(l.every(x => x.length <= 120), 'Question : 120 caractères max'); return l; };
+    const flushRequests = (g, by) => { for (const n of g.requests.splice(0)) { g.members.push(n); notify(n, by, 'group', null, { group: g.id, what: 'accepted' }); } g.answers = {}; };
     const seen = (p, n) => { if (!p || !p.group) return true; const g = db.groups.find(x => x.id === p.group); return !!g && canRead(g, n); };
     const dropGroup = g => { // supprime la communauté, ses posts et leurs réponses
       const gone = new Set(db.posts.filter(p => p.group === g.id).map(p => p.id));
@@ -349,7 +360,7 @@ function Net(storage, now) {
         let gid = group ? +group : null;
         if (replyTo) { const tp = db.posts.find(p => p.id === replyTo); need(tp, 'Post introuvable'); need(!blockedBy(author, tp.author), 'Cet utilisateur vous a bloqué : réponse impossible'); if (tp.group) gid = tp.group; }
         let g = null;
-        if (gid) { g = grp(gid); need(isMember(g, author), 'Rejoignez la communauté pour y publier'); }
+        if (gid) { g = grp(gid); need(isMember(g, author), 'Rejoignez la communauté pour y publier'); need(canMod(g, author) || can(g, author, 'post'), 'Les membres ne peuvent pas publier dans cette communauté'); }
         const p = { id: id(), author: user(author).name, text, at: now(), likes: [], replyTo: replyTo || null };
         if (g) p.group = g.id;
         if (images.length) p.images = images;
@@ -1983,36 +1994,46 @@ function Net(storage, now) {
       },
       sanctioned: by => { need(api.isAdmin(by), 'Réservé à l’administrateur'); return Object.values(db.users).filter(u => u.sanction && (!['suspend', 'mute'].includes(u.sanction.type) || u.sanction.until > now())).map(u => ({ name: u.name, sanction: u.sanction })); },
       // ---- communautés thématiques : publiques (lisibles par tous, adhésion libre) ou privées (sur demande ou invitation) ----
-      createGroup(by, name, desc, rules, isPublic) {
+      createGroup(by, name, desc, rules, isPublic, opts) {
         const u = user(by); guard(by); name = String(name || '').trim().replace(/\s+/g, ' '); desc = String(desc || '').trim(); rules = String(rules || '').trim();
         need(name.length >= 3 && name.length <= 40, 'Nom de communauté : 3 à 40 caractères');
         need(!db.groups.some(g => lc(g.name) === lc(name)), 'Une communauté porte déjà ce nom');
         need(desc.length <= 160, 'Description : 160 caractères max'); need(rules.length <= MAX_RULES, `Règles : ${MAX_RULES} caractères max`);
         need(db.groups.filter(g => lc(g.owner) === lc(u.name)).length < MAX_OWN_GROUPS, `${MAX_OWN_GROUPS} communautés maximum par compte`);
-        const g = { id: id(), name, desc, rules, public: !!isPublic, owner: u.name, mods: [], members: [u.name], requests: [], invites: [], banned: [], at: now() };
-        db.groups.push(g); save(); return g;
+        opts = opts || {}; const g = { id: id(), name, desc, rules, public: !!isPublic, owner: u.name, mods: [], members: [u.name], requests: [], invites: [], banned: [], at: now(), approval: !!opts.approval, questions: cleanQuestions(opts.questions || []), answers: {}, accepted: { [lc(u.name)]: now() }, perms: {}, wiki: { seq: 1, pages: [] }, log: [], logSeq: 0 };
+        glog(g, u.name, 'create', null, 'communauté créée'); db.groups.push(g); save(); return g;
       },
       // le propriétaire change tout ; les modérateurs ajustent la description et les règles
       updateGroup(by, gid, o) {
         const g = grp(gid), u = user(by); needMod(g, by); o = o || {}; guard(by);
-        if (o.name !== undefined || o.public !== undefined) need(roleIn(g, u.name) === 'owner', 'Réservé au propriétaire');
+        if (o.name !== undefined || o.public !== undefined || o.approval !== undefined) need(roleIn(g, u.name) === 'owner', 'Réservé au propriétaire');
+        if (o.desc !== undefined || o.rules !== undefined || o.questions !== undefined) needCan(g, by, 'rules');
         if (o.name !== undefined) {
           const name = String(o.name).trim().replace(/\s+/g, ' '); need(name.length >= 3 && name.length <= 40, 'Nom de communauté : 3 à 40 caractères');
-          need(!db.groups.some(x => x !== g && lc(x.name) === lc(name)), 'Une communauté porte déjà ce nom'); g.name = name;
+          need(!db.groups.some(x => x !== g && lc(x.name) === lc(name)), 'Une communauté porte déjà ce nom'); if (g.name !== name) glog(g, u.name, 'rename', null, `« ${g.name} » → « ${name} »`); g.name = name;
         }
-        if (o.desc !== undefined) { const d = String(o.desc).trim(); need(d.length <= 160, 'Description : 160 caractères max'); g.desc = d; }
-        if (o.rules !== undefined) { const r = String(o.rules).trim(); need(r.length <= MAX_RULES, `Règles : ${MAX_RULES} caractères max`); g.rules = r; }
-        if (o.public !== undefined) { g.public = !!o.public; if (g.public) { for (const n of g.requests.splice(0)) { g.members.push(n); notify(n, u.name, 'group', null, { group: g.id, what: 'accepted' }); } } }
+        if (o.desc !== undefined) { const d = String(o.desc).trim(); need(d.length <= 160, 'Description : 160 caractères max'); if (g.desc !== d) glog(g, u.name, 'desc', null, 'description modifiée'); g.desc = d; }
+        if (o.rules !== undefined) { const r = String(o.rules).trim(); need(r.length <= MAX_RULES, `Règles : ${MAX_RULES} caractères max`); if (g.rules !== r) { glog(g, u.name, 'rules', null, 'règles modifiées'); g.rulesAt = now(); } g.rules = r; }
+        if (o.questions !== undefined) { const q = cleanQuestions(o.questions); if (JSON.stringify(q) !== JSON.stringify(g.questions || [])) glog(g, u.name, 'questions', null, q.length ? `${q.length} question${q.length > 1 ? 's' : ''} d’entrée` : 'questions d’entrée retirées'); g.questions = q; }
+        if (o.approval !== undefined && !!o.approval !== !!g.approval) { g.approval = !!o.approval; glog(g, u.name, 'approval', null, g.approval ? 'adhésion sur demande activée' : 'adhésion libre rétablie'); }
+        if (o.public !== undefined) { if (!!o.public !== g.public) glog(g, u.name, 'visibility', null, o.public ? 'communauté rendue publique' : 'communauté rendue privée'); g.public = !!o.public; }
+        if (!needsApproval(g)) flushRequests(g, u.name);
         save(); return g;
       },
       deleteGroup(by, gid) { const g = grp(gid); need(roleIn(g, user(by).name) === 'owner' || api.isAdmin(by), 'Réservé au propriétaire'); dropGroup(g); save(); },
       // public : adhésion immédiate ; privé : demande (ou acceptation directe si on a été invité)
-      joinGroup(by, gid) {
-        const g = grp(gid), u = user(by); guard(by); const r = roleIn(g, u.name);
+      // règles à accepter (si la communauté en a), puis adhésion libre, ou demande avec réponses aux questions d'entrée (communauté privée ou « sur demande »)
+      joinGroup(by, gid, o) {
+        const g = grp(gid), u = user(by); guard(by); const r = roleIn(g, u.name); o = o || {};
         need(!has(g.banned, u.name), 'Vous êtes banni de cette communauté');
         need(r !== 'owner' && r !== 'mod' && r !== 'member', 'Vous êtes déjà membre');
-        if (g.public || r === 'invited') { g.invites = g.invites.filter(x => lc(x) !== lc(u.name)); g.members.push(u.name); save(); return 'member'; }
         need(r !== 'pending', 'Demande déjà envoyée');
+        if (g.rules) need(o.accepted === true, 'Acceptez les règles de la communauté pour continuer');
+        g.accepted = g.accepted || {}; g.answers = g.answers || {};
+        if (!needsApproval(g) || r === 'invited') { g.invites = g.invites.filter(x => lc(x) !== lc(u.name)); g.members.push(u.name); g.accepted[lc(u.name)] = now(); save(); return 'member'; }
+        const qs = g.questions || [], ans = qs.map((q, i) => String((o.answers || [])[i] == null ? '' : o.answers[i]).replace(/\s+/g, ' ').trim());
+        ans.forEach((a, i) => { need(a, `Répondez à la question ${i + 1} : ${qs[i]}`); need(a.length <= 300, 'Réponse : 300 caractères max'); });
+        g.accepted[lc(u.name)] = now(); if (qs.length) g.answers[lc(u.name)] = ans;
         g.requests.push(u.name); for (const m of new Set([g.owner, ...g.mods])) notify(m, u.name, 'group', null, { group: g.id, what: 'request' });
         save(); return 'pending';
       },
@@ -2020,75 +2041,113 @@ function Net(storage, now) {
       leaveGroup(by, gid) {
         const g = grp(gid), n = user(by).name; need(roleIn(g, n) !== 'owner', 'Le propriétaire ne peut pas quitter : supprimez la communauté');
         for (const k of ['mods', 'members', 'requests']) g[k] = g[k].filter(x => lc(x) !== lc(n));
+        if (g.answers) delete g.answers[lc(n)];
         save();
       },
       handleRequest(by, gid, who, accept) {
-        const g = grp(gid), u = user(by); needMod(g, by); guard(by); const t = user(who);
+        const g = grp(gid), u = user(by); needCan(g, by, 'approve'); guard(by); const t = user(who);
         need(has(g.requests, t.name), 'Aucune demande de ce compte');
-        g.requests = g.requests.filter(x => lc(x) !== lc(t.name));
+        g.requests = g.requests.filter(x => lc(x) !== lc(t.name)); if (g.answers) delete g.answers[lc(t.name)];
         if (accept) { g.members.push(t.name); notify(t.name, u.name, 'group', null, { group: g.id, what: 'accepted' }); }
-        save(); return !!accept;
+        else notify(t.name, u.name, 'group', null, { group: g.id, what: 'declined' });
+        glog(g, u.name, accept ? 'approve' : 'decline', t.name, accept ? 'demande acceptée' : 'demande refusée'); save(); return !!accept;
       },
       // invitation : tout membre d'une communauté publique, les modérateurs seuls pour une privée
       inviteToGroup(by, gid, target) {
         const g = grp(gid), u = user(by), t = user(target); guard(by);
-        need(g.public ? isMember(g, u.name) : canMod(g, u.name), g.public ? 'Rejoignez la communauté pour inviter' : 'Seuls les modérateurs invitent dans une communauté privée');
+        need(isMember(g, u.name), 'Rejoignez la communauté pour inviter'); need(can(g, u.name, 'invite'), g.public ? 'Permission manquante : inviter des comptes' : 'Seuls les modérateurs invitent dans une communauté privée');
         need(!isMember(g, t.name), 'Déjà membre'); need(!has(g.banned, t.name), 'Ce compte est banni de la communauté');
         need(!blockedBy(u.name, t.name) && !has(t.blocked, u.name), 'Invitation impossible'); need(!has(g.invites, t.name), 'Déjà invité');
-        if (has(g.requests, t.name)) { g.requests = g.requests.filter(x => lc(x) !== lc(t.name)); g.members.push(t.name); notify(t.name, u.name, 'group', null, { group: g.id, what: 'accepted' }); save(); return 'member'; }
+        if (has(g.requests, t.name)) { g.requests = g.requests.filter(x => lc(x) !== lc(t.name)); if (g.answers) delete g.answers[lc(t.name)]; g.members.push(t.name); notify(t.name, u.name, 'group', null, { group: g.id, what: 'accepted' }); save(); return 'member'; }
         g.invites.push(t.name); notify(t.name, u.name, 'group', null, { group: g.id, what: 'invite' }); save(); return 'invited';
       },
-      respondInvite(by, gid, accept) {
-        const g = grp(gid), n = user(by).name; need(has(g.invites, n), 'Aucune invitation');
-        g.invites = g.invites.filter(x => lc(x) !== lc(n)); if (accept) { need(!has(g.banned, n), 'Vous êtes banni de cette communauté'); g.members.push(n); }
+      respondInvite(by, gid, accept, o) {
+        const g = grp(gid), n = user(by).name; need(has(g.invites, n), 'Aucune invitation'); if (accept && g.rules) need(o && o.accepted === true, 'Acceptez les règles de la communauté pour continuer');
+        g.invites = g.invites.filter(x => lc(x) !== lc(n)); if (accept) { need(!has(g.banned, n), 'Vous êtes banni de cette communauté'); g.members.push(n); (g.accepted = g.accepted || {})[lc(n)] = now(); }
         save(); return !!accept;
       },
-      cancelInvite(by, gid, who) { const g = grp(gid); needMod(g, by); g.invites = g.invites.filter(x => lc(x) !== lc(who)); save(); },
+      cancelInvite(by, gid, who) { const g = grp(gid); needCan(g, by, 'approve'); g.invites = g.invites.filter(x => lc(x) !== lc(who)); save(); },
       // retirer un membre (avec ou sans bannissement) : les modérateurs ne touchent ni aux autres modérateurs ni au propriétaire
       removeFromGroup(by, gid, who, ban) {
-        const g = grp(gid), me = user(by).name; needMod(g, by); const t = user(who), r = roleIn(g, t.name);
+        const g = grp(gid), me = user(by).name; needCan(g, by, ban ? 'ban' : 'remove'); const t = user(who), r = roleIn(g, t.name);
         need(r !== 'owner', 'Le propriétaire ne peut pas être retiré'); need(r !== 'mod' || roleIn(g, me) === 'owner', 'Seul le propriétaire retire un modérateur');
         need(r !== null || ban, 'Ce compte n’est pas dans la communauté');
         for (const k of ['mods', 'members', 'requests', 'invites']) g[k] = g[k].filter(x => lc(x) !== lc(t.name));
+        if (g.answers) delete g.answers[lc(t.name)];
+        glog(g, me, ban ? 'ban' : 'remove', t.name, ban ? 'banni de la communauté' : 'retiré de la communauté');
         if (ban && !has(g.banned, t.name)) g.banned.push(t.name);
         if (r === 'member' || r === 'mod') notify(t.name, me, 'group', null, { group: g.id, what: ban ? 'banned' : 'removed' });
         save();
       },
-      unbanFromGroup(by, gid, who) { const g = grp(gid); needMod(g, by); g.banned = g.banned.filter(x => lc(x) !== lc(who)); save(); },
+      unbanFromGroup(by, gid, who) { const g = grp(gid); needCan(g, by, 'ban'); if (has(g.banned, who)) glog(g, by, 'unban', who, 'bannissement levé'); g.banned = g.banned.filter(x => lc(x) !== lc(who)); save(); },
       setGroupMod(by, gid, who, on) {
         const g = grp(gid); need(roleIn(g, user(by).name) === 'owner', 'Réservé au propriétaire'); const t = user(who), r = roleIn(g, t.name);
         need(r === 'member' || r === 'mod', 'Ce compte doit d’abord être membre');
         g.mods = g.mods.filter(x => lc(x) !== lc(t.name)); if (on) { g.mods.push(t.name); notify(t.name, g.owner, 'group', null, { group: g.id, what: 'mod' }); }
+        glog(g, g.owner, on ? 'promote' : 'demote', t.name, on ? 'nommé modérateur' : 'redevient simple membre');
         save(); return !!on;
+      },
+      // ---- permissions des rôles (propriétaire), wiki épinglé et journal de l'équipe ----
+      groupPerms: gid => permsOf(grp(gid)),
+      setGroupPerm(by, gid, role, perm, on) {
+        const g = grp(gid); need(roleIn(g, user(by).name) === 'owner', 'Réservé au propriétaire'); guard(by);
+        need(GPERMS[perm] && (role === 'mod' || role === 'member') && GPERMS[perm].roles.includes(role), 'Permission inconnue pour ce rôle');
+        g.perms = g.perms || {}; g.perms[role] = g.perms[role] || {}; g.perms[role][perm] = !!on;
+        glog(g, by, 'perm', role === 'mod' ? 'modérateurs' : 'membres', `${on ? 'autorise' : 'retire'} : ${GPERMS[perm].label.toLowerCase()}`); save(); return permsOf(g);
+      },
+      groupLog(by, gid, limit) { const g = grp(gid); needMod(g, by); return (g.log || []).slice(0, Math.min(GLOG_MAX, Math.max(1, +limit || GLOG_MAX))).map(e => Object.assign({}, e)); },
+      groupAnswers(by, gid, who) { const g = grp(gid); needCan(g, by, 'approve'); return ((g.answers || {})[lc(who)] || []).slice(); },
+      // wiki : pages (titre, texte), épinglées en tête ; lisible par qui peut lire la communauté
+      wiki(by, gid) {
+        const g = grp(gid); need(canRead(g, user(by).name), 'Communauté privée'); const w = g.wiki || { pages: [] };
+        return w.pages.map(x => Object.assign({}, x)).sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || a.title.localeCompare(b.title));
+      },
+      wikiSave(by, gid, o) {
+        const g = grp(gid), u = user(by); needCan(g, by, 'wiki'); guard(by); o = o || {}; const w = g.wiki = g.wiki || { seq: 1, pages: [] };
+        const title = String(o.title == null ? '' : o.title).replace(/\s+/g, ' ').trim(), body = String(o.body == null ? '' : o.body).trim();
+        need(title && title.length <= 60, 'Titre de la page : 1 à 60 caractères'); need(body && body.length <= 4000, 'Texte de la page : 1 à 4000 caractères');
+        const cur = o.id ? w.pages.find(x => x.id === +o.id) : null; if (o.id) need(cur, 'Page introuvable'); else need(w.pages.length < WIKI_MAX, `${WIKI_MAX} pages maximum par wiki`);
+        need(!w.pages.some(x => x !== cur && lc(x.title) === lc(title)), 'Une page porte déjà ce titre');
+        let pg; if (cur) { Object.assign(cur, { title, body, by: u.name, updatedAt: now(), rev: (cur.rev || 1) + 1 }); pg = cur; } else { pg = { id: w.seq++, title, body, by: u.name, at: now(), updatedAt: now(), rev: 1, pinned: false }; w.pages.push(pg); }
+        glog(g, u.name, cur ? 'wiki-edit' : 'wiki-new', title, cur ? 'page du wiki modifiée' : 'page du wiki créée'); save(); return Object.assign({}, pg);
+      },
+      wikiPin(by, gid, pid, on) {
+        const g = grp(gid); needCan(g, by, 'wiki'); guard(by); const w = g.wiki || { pages: [] }, pg = w.pages.find(x => x.id === +pid); need(pg, 'Page introuvable');
+        if (on) need(pg.pinned || w.pages.filter(x => x.pinned).length < WIKI_PINS, `${WIKI_PINS} pages épinglées maximum`);
+        pg.pinned = !!on; glog(g, by, on ? 'wiki-pin' : 'wiki-unpin', pg.title, on ? 'page épinglée' : 'page désépinglée'); save(); return pg.pinned;
+      },
+      wikiDelete(by, gid, pid) {
+        const g = grp(gid); needCan(g, by, 'wiki'); guard(by); const w = g.wiki || { pages: [] }, pg = w.pages.find(x => x.id === +pid); need(pg, 'Page introuvable');
+        w.pages = w.pages.filter(x => x !== pg); glog(g, by, 'wiki-del', pg.title, 'page du wiki supprimée'); save();
       },
       // ---- modération automatique : règles (mots, liens, comptes récents, rafales de signalements) -> masquer, valider avant, avertir ----
       automod(by, gid) {
-        const g = grp(gid); needMod(g, by); const am = amOf(g);
+        const g = grp(gid); needCan(g, by, 'automod'); const am = amOf(g);
         return { rules: am.rules.map(r => Object.assign({}, r)), log: am.log.map(l => Object.assign({}, l)), pending: db.posts.filter(p => p.group === g.id && p.pending).map(p => p.id) };
       },
       automodSave(by, gid, o) {
-        const g = grp(gid); needMod(g, by); guard(by); const am = amOf(g), c = AM.clean(o), cur = o && o.id ? am.rules.find(x => x.id === +o.id) : null;
+        const g = grp(gid); needCan(g, by, 'automod'); guard(by); const am = amOf(g), c = AM.clean(o), cur = o && o.id ? am.rules.find(x => x.id === +o.id) : null;
         if (o && o.id) need(cur, 'Règle introuvable'); else need(am.rules.length < AM.MAX_RULES, `${AM.MAX_RULES} règles maximum par communauté`);
         need(!am.rules.some(x => x !== cur && lc(x.name) === lc(c.name)), 'Une règle porte déjà ce nom');
         let r; if (cur) { Object.assign(cur, c); r = cur; } else { r = Object.assign({ id: am.seq++, at: now(), by: user(by).name, hits: 0 }, c); am.rules.push(r); }
-        audit(by, 'automod-rule', g.name, `règle « ${r.name} » (${r.type} → ${r.action})`); save(); return Object.assign({}, r);
+        audit(by, 'automod-rule', g.name, `règle « ${r.name} » (${r.type} → ${r.action})`); glog(g, by, 'automod-rule', r.name, `règle automod ${o && o.id ? 'modifiée' : 'créée'} (${r.type} → ${r.action})`); save(); return Object.assign({}, r);
       },
       automodToggle(by, gid, rid, on) {
-        const g = grp(gid); needMod(g, by); const r = amOf(g).rules.find(x => x.id === +rid); need(r, 'Règle introuvable'); r.on = !!on; save(); return r.on;
+        const g = grp(gid); needCan(g, by, 'automod'); const r = amOf(g).rules.find(x => x.id === +rid); need(r, 'Règle introuvable'); r.on = !!on; glog(g, by, 'automod-rule', r.name, r.on ? 'règle automod activée' : 'règle automod désactivée'); save(); return r.on;
       },
       automodDelete(by, gid, rid) {
-        const g = grp(gid); needMod(g, by); const am = amOf(g), r = am.rules.find(x => x.id === +rid); need(r, 'Règle introuvable'); am.rules = am.rules.filter(x => x !== r); save();
+        const g = grp(gid); needCan(g, by, 'automod'); const am = amOf(g), r = am.rules.find(x => x.id === +rid); need(r, 'Règle introuvable'); am.rules = am.rules.filter(x => x !== r); glog(g, by, 'automod-rule', r.name, 'règle automod supprimée'); save();
       },
       // aperçu : la règle (non enregistrée) appliquée aux posts récents de la communauté, sans rien modifier
       automodPreview(by, gid, o, limit) {
-        const g = grp(gid); needMod(g, by); const c = AM.clean(Object.assign({}, o, { on: true })), n = Math.min(200, Math.max(1, +limit || 50));
+        const g = grp(gid); needCan(g, by, 'automod'); const c = AM.clean(Object.assign({}, o, { on: true })), n = Math.min(200, Math.max(1, +limit || 50));
         const posts = db.posts.filter(p => p.group === g.id).sort((a, b) => b.id - a.id).slice(0, n), out = [];
         for (const p of posts) { const why = AM.match(c, amCtx(p)); if (why) out.push({ postId: p.id, author: p.author, excerpt: (p.text || '').slice(0, 140), why, exempt: canMod(g, p.author), at: p.at }); }
         return { scanned: posts.length, matches: out, action: c.action };
       },
       // annuler une décision : le post masqué réapparaît, le post en attente est publié, l'avertissement est retiré
       automodUndo(by, gid, logId) {
-        const g = grp(gid); needMod(g, by); guard(by); const am = amOf(g), e = am.log.find(x => x.id === +logId); need(e, 'Décision introuvable'); need(e.status === 'active', 'Décision déjà traitée');
+        const g = grp(gid); needCan(g, by, 'automod'); guard(by); const am = amOf(g), e = am.log.find(x => x.id === +logId); need(e, 'Décision introuvable'); need(e.status === 'active', 'Décision déjà traitée');
         const p = db.posts.find(x => x.id === e.postId), me = user(by).name;
         if (p) {
           if (e.action === 'hide' && p.hidden && p.hidden.auto) delete p.hidden;
@@ -2100,7 +2159,7 @@ function Net(storage, now) {
       },
       // file de validation : refuser supprime définitivement le post en attente
       automodReject(by, gid, logId) {
-        const g = grp(gid); needMod(g, by); guard(by); const am = amOf(g), e = am.log.find(x => x.id === +logId); need(e && e.action === 'queue' && e.status === 'active', 'Aucun post en attente pour cette décision');
+        const g = grp(gid); needCan(g, by, 'automod'); guard(by); const am = amOf(g), e = am.log.find(x => x.id === +logId); need(e && e.action === 'queue' && e.status === 'active', 'Aucun post en attente pour cette décision');
         db.posts = db.posts.filter(p => p.id !== e.postId && p.replyTo !== e.postId); db.notifs = db.notifs.filter(n => n.postId !== e.postId);
         e.status = 'rejected'; e.by = user(by).name; e.undoneAt = now(); audit(by, 'automod-reject', e.author, `post #${e.postId} refusé · règle « ${e.rule} »`); save(); return e;
       },
@@ -2476,9 +2535,9 @@ function Net(storage, now) {
       const r = g.owner === me.name ? 'owner' : g.mods.includes(me.name) ? 'mod' : g.members.includes(me.name) ? 'member' : null, mod = r === 'owner' || r === 'mod', full = !!r || g.public;
       if (full) readable.add(g.id);
       const c = JSON.parse(JSON.stringify(g));
-      if (!mod) { c.banned = []; c.requests = g.requests.filter(x => x === me.name); c.invites = g.invites.filter(x => x === me.name); delete c.automod; }
+      if (!mod) { c.banned = []; c.requests = g.requests.filter(x => x === me.name); c.invites = g.invites.filter(x => x === me.name); delete c.automod; c.log = []; c.answers = {}; }
       else { c.automod = c.automod || { rules: [], log: [], seq: 1 }; c.automod.reportTimes = {}; for (const r of db.reports) { const rp = db.posts.find(x => x.id === r.postId); if (rp && rp.group === g.id) (c.automod.reportTimes[r.postId] = c.automod.reportTimes[r.postId] || []).push(r.at); } }
-      if (!full) { c.members = []; c.mods = []; c.count = g.members.length; }
+      if (!full) { c.members = []; c.mods = []; c.count = g.members.length; c.wiki = { seq: 1, pages: [] }; c.accepted = {}; }
       return c;
     });
     const modOf = new Set(db.groups.filter(g => g.owner === me.name || g.mods.includes(me.name)).map(g => g.id));
@@ -2510,6 +2569,6 @@ function Net(storage, now) {
     };
   }
 
-  const exported = { CIRCLE_MIN, CIRCLE_MAX, HEIR_MIN, HEIR_MAX, circleViewOf, ADULT_AGE, parseBirth, ageAt, inWindow, hm, IDEA_STATES, UPD_TAGS, ANN_LEVELS, COMPONENTS, IMPACTS, INC_STATES, MAINT_BLOCK, AM, normImport, MSG_EMOJIS, Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
+  const exported = { GPERMS, GQ_MAX, WIKI_MAX, WIKI_PINS, CIRCLE_MIN, CIRCLE_MAX, HEIR_MIN, HEIR_MAX, circleViewOf, ADULT_AGE, parseBirth, ageAt, inWindow, hm, IDEA_STATES, UPD_TAGS, ANN_LEVELS, COMPONENTS, IMPACTS, INC_STATES, MAINT_BLOCK, AM, normImport, MSG_EMOJIS, Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
   if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);
