@@ -1,9 +1,15 @@
 // Vraie application partagée : les données (twitchgram.v1) sont communes à tous les visiteurs et au stream ;
 // seule la session (app.session) reste propre à chaque visiteur. Vue stream (?stream=1) : session du vrai compte « Streamer ».
 const STREAM = new URLSearchParams(location.search).get('stream') === '1';
-const SESSION = 'app.session';
+const SESSION = 'app.session', A11Y_KEY = A11y.KEY;
 const store = localStorage;
 const net = Social.Net(store);
+const sysDark = matchMedia('(prefers-color-scheme: dark)');
+let prefs = A11y.load(store);
+const applyPrefs = () => A11y.apply(prefs, document, sysDark.matches);
+sysDark.addEventListener && sysDark.addEventListener('change', applyPrefs);
+applyPrefs();
+let notice = '';
 // session : « pseudo|époque » (époque changée = « déconnecté partout »)
 let me = null;
 const checkSession = () => {
@@ -34,7 +40,7 @@ function refresh() {
   for (const [id, val] of keep) { const x = document.getElementById(id); if (x && !x.value) x.value = val; }
   if (a && a.id && document.getElementById(a.id)) document.getElementById(a.id).focus();
 }
-window.addEventListener('storage', ev => { if (ev.key === null || ev.key === Social.KEY) refresh(); });
+window.addEventListener('storage', ev => { if (ev.key === A11Y_KEY) { prefs = A11y.load(store); applyPrefs(); } if (ev.key === null || ev.key === Social.KEY) refresh(); });
 const openSession = name => { me = name; store.setItem(SESSION, me + '|' + net.epoch(me)); };
 
 function postHTML(p, thread) {
@@ -94,7 +100,15 @@ function render() {
       <div class="grads">${GRADS.map((g, i) => `<button data-grad="${i}" style="background:${g}" title="Dégradé ${i + 1}"></button>`).join('')}</div>
       <label>Lien web<input id="s-link" value="${esc(u.link || '')}" placeholder="https://twitch.tv/…"></label>
       <input id="s-gradv" type="hidden" value="${/^grad:/.test(b) ? b : ''}">
-      <button data-saveprofile>💾 Enregistrer</button> <button data-page="security">🔒 Sécurité</button> <button data-user="${u.name}">Voir mon profil</button>${e}</div>`;
+      <button data-saveprofile>💾 Enregistrer</button> <button data-page="security">🔒 Sécurité</button> <button data-user="${u.name}">Voir mon profil</button>${e}</div>
+      <div class="card" role="group" aria-labelledby="h-look"><h2 id="h-look">🎨 Apparence et accessibilité</h2>
+      <b id="l-theme">Thème</b><div class="row" role="group" aria-labelledby="l-theme">${[['auto', '🖥 Auto'], ['light', '☀️ Clair'], ['dark', '🌙 Sombre']].map(([k, l]) => `<button data-theme="${k}" aria-pressed="${prefs.theme === k}" class="${prefs.theme === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <b id="l-size">Taille du texte : ${prefs.size} %</b><div class="row" role="group" aria-labelledby="l-size"><button data-size="-1" aria-label="Réduire le texte" ${prefs.size === A11y.SIZES[0] ? 'disabled' : ''}>A−</button><button data-size="0" aria-label="Taille normale">A</button><button data-size="1" aria-label="Agrandir le texte" ${prefs.size === A11y.SIZES[A11y.SIZES.length - 1] ? 'disabled' : ''}>A+</button></div>
+      <p class="mut">Navigation au clavier : Tab / Maj+Tab, Entrée ou Espace pour activer. Ces préférences restent sur cet appareil.</p></div>
+      <div class="card" role="group" aria-labelledby="h-data"><h2 id="h-data">📦 Mes données</h2><p class="mut">Exporte ton profil, tes posts et tes messages en JSON (sans mot de passe), ou importe un export pour les fusionner dans ton compte.</p>
+      <div class="row"><button data-export>⬇️ Exporter en JSON</button><label class="mut">Importer un fichier <input id="imp-file" type="file" accept="application/json,.json"></label></div>
+      <label for="imp-txt">Ou colle le JSON ici</label><textarea id="imp-txt" class="json" placeholder='{"format":"twitchgram-export",…}'></textarea><button data-import>⬆️ Importer</button>
+      <p class="ok" role="status">${esc(notice)}</p></div>`;
   } else if (view.page === 'security') {
     h = `<div class="card"><h2>🔒 Sécurité</h2><b>Changer le mot de passe</b>
       <input id="sec-old" type="password" placeholder="Mot de passe actuel" autocomplete="current-password"><input id="sec-new" type="password" placeholder="Nouveau mot de passe (4 min)" autocomplete="new-password"><input id="sec-new2" type="password" placeholder="Confirmer le nouveau mot de passe" autocomplete="new-password">
@@ -109,10 +123,27 @@ function render() {
       <input id="dm" placeholder="Message à ${esc(view.arg)}"><button data-dm>Envoyer</button></div>${e}`;
   }
   app.innerHTML = h;
+  a11yPass();
 }
+// accessibilité : éléments cliquables non-boutons focalisables, états ARIA, libellés
+function a11yPass() {
+  document.querySelectorAll('#app [data-user]:not(button),#app [data-search]:not(button),#app [data-open]:not(button)').forEach(x => { x.tabIndex = 0; x.setAttribute('role', 'button'); });
+  document.querySelectorAll('#nav button').forEach(b => { if (b.classList.contains('on')) b.setAttribute('aria-current', 'page'); });
+  document.querySelectorAll('#app [data-like]').forEach(b => { b.setAttribute('aria-pressed', b.classList.contains('on')); b.setAttribute('aria-label', b.textContent.trim().slice(2) + ' j’aime'); });
+  document.querySelectorAll('#app [data-open]:is(button)').forEach(b => b.setAttribute('aria-label', b.textContent.trim().slice(2) + ' réponses'));
+  document.querySelectorAll('#app [data-del]').forEach(b => b.setAttribute('aria-label', 'Supprimer le post'));
+  document.querySelectorAll('#app [data-sub=""]').forEach(b => b.setAttribute('aria-label', 'Fermer la liste'));
+  document.querySelectorAll('#app textarea:not([aria-label]):not(.json),#app input:not([aria-label]):not([type=hidden])').forEach(x => { if (!x.labels.length && x.placeholder) x.setAttribute('aria-label', x.placeholder); });
+  document.querySelectorAll('#app .err').forEach(x => x.setAttribute('role', 'alert'));
+}
+// clavier : Entrée / Espace activent les éléments « role=button » (les vrais boutons le font déjà)
+document.addEventListener('keydown', ev => {
+  if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.matches && ev.target.matches('[role=button]:not(button)')) { ev.preventDefault(); ev.target.click(); }
+});
+const download = (name, text) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); };
 
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-logoutall],*[data-delacc]');
+  const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import]');
   if (!d) return;
   const D = d.dataset, v = id => ($(id) || {}).value;
   if ('login' in D) attempt(async () => openSession(await net.login(v('#u'), v('#pw'))));
@@ -127,7 +158,14 @@ document.addEventListener('click', ev => {
     if (!confirm('Supprimer définitivement votre compte et tous vos posts ?')) return;
     await net.deleteAccount(me, v('#sec-del')); me = null; store.removeItem(SESSION); view = { page: 'feed' };
   });
-  else if ('page' in D) { err = ''; go(D.page); }
+  else if ('theme' in D) { prefs = A11y.save(store, { theme: D.theme }); applyPrefs(); render(); }
+  else if ('size' in D) { const i = A11y.SIZES.indexOf(prefs.size), j = D.size === '0' ? A11y.SIZES.indexOf(100) : Math.max(0, Math.min(A11y.SIZES.length - 1, i + +D.size)); prefs = A11y.save(store, { size: A11y.SIZES[j] }); applyPrefs(); render(); }
+  else if ('export' in D) { download(`twitchgram-${me}.json`, JSON.stringify(net.exportUser(me), null, 2)); notice = 'Export téléchargé ✔'; render(); }
+  else if ('import' in D) attempt(async () => {
+    const f = ($('#imp-file') || {}).files && $('#imp-file').files[0], txt = f ? await f.text() : v('#imp-txt');
+    const r = net.importUser(me, txt); notice = `Import réussi ✔ : ${r.posts} post(s), ${r.messages} message(s), ${r.following} abonnement(s)`;
+  });
+  else if ('page' in D) { err = ''; notice = ''; go(D.page); $('#app').focus(); }
   else if ('send' in D) attempt(() => net.post(me, v('#txt'), D.send ? +D.send : null));
   else if ('like' in D) attempt(() => net.toggleLike(me, +D.like));
   else if ('del' in D) attempt(() => net.deletePost(me, +D.del));

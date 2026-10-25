@@ -56,5 +56,28 @@ await assert.rejects(() => n.deleteAccount('dave', 'wrong'), /incorrect/);
 await n.deleteAccount('dave', 'newpass');
 assert.ok(!n.db().users.dave && n.db().posts.every(p => p.author !== 'dave' && p.replyTo !== dp.id) && !n.profile('erin').following.includes('dave') && n.db().messages.every(m => m.from !== 'dave' && m.to !== 'dave'));
 await assert.rejects(() => n.deleteAccount('Streamer', 'x'), /Streamer/);
+// export / import JSON
+n = Net(mem); await n.signup('fred', 'pass6'); await n.signup('gina', 'pass7');
+n.updateProfile('fred', { display: 'Fred', bio: 'yo', avatar: '#112233' }); n.toggleFollow('fred', 'gina'); n.post('fred', 'mon post #exp'); n.send('fred', 'gina', 'salut');
+const ex = n.exportUser('fred'); const exs = JSON.stringify(ex);
+assert.ok(ex.format === 'twitchgram-export' && ex.posts.length === 1 && ex.messages.length === 1 && !exs.includes('$') && !exs.includes('pass6'));
+const m2 = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
+const n2 = Net(m2); await n2.signup('fred', 'autre1'); await n2.signup('gina', 'autre2');
+assert.deepStrictEqual(n2.importUser('fred', exs), { posts: 1, messages: 1, following: 1 });
+assert.deepStrictEqual(n2.importUser('fred', ex), { posts: 0, messages: 0, following: 0 }); // idempotent
+assert.ok(n2.profile('fred').display === 'Fred' && n2.byUser('fred').length === 1 && n2.conversation('fred', 'gina').length === 1);
+assert.throws(() => n2.importUser('fred', '{pas du json'), /invalide/);
+assert.throws(() => n2.importUser('fred', { format: 'x' }), /export/);
+const evil = JSON.parse(exs); evil.messages = [{ from: 'gina', to: 'fred', text: 'x', at: 1 }, { from: 'gina', to: 'gina', text: 'y', at: 2 }]; evil.posts = [];
+assert.strictEqual(n2.importUser('fred', evil).messages, 1);
+// préférences d'accessibilité
+const A = require('./a11y.js'), pm = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
+assert.deepStrictEqual(A.load(pm), { theme: 'auto', size: 100 });
+assert.deepStrictEqual(A.save(pm, { theme: 'light', size: 130 }), { theme: 'light', size: 130 });
+assert.deepStrictEqual(A.save(pm, { theme: 'neon', size: 7 }), { theme: 'auto', size: 100 });
+pm.d[A.KEY] = '{cassé'; assert.strictEqual(A.load(pm).theme, 'auto');
+assert.ok(A.resolve({ theme: 'auto' }, true) === 'dark' && A.resolve({ theme: 'auto' }, false) === 'light' && A.resolve({ theme: 'dark' }, false) === 'dark');
+const doc = { documentElement: { dataset: {}, style: {} } }; A.apply({ theme: 'light', size: 115 }, doc, true);
+assert.ok(doc.documentElement.dataset.theme === 'light' && doc.documentElement.style.fontSize === '115%');
 console.log('ok');
 })().catch(e => { console.error(e); process.exit(1); });

@@ -177,6 +177,38 @@
       followers: n => Object.values(db.users).filter(u => u.following.includes(user(n).name)).map(u => u.name),
       profile: n => user(n),
       isAdmin: n => !!(db.users[(n || '').toLowerCase()] || {}).admin,
+      // export JSON des données de l'utilisateur (jamais le mot de passe)
+      exportUser(by) {
+        const u = user(by);
+        return { format: 'twitchgram-export', version: 1, exportedAt: now(),
+          profile: { name: u.name, display: u.display || '', bio: u.bio || '', avatar: u.avatar || '', banner: u.banner || '', link: u.link || '', following: u.following.slice() },
+          posts: db.posts.filter(p => p.author === u.name).map(p => ({ text: p.text, at: p.at, replyTo: p.replyTo })),
+          messages: db.messages.filter(m => m.from === u.name || m.to === u.name).map(m => ({ from: m.from, to: m.to, text: m.text, at: m.at })) };
+      },
+      // import : fusionne profil, abonnements, posts et messages (sans doublons) dans le compte courant
+      importUser(by, data) {
+        if (typeof data === 'string') { try { data = JSON.parse(data); } catch (e) { throw new Error('Fichier JSON invalide'); } }
+        need(data && data.format === 'twitchgram-export' && data.profile && Array.isArray(data.posts), 'Ce fichier n’est pas un export TwitchGram');
+        const pr = data.profile, r = { posts: 0, messages: 0, following: 0 };
+        api.updateProfile(user(by).name, pr); // relit le storage : on reprend l'objet utilisateur après
+        const u = user(by);
+        for (const f of Array.isArray(pr.following) ? pr.following : []) {
+          const t = db.users[String(f).toLowerCase()];
+          if (t && t.name !== u.name && !u.following.includes(t.name)) { u.following.push(t.name); r.following++; }
+        }
+        for (const p of data.posts) {
+          const text = String(p.text || '').trim();
+          if (!text || text.length > 280 || p.replyTo || db.posts.some(x => x.author === u.name && x.text === text && x.at === p.at)) continue;
+          db.posts.push({ id: id(), author: u.name, text, at: +p.at || now(), likes: [], replyTo: null }); r.posts++;
+        }
+        for (const m of Array.isArray(data.messages) ? data.messages : []) {
+          const text = String(m.text || '').trim(), from = db.users[String(m.from).toLowerCase()], to = db.users[String(m.to).toLowerCase()];
+          if (!text || text.length > 500 || !from || !to || (from.name !== u.name && to.name !== u.name)) continue;
+          if (db.messages.some(x => x.from === from.name && x.to === to.name && x.text === text && x.at === m.at)) continue;
+          db.messages.push({ id: id(), from: from.name, to: to.name, text, at: +m.at || now() }); r.messages++;
+        }
+        save(); return r;
+      },
       send(from, to, text) {
         text = (text || '').trim(); need(text && text.length <= 500, 'Message invalide');
         user(from); const t = user(to);
