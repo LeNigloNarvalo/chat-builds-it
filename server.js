@@ -3,7 +3,7 @@
 // et envoient leurs actions à /api/call, authentifiées par une session aléatoire (seul son hachage SHA-256 est stocké).
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
-const Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp, deviceLabel } = require('./totp.js'), { Backups } = require('./backup.js'), { Public } = require('./public.js');
+const { Store } = require('./store.js'), Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp, deviceLabel } = require('./totp.js'), { Backups } = require('./backup.js'), { Public } = require('./public.js');
 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
@@ -26,10 +26,9 @@ function createServer(opts = {}) {
     CREATE TABLE IF NOT EXISTS security_log (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, kind TEXT NOT NULL, label TEXT NOT NULL, at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS security_log_name ON security_log (name, at);`);
   for (const col of ['label TEXT', 'last_seen INTEGER', 'place TEXT']) { try { db.exec('ALTER TABLE sessions ADD COLUMN ' + col); } catch (e) { /* colonne déjà présente */ } }
-  const getRow = db.prepare('SELECT v, version FROM kv WHERE k = ?'), putRow = db.prepare(`INSERT INTO kv (k, v, version) VALUES (?, ?, 1)
-    ON CONFLICT(k) DO UPDATE SET v = excluded.v, version = version + 1`);
-  const storage = { getItem: k => { const r = getRow.get(k); return r ? r.v : null; }, setItem: (k, v) => { putRow.run(k, String(v)); if (k === Social.KEY) { announce(); setImmediate(() => { try { dev.scan(); } catch (e) { console.error('Webhooks :', e); } }); } } };
-  const version = () => (getRow.get(Social.KEY) || { version: 0 }).version;
+  const store = Store(db, Social.KEY, () => { announce(); setImmediate(() => { try { dev.scan(); } catch (e) { console.error('Webhooks :', e); } }); });
+  if (store.migrated) console.log('Stockage : données migrées vers les tables SQLite indexées.');
+  const storage = store.storage, version = store.version;
   const net = Social.Net(storage);
   const tfa = Totp(db);
   // ---- sauvegardes : une par jour (et au démarrage si la dernière date de plus de 24 h), rotation automatique ----
@@ -266,8 +265,8 @@ function createServer(opts = {}) {
         if (sub === '/delete') { backups.remove(String(b.id || '')); return send(res, 200, state()); }
         if (sub === '/restore') {
           if (b.confirm !== true) throw new Http(400, 'Confirmation requise');
-          const before = version(), r = backups.restore(String(b.id || ''));
-          db.prepare('UPDATE kv SET version = ? WHERE k = ?').run(before + 1, Social.KEY); // les clients doivent rapatrier la vue restaurée, même si elle est plus ancienne
+          const before = version(), r = backups.restore(String(b.id || '')); store.reload();
+          db.prepare('UPDATE store_state SET version = ? WHERE k = ?').run(before + 1, Social.KEY); // les clients doivent rapatrier la vue restaurée, même si elle est plus ancienne
           announce(); return send(res, 200, Object.assign(r, state()));
         }
       }
