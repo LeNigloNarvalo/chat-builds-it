@@ -1,14 +1,24 @@
-// Moteur du réseau social : tout est stocké via un « storage » injecté (localStorage ou mémoire).
+// Moteur du réseau social : les données sont PARTAGÉES via un « storage » injecté (localStorage).
+// Chaque appel relit le storage (lecture-modification-écriture) : aucune copie ancienne n'est conservée en mémoire.
 (function (root) {
   const KEY = 'twitchgram.v1';
   const empty = () => ({ users: {}, posts: [], messages: [], notifs: [], seq: 1 });
 
-  function hash(s) { let h = 5381; for (const c of s) h = ((h * 33) ^ c.charCodeAt(0)) >>> 0; return h.toString(36); }
+  const RESERVED = 'streamer';
+  const subtle = () => (root.crypto || require('crypto').webcrypto).subtle;
+  const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+  const sha = async s => hex(await subtle().digest('SHA-256', new TextEncoder().encode(s)));
+  const randHex = n => hex((root.crypto || require('crypto').webcrypto).getRandomValues(new Uint8Array(n)));
+  // mot de passe : jamais en clair, « sel$SHA-256(sel + mot de passe) »
+  async function hashPw(pw, salt) { salt = salt || randHex(16); return salt + '$' + await sha(salt + pw); }
 
   function Net(storage, now) {
     now = now || Date.now;
     let db;
-    try { db = JSON.parse(storage.getItem(KEY)) || empty(); } catch (e) { db = empty(); }
+    const load = () => {
+      try { db = Object.assign(empty(), JSON.parse(storage.getItem(KEY))); } catch (e) { db = empty(); }
+      return db;
+    };
     const save = () => storage.setItem(KEY, JSON.stringify(db));
     const id = () => db.seq++;
     const need = (c, m) => { if (!c) throw new Error(m); };
@@ -18,20 +28,33 @@
       db.notifs.push({ id: id(), to, from, type, postId: postId || null, at: now(), read: false });
     };
 
-    return {
+    const scoreOf = p => { const h = Math.max(0, now() - p.at) / 36e5; return (1 + p.likes.length * 2 + db.posts.filter(r => r.replyTo === p.id).length * 3) * Math.pow(0.5, h / 3); };
+
+    const api = {
       db: () => db,
-      signup(name, password, bio) {
+      async signup(name, password, bio) {
         name = (name || '').trim();
         need(/^[a-zA-Z0-9_]{3,20}$/.test(name), 'Pseudo : 3-20 caractères (lettres, chiffres, _)');
+        need(name.toLowerCase() !== RESERVED, 'Pseudo réservé');
         need((password || '').length >= 4, 'Mot de passe trop court (4 min)');
+        const pass = await hashPw(password);
+        load(); // relire après l'attente : un autre visiteur a pu s'inscrire entre-temps
         need(!db.users[name.toLowerCase()], 'Pseudo déjà pris');
-        db.users[name.toLowerCase()] = { name, pass: hash(password), bio: (bio || '').slice(0, 160), following: [], joined: now() };
+        db.users[name.toLowerCase()] = { name, pass, bio: (bio || '').slice(0, 160), following: [], joined: now() };
         save(); return name;
       },
-      login(name, password) {
-        const u = db.users[(name || '').toLowerCase()];
-        need(u && u.pass === hash(password || ''), 'Identifiants invalides');
+      async login(name, password) {
+        const u = load().users[(name || '').toLowerCase()];
+        need(u && u.pass.includes('$') && u.pass === await hashPw(password || '', u.pass.split('$')[0]), 'Identifiants invalides');
         return u.name;
+      },
+      // vue stream : ouvre la session d'un VRAI compte « Streamer » (créé au besoin, mot de passe aléatoire jamais conservé)
+      async ensureStreamer() {
+        const pass = await hashPw(randHex(24));
+        const u = load().users[RESERVED];
+        if (u) { need(u.admin, 'Compte Streamer invalide'); return u.name; }
+        db.users[RESERVED] = { name: 'Streamer', pass, bio: 'Compte du stream 🔴', following: [], joined: now(), admin: true, display: 'Streamer', avatar: '#9146ff', banner: 'grad:0' };
+        save(); return 'Streamer';
       },
       post(author, text, replyTo) {
         text = (text || '').trim();
@@ -84,15 +107,15 @@
         return Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 5);
       },
       // score d'un post : likes + réponses, pondérés par la fraîcheur (demi-vie ~3 h)
-      score(p) { const h = Math.max(0, now() - p.at) / 36e5; return (1 + p.likes.length * 2 + db.posts.filter(r => r.replyTo === p.id).length * 3) * Math.pow(0.5, h / 3); },
+      score: p => scoreOf(p),
       // classement des posts « en tendance », meilleur score d'abord
       ranking(limit) {
-        return db.posts.filter(p => !p.replyTo).map(p => ({ post: p, score: this.score(p) })).sort((a, b) => b.score - a.score).slice(0, limit || 5);
+        return db.posts.filter(p => !p.replyTo).map(p => ({ post: p, score: scoreOf(p) })).sort((a, b) => b.score - a.score).slice(0, limit || 5);
       },
       // hashtags du moment : score = somme des scores des posts qui les contiennent
       trendingLive(limit) {
         const c = {};
-        for (const p of db.posts) for (const t of new Set((p.text.match(/#\w+/g) || []).map(x => x.toLowerCase()))) { const e = c[t] || (c[t] = { tag: t, count: 0, score: 0 }); e.count++; e.score += this.score(p); }
+        for (const p of db.posts) for (const t of new Set((p.text.match(/#\w+/g) || []).map(x => x.toLowerCase()))) { const e = c[t] || (c[t] = { tag: t, count: 0, score: 0 }); e.count++; e.score += scoreOf(p); }
         return Object.values(c).sort((a, b) => b.score - a.score).slice(0, limit || 8);
       },
       // profil éditable : pseudo affiché, bio, couleur d'avatar, bannière (URL d'image ou dégradé), lien web
@@ -110,26 +133,6 @@
       followers: n => Object.values(db.users).filter(u => u.following.includes(user(n).name)).map(u => u.name),
       profile: n => user(n),
       isAdmin: n => !!(db.users[(n || '').toLowerCase()] || {}).admin,
-      // session démo du stream (?stream=1) : compte admin + données d'exemple, idempotent
-      seedDemo() {
-        if (db.users.admin) return 'Admin';
-        const t = now();
-        const mk = (name, bio, extra) => (db.users[name.toLowerCase()] = Object.assign({ name, pass: hash('demo'), bio, following: [], joined: t - 864e5 * 30 }, extra));
-        mk('Admin', 'Compte de démonstration administrateur 👑', { admin: true, display: 'Admin du Stream', avatar: '#9146ff', banner: 'grad:0', link: 'https://twitch.tv' });
-        mk('Luna', 'Streameuse & fan de pixel art 🎨', {}); mk('Pixel', 'Je code en direct sur Twitch 💻', {}); mk('Neo', 'Open source, café et chat 🐱', {});
-        db.users.admin.following = ['Luna', 'Pixel', 'Neo']; db.users.luna.following = ['Admin', 'Pixel']; db.users.pixel.following = ['Admin']; db.users.neo.following = ['Admin', 'Luna'];
-        const mkPost = (author, text, mins, likes, replyTo) => { const p = { id: id(), author, text, at: t - mins * 60000, likes, replyTo: replyTo || null }; db.posts.push(p); return p; };
-        const a = mkPost('Luna', 'Bienvenue sur TwitchGram ! 🎉 #twitch #opensource', 120, ['Admin', 'Pixel', 'Neo']);
-        mkPost('Pixel', 'Ce réseau social a été voté par le chat en direct 🔥 #twitch', 90, ['Admin', 'Luna']);
-        const c = mkPost('Neo', 'Qui est là pour le stream de ce soir ? @Admin', 45, ['Luna']);
-        mkPost('Admin', 'En tant qu’admin, je peux modérer tous les posts 👑 #admin', 30, ['Luna', 'Neo']);
-        mkPost('Luna', 'Merci le chat, vous êtes incroyables ! #opensource', 15, ['Admin']);
-        mkPost('Pixel', 'Bravo, super idée !', 100, ['Luna'], a.id);
-        mkPost('Admin', 'Oui, on est là ! 🙌', 40, [], c.id);
-        db.messages.push({ id: id(), from: 'Luna', to: 'Admin', text: 'Salut ! Prêt pour le live ?', at: t - 600000 }, { id: id(), from: 'Admin', to: 'Luna', text: 'Toujours 😎', at: t - 540000 });
-        db.notifs.push({ id: id(), to: 'Admin', from: 'Luna', type: 'like', postId: db.posts[3].id, at: t - 300000, read: false }, { id: id(), to: 'Admin', from: 'Neo', type: 'mention', postId: c.id, at: t - 2700000, read: false }, { id: id(), to: 'Admin', from: 'Pixel', type: 'follow', postId: null, at: t - 3600000, read: false });
-        save(); return 'Admin';
-      },
       send(from, to, text) {
         text = (text || '').trim(); need(text && text.length <= 500, 'Message invalide');
         user(from); const t = user(to);
@@ -146,8 +149,12 @@
         return l;
       },
     };
+    // chaque méthode relit d'abord le storage partagé (jamais de cache périmé)
+    for (const k of Object.keys(api)) { const f = api[k]; api[k] = function () { load(); return f.apply(api, arguments); }; }
+    load();
+    return api;
   }
 
-  const api = { Net, KEY };
-  if (typeof module !== 'undefined') module.exports = api; else root.Social = api;
+  const exported = { Net, KEY };
+  if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);

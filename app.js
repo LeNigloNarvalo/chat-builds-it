@@ -1,10 +1,11 @@
-// Vue stream (?stream=1) : session démo admin en mémoire, sans toucher aux vraies données
+// Vraie application partagée : les données (twitchgram.v1) sont communes à tous les visiteurs et au stream ;
+// seule la session (app.session) reste propre à chaque visiteur. Vue stream (?stream=1) : session du vrai compte « Streamer ».
 const STREAM = new URLSearchParams(location.search).get('stream') === '1';
-const mem = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; }, removeItem(k) { delete this.d[k]; } };
-const store = STREAM ? mem : localStorage;
+const SESSION = 'app.session';
+const store = localStorage;
 const net = Social.Net(store);
-let me = STREAM ? net.seedDemo() : localStorage.getItem('twitchgram.me');
-if (me) { try { net.profile(me); } catch (e) { me = null; } }
+let me = store.getItem(SESSION);
+if (me) { try { net.profile(me); } catch (e) { me = null; store.removeItem(SESSION); } }
 let view = { page: 'feed' };
 const $ = s => document.querySelector(s);
 const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -19,7 +20,17 @@ const peopleList = names => names.map(n => `<div class="card person" data-user="
 const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'à l’instant' : m < 60 ? m + ' min' : m < 1440 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' j'; };
 const go = (page, arg) => { view = { page, arg }; render(); };
 let err = '';
-const attempt = f => { try { err = ''; f(); } catch (e) { err = e.message; } render(); };
+const attempt = async f => { try { err = ''; await f(); } catch (e) { err = e.message; } render(); };
+// re-rendu sans perdre la saisie en cours (changement venu d'un autre visiteur)
+function refresh() {
+  if (me) { try { net.profile(me); } catch (e) { me = null; store.removeItem(SESSION); } }
+  const a = document.activeElement, keep = [...document.querySelectorAll('#app input[id],#app textarea[id]')].map(x => [x.id, x.value]);
+  render();
+  for (const [id, val] of keep) { const x = document.getElementById(id); if (x && !x.value) x.value = val; }
+  if (a && a.id && document.getElementById(a.id)) document.getElementById(a.id).focus();
+}
+window.addEventListener('storage', ev => { if (ev.key === null || ev.key === Social.KEY) refresh(); });
+const openSession = name => { me = name; store.setItem(SESSION, me); };
 
 function postHTML(p, thread) {
   const liked = me && p.likes.includes(me), n = net.replies(p.id).length;
@@ -92,9 +103,9 @@ document.addEventListener('click', ev => {
   const d = ev.target.closest('*[data-page],*[data-like],*[data-open],*[data-del],*[data-send],*[data-user],*[data-search],*[data-login],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile]');
   if (!d) return;
   const D = d.dataset, v = id => ($(id) || {}).value;
-  if ('login' in D) attempt(() => { me = net.login(v('#u'), v('#pw')); store.setItem('twitchgram.me', me); });
-  else if ('signup' in D) attempt(() => { me = net.signup(v('#u'), v('#pw'), v('#bio')); store.setItem('twitchgram.me', me); });
-  else if ('logout' in D) { me = null; store.removeItem('twitchgram.me'); if (STREAM) me = net.seedDemo(); go('feed'); }
+  if ('login' in D) attempt(async () => openSession(await net.login(v('#u'), v('#pw'))));
+  else if ('signup' in D) attempt(async () => openSession(await net.signup(v('#u'), v('#pw'), v('#bio'))));
+  else if ('logout' in D) { me = null; store.removeItem(SESSION); if (STREAM) attempt(async () => openSession(await net.ensureStreamer())); go('feed'); }
   else if ('page' in D) { err = ''; go(D.page); }
   else if ('send' in D) attempt(() => net.post(me, v('#txt'), D.send ? +D.send : null));
   else if ('like' in D) attempt(() => net.toggleLike(me, +D.like));
@@ -111,16 +122,6 @@ document.addEventListener('click', ev => {
   else if ('dosearch' in D) go('search', v('#q'));
 });
 render();
-// « live » : la page Tendances se rafraîchit seule ; en vue stream, des spectateurs simulés likent et postent
-const BOTS = ['Luna', 'Pixel', 'Neo'], TAGS = ['#twitch', '#opensource', '#live', '#code', '#pixelart', '#gg'];
-const pick = l => l[Math.floor(Math.random() * l.length)];
-setInterval(() => {
-  if (!me) return;
-  if (STREAM) try {
-    const bot = pick(BOTS), roots = net.explore();
-    if (Math.random() < 0.3) net.post(bot, `${pick(['Ça chauffe', 'Quel live', 'Trop fort'])} ! ${pick(TAGS)}`);
-    else if (roots.length) { const p = pick(roots); if (!p.likes.includes(bot)) net.toggleLike(bot, p.id); }
-  } catch (e) {}
-  if (view.page === 'trends') render();
-}, 3000);
-if (STREAM) go('trends');
+// « live » : la page Tendances se rafraîchit seule (les données viennent du stockage partagé)
+setInterval(() => { if (me && view.page === 'trends') refresh(); }, 3000);
+if (STREAM) attempt(async () => { openSession(await net.ensureStreamer()); view = { page: 'trends' }; });
