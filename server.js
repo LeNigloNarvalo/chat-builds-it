@@ -3,7 +3,7 @@
 // et envoient leurs actions à /api/call, authentifiées par une session aléatoire (seul son hachage SHA-256 est stocké).
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
-const { Store } = require('./store.js'), Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp, deviceLabel } = require('./totp.js'), { Backups } = require('./backup.js'), { Public } = require('./public.js'), { config, Ops } = require('./ops.js');
+const { Store } = require('./store.js'), Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp, deviceLabel } = require('./totp.js'), { Passkeys } = require('./passkeys.js'), { Backups } = require('./backup.js'), { Public } = require('./public.js'), { config, Ops } = require('./ops.js');
 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
@@ -31,7 +31,9 @@ function createServer(opts = {}) {
   if (store.migrated) console.log('Stockage : données migrées vers les tables SQLite indexées.');
   const storage = store.storage, version = store.version;
   const net = Social.Net(storage);
-  const tfa = Totp(db);
+  const tfa = Totp(db), passkeys = Passkeys(db);
+  // domaine (rpId) et origine attendus pour WebAuthn : l'adresse publique configurée, sinon l'en-tête Host de la requête
+  const rpOf = req => { const pu = process.env.PUBLIC_URL || opts.publicUrl; if (pu) { const u = new URL(pu); return { id: u.hostname, origin: u.origin }; } return { id: String(req.headers.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '') }; };
   // ---- sauvegardes : une par jour (et au démarrage si la dernière date de plus de 24 h), rotation automatique ----
   const backups = dbFile === ':memory:' ? null : Backups(db, opts.backupDir || cfg.backupDir || path.join(path.dirname(dbFile), 'backups'), { keep: opts.backupKeep || cfg.backupKeep, everyMs: opts.backupEveryMs || cfg.backupEveryHours * 3600000 });
   const dailyBackup = () => { try { backups.daily(); } catch (e) { fail('Sauvegarde automatique', e); } };
@@ -56,7 +58,7 @@ function createServer(opts = {}) {
   // suppressions de compte dont le délai de grâce est écoulé (lancé après l'initialisation complète, jamais au démarrage)
   const reap = () => {
     try {
-      for (const n of net.dueDeletions()) if (net.finalizeDeletion(n)) { delV.run(n.toLowerCase(), n.toLowerCase()); delUser.run(n); db.prepare('DELETE FROM security_log WHERE name = ?').run(n); tfa.forget(n); dev.forget(n); }
+      for (const n of net.dueDeletions()) if (net.finalizeDeletion(n)) { delV.run(n.toLowerCase(), n.toLowerCase()); delUser.run(n); db.prepare('DELETE FROM security_log WHERE name = ?').run(n); tfa.forget(n); passkeys.forget(n); dev.forget(n); }
     } catch (e) { fail('Suppression de compte', e); }
   };
   const reaper = setInterval(reap, 5000); reaper.unref();
@@ -170,7 +172,7 @@ function createServer(opts = {}) {
       const last = backups && backups.list().find(b => b.kind === 'auto'), late = !!backups && !!last && Date.now() - last.at > 2 * backups.every() + 3600000;
       return send(res, dbOk ? 200 : 503, { ok: dbOk, db: dbOk, backups: backups ? (late ? 'late' : 'ok') : 'off', uptime: ops.metrics().uptime });
     }
-    if (/^POST \/api\/(signup|login|stream-session|forgot|reset|verify-email|secure-account)$/.test(route) && limited(req)) throw new Http(429, 'Trop de requêtes : réessayez dans une minute');
+    if (/^POST \/api\/(signup|login|stream-session|forgot|reset|verify-email|secure-account|passkey-login-options|passkey-login)$/.test(route) && limited(req)) throw new Http(429, 'Trop de requêtes : réessayez dans une minute');
     if (route === 'POST /api/signup') { const b = await body(req); const name = await net.signup(b.name, b.password, b.bio); return send(res, 200, openSession(name, req, 'signup')); }
     if (route === 'POST /api/login') {
       const b = await body(req); let name;
@@ -184,6 +186,13 @@ function createServer(opts = {}) {
       if (!tfa.verify(name, b.code)) { secLog(name, 'mfa_fail', req); checkBurst(name, req); throw new Http(400, 'Code incorrect'); }
       checkNewDevice(name, req);
       return send(res, 200, Object.assign(openSession(name, req, 'login'), b.trust ? { trusted: tfa.trust(name, req.headers['user-agent']) } : {}));
+    }
+    // connexion par clé d'accès : sans mot de passe ni code (la clé + l'empreinte / Face ID valent deux facteurs)
+    if (route === 'POST /api/passkey-login-options') return send(res, 200, passkeys.loginOptions(rpOf(req)));
+    if (route === 'POST /api/passkey-login') {
+      const b = await body(req); let name;
+      try { name = passkeys.login(b.credential, rpOf(req)); } catch (e) { throw new Http(400, e.message); }
+      checkNewDevice(name, req); return send(res, 200, openSession(name, req, 'passkey_login'));
     }
     // vue du stream : ouvre le vrai compte « Streamer » SANS mot de passe, uniquement depuis la machine du serveur
     if (route === 'POST /api/stream-session') {
@@ -340,6 +349,22 @@ function createServer(opts = {}) {
       }
       throw new Http(404, 'Route inconnue');
     }
+    // ---- clés d'accès (passkeys) : enregistrer, nommer, révoquer ----
+    if (url.pathname.startsWith('/api/passkeys')) {
+      const sub = url.pathname.slice(13);
+      if (route === 'GET /api/passkeys') return send(res, 200, { keys: passkeys.list(me.name) });
+      if (req.method === 'POST') {
+        if (limited(req)) throw new Http(429, 'Trop de requêtes : réessayez dans une minute');
+        const b = await body(req);
+        try {
+          if (sub === '/options') return send(res, 200, passkeys.registerOptions(me.name, rpOf(req)));
+          if (sub === '/register') { const k = passkeys.register(me.name, b.credential, b.label, rpOf(req)); secLog(me.name, 'passkey_added', req); return send(res, 200, { key: k, keys: passkeys.list(me.name) }); }
+          if (sub === '/rename') { passkeys.rename(me.name, b.id, b.label); return send(res, 200, { keys: passkeys.list(me.name) }); }
+          if (sub === '/revoke') { passkeys.revoke(me.name, b.id); secLog(me.name, 'passkey_removed', req); return send(res, 200, { keys: passkeys.list(me.name) }); }
+        } catch (e) { throw e instanceof Http ? e : new Http(400, e.message); }
+      }
+      throw new Http(404, 'Route inconnue');
+    }
     if (route === 'GET /api/sessions') return send(res, 200, { sessions: sessionsOf(me.name, me.hash), log: listL.all(me.name) });
     if (route === 'POST /api/session-revoke') { // révoque un appareil (jamais celui-ci : pour cela, « Quitter »)
       const b = await body(req), id = String(b.id || ''), s = /^[0-9a-f]{16}$/.test(id) && listS.all(me.name, Date.now()).find(r => r.hash.startsWith(id));
@@ -353,7 +378,7 @@ function createServer(opts = {}) {
       const b = await body(req); await net.changePassword(me.name, String(b.oldPw || ''), String(b.newPw || ''));
       delUser.run(me.name); tfa.revokeDevices(me.name); return send(res, 200, openSession(me.name, req, 'password_change')); // les autres appareils sont déconnectés
     }
-    if (route === 'POST /api/delete-account') { const b = await body(req); await net.deleteAccount(me.name, String(b.password || '')); delV.run(me.name.toLowerCase(), me.name.toLowerCase()); delUser.run(me.name); db.prepare('DELETE FROM security_log WHERE name = ?').run(me.name); tfa.forget(me.name); dev.forget(me.name); return send(res, 200, { ok: true }); }
+    if (route === 'POST /api/delete-account') { const b = await body(req); await net.deleteAccount(me.name, String(b.password || '')); delV.run(me.name.toLowerCase(), me.name.toLowerCase()); delUser.run(me.name); db.prepare('DELETE FROM security_log WHERE name = ?').run(me.name); tfa.forget(me.name); passkeys.forget(me.name); dev.forget(me.name); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/read-notifications') { net.notifications(me.name, true); return send(res, 200, { ok: true }); }
     if (route === 'POST /api/call') {
       const b = await body(req);

@@ -246,7 +246,7 @@ async function tfaLoad() {
 }
 // sessions actives et journal de sécurité (données du serveur, propres au compte)
 const ses = { data: null, loaded: false, msg: '' };
-const SEC_EVENTS = { login: '🔓 Connexion', login_fail: '⚠️ Échec de connexion', mfa_fail: '⚠️ Mauvais code de double authentification', signup: '🎉 Création du compte', logout: '🚪 Déconnexion', logout_all: '🚪 Déconnexion de tous les appareils', password_change: '🔑 Mot de passe changé', password_reset: '🔑 Mot de passe réinitialisé par e-mail', suspicious_alert: '🚨 Alerte de connexion suspecte envoyée par e-mail', session_revoked: '🛑 Appareil révoqué', sessions_revoked: '🛑 Autres appareils révoqués' };
+const SEC_EVENTS = { login: '🔓 Connexion', login_fail: '⚠️ Échec de connexion', mfa_fail: '⚠️ Mauvais code de double authentification', signup: '🎉 Création du compte', logout: '🚪 Déconnexion', logout_all: '🚪 Déconnexion de tous les appareils', password_change: '🔑 Mot de passe changé', password_reset: '🔑 Mot de passe réinitialisé par e-mail', suspicious_alert: '🚨 Alerte de connexion suspecte envoyée par e-mail', passkey_login: '🔑 Connexion par clé d’accès', passkey_added: '🔑 Clé d’accès ajoutée', passkey_removed: '🔑 Clé d’accès révoquée', session_revoked: '🛑 Appareil révoqué', sessions_revoked: '🛑 Autres appareils révoqués' };
 async function sesLoad() {
   try { ses.data = await sync.get('/api/sessions'); } catch (e) { err = e.message; }
   ses.loaded = true; if (view.page === 'security' || view.page === 'privacy') refresh();
@@ -370,6 +370,40 @@ document.addEventListener('click', ev => {
   else if (a === 'ack') { tfa.codes = null; render(); }
   else if (a === 'copy') { try { navigator.clipboard.writeText(tfa.codes.join('\n')); tfa.msg = 'Codes copiés ✔'; } catch (x) { tfa.msg = 'Sélectionnez les codes pour les copier'; } render(); }
   else if (a === 'download') download(`cornichon-${me}-codes-de-secours.txt`, `Codes de secours Cornichon (@${me}) — chacun ne sert qu'une fois\n\n${tfa.codes.join('\n')}\n`);
+});
+// ---- clés d'accès (passkeys, WebAuthn) : empreinte / Face ID à la place du mot de passe ; complète le TOTP ----
+const pkBuf = s => Uint8Array.from(atob(String(s).replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)).buffer;
+const pkStr = b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const pkSupported = () => !!(window.PublicKeyCredential && navigator.credentials);
+async function pkCreate(o) {
+  const c = await navigator.credentials.create({ publicKey: Object.assign({}, o, { challenge: pkBuf(o.challenge), user: Object.assign({}, o.user, { id: pkBuf(o.user.id) }), excludeCredentials: o.excludeCredentials.map(x => Object.assign({}, x, { id: pkBuf(x.id) })) }) });
+  return { id: c.id, type: c.type, response: { clientDataJSON: pkStr(c.response.clientDataJSON), attestationObject: pkStr(c.response.attestationObject) } };
+}
+async function pkGet(o) {
+  const c = await navigator.credentials.get({ publicKey: Object.assign({}, o, { challenge: pkBuf(o.challenge) }) });
+  return { id: c.id, type: c.type, response: { clientDataJSON: pkStr(c.response.clientDataJSON), authenticatorData: pkStr(c.response.authenticatorData), signature: pkStr(c.response.signature) } };
+}
+const pk = { keys: null, loaded: false, msg: '' };
+async function pkLoad() {
+  try { pk.keys = (await sync.get('/api/passkeys')).keys; } catch (e) { err = e.message; }
+  pk.loaded = true; if (view.page === 'settings') { const k = document.activeElement && document.activeElement.id; if (!/^pk-/.test(k || '')) refresh(); }
+}
+function pkCard() {
+  if (!pk.loaded) { pkLoad(); return '<div class="card"><h2>🔑 Clés d’accès (passkeys)</h2><p class="mut" role="status">Chargement…</p></div>'; }
+  const keys = pk.keys || [];
+  return `<div class="card" role="group" aria-labelledby="h-pk"><h2 id="h-pk">🔑 Clés d’accès (passkeys)</h2>
+    <p class="mut">Connectez-vous sans mot de passe, par empreinte digitale ou Face ID. Ces clés s’ajoutent à la double authentification TOTP : elles ne la remplacent pas.</p>
+    ${keys.map(k => `<div class="card"><label>Nom de la clé<input id="pk-name-${esc(k.id)}" value="${esc(k.label)}" maxlength="40"></label> <span class="mut">ajoutée ${dt(k.created)} · ${k.last_used ? 'dernière utilisation ' + dt(k.last_used) : 'jamais utilisée'}</span>
+      <button data-pk="rename:${esc(k.id)}">✏️ Renommer</button> <button data-pk="rm:${esc(k.id)}" aria-label="Révoquer la clé ${esc(k.label)}">🗑️ Révoquer</button></div>`).join('') || '<p class="mut">Aucune clé d’accès enregistrée.</p>'}
+    ${pkSupported() ? `<label>Nom de la nouvelle clé<input id="pk-new" maxlength="40" placeholder="Ex. : MacBook, téléphone"></label> <button data-pk="add">➕ Ajouter une clé d’accès</button>` : '<p class="err">Ce navigateur ne gère pas les clés d’accès.</p>'}
+    ${pk.msg ? `<p class="ok" role="status">${esc(pk.msg)}</p>` : ''}${err ? `<p class="err" role="alert">${esc(err)}</p>` : ''}</div>`;
+}
+document.addEventListener('click', ev => {
+  const b = ev.target.closest('[data-pk]'); if (!b) return;
+  const a = b.dataset.pk, id = a.includes(':') ? a.slice(a.indexOf(':') + 1) : '';
+  if (a === 'add') attempt(async () => { const cred = await pkCreate(await sync.send('/api/passkeys/options', {})); pk.keys = (await sync.send('/api/passkeys/register', { credential: cred, label: ($('#pk-new') || {}).value })).keys; pk.msg = 'Clé d’accès ajoutée ✔'; });
+  else if (a.startsWith('rename:')) attempt(async () => { pk.keys = (await sync.send('/api/passkeys/rename', { id, label: ($('[id="pk-name-' + id + '"]') || {}).value })).keys; pk.msg = 'Clé renommée ✔'; });
+  else if (a.startsWith('rm:')) { if (confirm('Révoquer cette clé d’accès ? Elle ne permettra plus de se connecter.')) attempt(async () => { pk.keys = (await sync.send('/api/passkeys/revoke', { id })).keys; pk.msg = 'Clé révoquée ✔'; }); }
 });
 function langCard() {
   const eff = I18n.get(), now = Date.now();
@@ -743,7 +777,7 @@ function render() {
   if (!me) {
     nav.innerHTML = '';
     app.innerHTML = `<div class="card"><h2>${t('auth.welcome')}</h2><input id="u" placeholder="${t('auth.user')}"><input id="pw" type="password" placeholder="${t('auth.password')}"><input id="bio" placeholder="${t('auth.bio')}">
-    <button data-login>${t('auth.login')}</button> <button data-signup>${t('auth.signup')}</button> <button class="lnk" data-forgot>${t('auth.forgot')}</button><p class="err">${esc(err)}</p>${linkMsg ? `<p class="ok" role="status">${esc(linkMsg)}</p>` : ''}</div>`;
+    <button data-login>${t('auth.login')}</button> <button data-signup>${t('auth.signup')}</button> <button class="lnk" data-forgot>${t('auth.forgot')}</button><br><button data-pklogin ${window.PublicKeyCredential ? '' : 'disabled title="Clés d’accès non prises en charge par ce navigateur"'}>🔑 Se connecter avec une clé d’accès</button><p class="err">${esc(err)}</p>${linkMsg ? `<p class="ok" role="status">${esc(linkMsg)}</p>` : ''}</div>`;
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
@@ -858,6 +892,7 @@ function render() {
       ${langCard()}
       ${notifCard()}
       ${tfaCard()}
+      ${pkCard()}
       <div class="card" role="group" aria-labelledby="h-data"><h2 id="h-data">📦 Mes données</h2><p class="mut">Exporte ton profil, tes posts et tes messages en JSON (sans mot de passe), ou importe un export pour les fusionner dans ton compte.</p>
       <div class="row"><button data-export>⬇️ Exporter en JSON</button><label class="mut">Importer un fichier <input id="imp-file" type="file" accept="application/json,.json"></label></div>
       <label for="imp-txt">Ou colle le JSON ici</label><textarea id="imp-txt" class="json" placeholder='{"format":"cornichon-export",…}'></textarea><button data-import>⬆️ Importer</button>
@@ -1249,6 +1284,7 @@ document.addEventListener('click', ev => {
   else if ('dvclose' in D) { dev.detail = null; render(); }
   else if ('diag' in D) runDiag();
   else if ('login' in D) attempt(async () => { const name = v('#u'), pw = v('#pw'), r = await net.login(name, pw); if (r && r.mfa) mfa = { name, password: pw }; else openSession(r); });
+  else if ('pklogin' in D) attempt(async () => { openSession(await net.passkeyLogin(await pkGet(await net.passkeyOptions()))); });
   else if ('mfago' in D) attempt(async () => { const r = await net.login(mfa.name, mfa.password, v('#mfa-code'), !!($('#mfa-trust') || {}).checked); mfa = null; openSession(r); });
   else if ('mfaback' in D) { mfa = null; err = ''; render(); }
   else if ('signup' in D) attempt(async () => { openSession(await net.signup(v('#u'), v('#pw'), v('#bio'))); view = { page: 'welcome', arg: 0 }; });

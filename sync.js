@@ -52,6 +52,9 @@
       if (j.trusted) trustedSet(j.name, j.trusted);
       return open(j);
     };
+    // connexion par clé d'accès : le navigateur signe un défi du serveur (empreinte / Face ID), aucun mot de passe n'est envoyé
+    net.passkeyOptions = () => req('/api/passkey-login-options', 'POST', {});
+    net.passkeyLogin = async credential => open(await req('/api/passkey-login', 'POST', { credential }));
     net.trustDevice = (name, t) => trustedSet(name, t);
     net.ensureStreamer = async () => open(await req('/api/stream-session', 'POST', {}));
     net.changePassword = async (by, oldPw, newPw) => { await open(await req('/api/password', 'POST', { oldPw, newPw })); };

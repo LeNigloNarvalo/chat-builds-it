@@ -237,6 +237,47 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   const s3 = createServer({ db: ':memory:' }); await new Promise(ok => s3.listen(0, '127.0.0.1', ok));
   const b3 = 'http://127.0.0.1:' + s3.address().port, tk = (await (await fetch(b3 + '/api/signup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'carol', password: 'secret1' }) })).json()).token;
   const r3 = await fetch(b3 + '/api/dev/hook', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tk }, body: JSON.stringify({ url: 'http://127.0.0.1:9/x', events: ['follow'] }) }); assert.strictEqual(r3.status, 400);
+  // clés d'accès (WebAuthn) : authentificateur simulé (ES256), enregistrement, connexion sans mot de passe, renommage, révocation
+  {
+    const crypto = require('crypto'), pc = (p, tok, d) => call(p, tok, d), b64u = b => Buffer.from(b).toString('base64url'), sha = b => crypto.createHash('sha256').update(b).digest();
+    const rpId = '127.0.0.1', origin = base, { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' }), jwk = publicKey.export({ format: 'jwk' });
+    const credId = crypto.randomBytes(32), cose = Buffer.concat([Buffer.from([0xa5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01, 0x21, 0x58, 0x20]), Buffer.from(jwk.x, 'base64url'), Buffer.from([0x22, 0x58, 0x20]), Buffer.from(jwk.y, 'base64url')]);
+    const flags = (f, n) => { const b = Buffer.alloc(5); b[0] = f; b.writeUInt32BE(n, 1); return b; };
+    const attObj = authData => Buffer.concat([Buffer.from([0xa3, 0x63]), Buffer.from('fmt'), Buffer.from([0x64]), Buffer.from('none'), Buffer.from([0x67]), Buffer.from('attStmt'), Buffer.from([0xa0, 0x68]), Buffer.from('authData'), Buffer.from([0x58, authData.length]), authData]);
+    const create = (o, over) => {
+      const cd = Buffer.from(JSON.stringify(Object.assign({ type: 'webauthn.create', challenge: o.challenge, origin }, over)));
+      const ad = Buffer.concat([sha(rpId), flags(0x45, 0), Buffer.alloc(16), Buffer.from([0, credId.length]), credId, cose]);
+      return { id: b64u(credId), type: 'public-key', response: { clientDataJSON: b64u(cd), attestationObject: b64u(attObj(ad)) } };
+    };
+    const assert_ = (o, counter, over) => {
+      const cd = Buffer.from(JSON.stringify(Object.assign({ type: 'webauthn.get', challenge: o.challenge, origin }, over))), ad = Buffer.concat([sha(rpId), flags(0x05, counter)]);
+      const sig = crypto.sign('sha256', Buffer.concat([ad, sha(cd)]), privateKey);
+      return { id: b64u(credId), type: 'public-key', response: { clientDataJSON: b64u(cd), authenticatorData: b64u(ad), signature: b64u(sig) } };
+    };
+    const u = await pc('/api/signup', null, { name: 'passy', password: 'secret1' }), tk = u.token;
+    assert.strictEqual((await pc('/api/passkeys')).status, 401);
+    assert.deepStrictEqual((await pc('/api/passkeys', tk)).keys, []);
+    let o = await pc('/api/passkeys/options', tk, {}); assert.strictEqual(o.rp.id, rpId); assert.strictEqual(o.authenticatorSelection.userVerification, 'required');
+    assert.strictEqual((await pc('/api/passkeys/register', tk, { credential: create(o, { origin: 'http://evil.test' }) })).status, 400, 'mauvaise origine');
+    o = await pc('/api/passkeys/options', tk, {});
+    const reg = await pc('/api/passkeys/register', tk, { credential: create(o), label: 'Mon Mac' }); assert.strictEqual(reg.status, 200); assert.strictEqual(reg.keys[0].label, 'Mon Mac');
+    assert.strictEqual((await pc('/api/passkeys/register', tk, { credential: create(o) })).status, 400, 'défi à usage unique');
+    // connexion sans mot de passe
+    let lo = await pc('/api/passkey-login-options', null, {}); assert.strictEqual(lo.rpId, rpId);
+    const li = await pc('/api/passkey-login', null, { credential: assert_(lo, 1) }); assert.strictEqual(li.status, 200); assert.strictEqual(li.name, 'passy'); assert.strictEqual((await pc('/api/state', li.token)).status, 200);
+    assert.strictEqual((await pc('/api/passkey-login', null, { credential: assert_(lo, 2) })).status, 400, 'défi rejoué');
+    lo = await pc('/api/passkey-login-options', null, {}); assert.strictEqual((await pc('/api/passkey-login', null, { credential: assert_(lo, 1) })).status, 400, 'compteur non croissant');
+    lo = await pc('/api/passkey-login-options', null, {}); const bad = assert_(lo, 3); bad.response.signature = b64u(Buffer.alloc(70, 1)); assert.strictEqual((await pc('/api/passkey-login', null, { credential: bad })).status, 400, 'signature fausse');
+    lo = await pc('/api/passkey-login-options', null, {}); assert.strictEqual((await pc('/api/passkey-login', null, { credential: assert_(lo, 4, { origin: 'http://evil.test' }) })).status, 400);
+    // avec TOTP actif, la clé d'accès ouvre quand même la session (deux facteurs : possession + biométrie)
+    const su = await pc('/api/2fa/setup', tk, {}); await pc('/api/2fa/enable', tk, { code: require('./totp.js').code(su.secret) });
+    lo = await pc('/api/passkey-login-options', null, {}); assert.strictEqual((await pc('/api/passkey-login', null, { credential: assert_(lo, 5) })).status, 200);
+    // renommer, révoquer : la clé ne marche plus
+    assert.strictEqual((await pc('/api/passkeys/rename', tk, { id: reg.key.id, label: 'Téléphone' })).keys[0].label, 'Téléphone');
+    assert.strictEqual((await pc('/api/passkeys/revoke', tk, { id: reg.key.id })).keys.length, 0);
+    lo = await pc('/api/passkey-login-options', null, {}); assert.strictEqual((await pc('/api/passkey-login', null, { credential: assert_(lo, 6) })).status, 400, 'clé révoquée');
+    assert.strictEqual((await pc('/api/passkeys/revoke', tk, { id: reg.key.id })).status, 400);
+  }
   // double authentification (TOTP) : activation, connexion avec code, secours, appareils de confiance
   {
     const T = require('./totp.js'), tc = (p, tok, d, h) => fetch(base + p, { method: d === undefined ? 'GET' : 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, tok ? { Authorization: 'Bearer ' + tok } : {}, h || {}), body: d === undefined ? undefined : JSON.stringify(d) }).then(async r => Object.assign(await r.json(), { status: r.status }));
