@@ -730,10 +730,27 @@ function Net(storage, now) {
       // pagination par curseur (id décroissant) : scope « feed » (abonnements) ou « explore » ; `after` compte les posts plus récents
       page(by, scope, o) {
         o = o || {};
+        if (scope === 'search' || scope === 'notifs' || scope === 'convs' || scope === 'dm') return api.pageIds(by, scope, o);
         const all = scope === 'feed' ? api.feed(by) : scope === 'group' ? api.groupFeed(by, +o.group) : scope === 'list' ? api.listFeed(by, o.owner, +o.list) : api.explore(by), limit = Math.min(50, Math.max(1, +o.limit || 10));
         if (o.after) return { count: all.filter(p => p.id > +o.after).length };
         const rest = o.before ? all.filter(p => p.id < +o.before) : all;
         return { posts: rest.slice(0, limit), more: rest.length > limit, total: all.length };
+      },
+      // pagination par curseur des recherches, notifications, conversations et messages : renvoie des identifiants (le client a déjà les objets)
+      // search : ?q=&sort= ; notifs ; convs (clé = id du dernier message) ; dm : ?peer= (du plus récent au plus ancien)
+      pageIds(by, scope, o) {
+        const limit = Math.min(50, Math.max(1, +o.limit || 10)), sortedById = !(scope === 'search' && /^popular$/.test(o.sort || ''));
+        let all, users = [];
+        if (scope === 'search') { const r = api.find(String(o.q || ''), by, o.sort === 'popular' ? 'popular' : 'recent'); all = r.posts.map(p => p.id); users = r.users.map(u => u.name); }
+        else if (scope === 'notifs') all = api.notifications(by).map(n => n.id);
+        else if (scope === 'convs') all = api.conversations(by).map(c => c.last.id);
+        else all = api.conversation(by, String(o.peer || '')).map(m => m.id).reverse();
+        if (o.after) return { count: sortedById ? all.filter(i => i > +o.after).length : 0 };
+        let rest = all;
+        if (o.before) { const b = +o.before; if (sortedById) rest = all.filter(i => i < b); else { const k = all.indexOf(b); rest = k < 0 ? all : all.slice(k + 1); } }
+        const out = { ids: rest.slice(0, limit), more: rest.length > limit, total: all.length };
+        if (!o.before && scope === 'search') out.users = users;
+        return out;
       },
       conversation(a, b) {
         if (hiddenFor(a, b)) return [];

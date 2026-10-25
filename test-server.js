@@ -72,11 +72,23 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   const p2 = await call('/api/feed?scope=explore&limit=10&before=' + p1.posts[9].id, b.token); assert.strictEqual(p2.posts.length, 4); assert.strictEqual(p2.more, false);
   assert.strictEqual((await call('/api/feed?scope=explore&after=' + p1.posts[5].id, b.token)).count, 5);
   assert.strictEqual((await call('/api/feed?scope=feed', b.token)).posts.length, 0); assert.strictEqual((await call('/api/feed?scope=x', b.token)).status, 400);
+  // recherche paginée (récent + populaire), messages et conversations par curseur
+  const sr1 = await call('/api/feed?scope=search&q=pagination&limit=5', b.token); assert.strictEqual(sr1.ids.length, 5); assert.strictEqual(sr1.more, true); assert.strictEqual(sr1.total, 12);
+  const sr2 = await call('/api/feed?scope=search&q=pagination&limit=5&before=' + sr1.ids[4], b.token); assert.strictEqual(sr2.ids.length, 5); assert.ok(sr2.ids[0] < sr1.ids[4]);
+  const sr3 = await call('/api/feed?scope=search&q=pagination&limit=5&before=' + sr2.ids[4], b.token); assert.strictEqual(sr3.ids.length, 2); assert.strictEqual(sr3.more, false);
+  assert.strictEqual((await call('/api/feed?scope=search&q=pagination&after=' + sr1.ids[2], b.token)).count, 2);
+  const sp1 = await call('/api/feed?scope=search&q=pagination&sort=popular&limit=5', b.token), sp2 = await call('/api/feed?scope=search&q=pagination&sort=popular&limit=20&before=' + sp1.ids[4], b.token);
+  assert.strictEqual(new Set([...sp1.ids, ...sp2.ids]).size, 12, 'tri populaire : pas de doublon ni de trou');
   // messages non lus : curseur de lecture par interlocuteur
   await act(np2.token, 'send', 'bob', 'ping');
   const view = async () => { const st = (await call('/api/state?v=-1', b.token)).state; return Social.Net({ d: { [Social.KEY]: JSON.stringify(st) }, getItem(k) { return this.d[k]; }, setItem() {} }).unreadDm('bob'); };
   assert.strictEqual((await view()).total, 1); assert.strictEqual((await view()).peers.alice, 1);
   await act(b.token, 'markDmRead', 'alice'); assert.strictEqual((await view()).total, 0);
+  for (let i = 0; i < 7; i++) await act(np2.token, 'send', 'bob', 'msg ' + i);
+  const dd1 = await call('/api/feed?scope=dm&peer=alice&limit=3', b.token); assert.strictEqual(dd1.ids.length, 3); assert.strictEqual(dd1.more, true);
+  const dd2 = await call('/api/feed?scope=dm&peer=alice&limit=50&before=' + dd1.ids[2], b.token); assert.strictEqual(dd2.more, false); assert.ok(dd2.ids.every(i => i < dd1.ids[2]));
+  assert.strictEqual((await call('/api/feed?scope=convs&limit=10', b.token)).ids.length, 1);
+  const nn1 = await call('/api/feed?scope=notifs&limit=2', b.token); assert.ok(Array.isArray(nn1.ids) && nn1.total >= nn1.ids.length && typeof nn1.more === "boolean");
   ac.abort();
   // e-mail vérifié + mot de passe oublié par lien à usage unique
   const tok = m => /\?(?:reset|verify)=([0-9a-f]{64})/.exec(m.text)[1];

@@ -270,8 +270,8 @@ function createServer(opts = {}) {
     }
     // pagination côté serveur du fil (scope=feed|explore) : ?limit=&before=<id> pour la suite, ?after=<id> pour compter les nouveaux posts
     if (route === 'GET /api/feed') {
-      const sc = url.searchParams.get('scope'); if (sc !== 'feed' && sc !== 'explore' && sc !== 'list' && sc !== 'group') throw new Http(400, 'Fil inconnu');
-      return send(res, 200, net.page(me.name, sc, { owner: url.searchParams.get('owner'), list: url.searchParams.get('list'), group: url.searchParams.get('group'), limit: url.searchParams.get('limit'), before: url.searchParams.get('before'), after: url.searchParams.get('after') }));
+      const sc = url.searchParams.get('scope'); if (!['feed', 'explore', 'list', 'group', 'search', 'notifs', 'convs', 'dm'].includes(sc)) throw new Http(400, 'Fil inconnu');
+      return send(res, 200, net.page(me.name, sc, { owner: url.searchParams.get('owner'), list: url.searchParams.get('list'), group: url.searchParams.get('group'), q: url.searchParams.get('q'), sort: url.searchParams.get('sort'), peer: url.searchParams.get('peer'), limit: url.searchParams.get('limit'), before: url.searchParams.get('before'), after: url.searchParams.get('after') }));
     }
     // « X est en train d'écrire » : éphémère, jamais stocké, transmis seulement au destinataire connecté
     if (route === 'POST /api/typing') {

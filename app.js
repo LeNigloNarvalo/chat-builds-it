@@ -50,7 +50,7 @@ const GRADS = ['linear-gradient(135deg,#9146ff,#ff4d8d)', 'linear-gradient(135de
 const bannerCss = b => !b ? GRADS[0] : b.startsWith('grad:') ? GRADS[+b.slice(5)] : `center/cover url("${encodeURI(b).replace(/"/g, '%22')}"), ${GRADS[4]}`;
 const peopleList = names => names.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)} · ${esc(prof(n).bio || '')}</span></div>`).join('') || '<p class="mut">Personne pour l’instant.</p>';
 const ago = I18n.ago;
-const go = (page, arg) => { if (page === 'security' || page === 'privacy') { ses.loaded = false; ses.msg = ''; } if (page === 'settings') { tfa.loaded = false; tfa.setup = null; tfa.codes = null; } if (page === 'stats') st.loaded = false; if (page === 'dev') { dev.loaded = false; dev.fresh = null; dev.detail = null; } view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
+const go = (page, arg) => { if (page === 'security' || page === 'privacy') { ses.loaded = false; ses.msg = ''; } if (page === 'settings') { tfa.loaded = false; tfa.setup = null; tfa.codes = null; } if (page === 'stats') st.loaded = false; if (page === 'dev') { dev.loaded = false; dev.fresh = null; dev.detail = null; } if (view.page !== page) for (const k in pagers) pagers[k].key = null; view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
 // ---- fil paginé côté serveur (/api/feed) : pages de 10 posts, défilement infini, bandeau « N nouveaux posts » ----
 const PAGE = 10, fs = { scope: null, who: null, ids: [], more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: 0 };
 // clé du fil affiché : « feed », « explore » ou « list:<propriétaire>:<id> » (fil dédié d'une liste de comptes)
@@ -74,6 +74,44 @@ async function feedFresh() {
   const sc = feedScope(); if (!sc || sc !== fs.scope || !fs.loaded) return;
   try { const j = await sync.get(`/api/feed?${feedQuery(sc)}&after=${fs.top || 0}`); if (sc === fs.scope && j.count !== fs.fresh) { fs.fresh = j.count; refresh(); } } catch (e) {}
 }
+// ---- pagination par curseur des recherches, notifications, conversations et messages (même principe que le fil) ----
+const pagers = {}, pagerOf = k => pagers[k] || (pagers[k] = { key: null, who: null, ids: [], users: [], total: 0, more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: 0 });
+// pagers utiles à la page affichée : [type, paramètres]
+const pagerSpecs = () => {
+  if (!me) return [];
+  if (view.page === 'search') { const q = (view.arg || '').trim(); return q ? [['search', `q=${encodeURIComponent(q)}&sort=${net.parseSearch(view.arg).sort}`]] : []; }
+  if (view.page === 'notifs') return [['notifs', '']];
+  if (view.page === 'dm') return [['convs', '']].concat(view.arg ? [['dm', 'peer=' + encodeURIComponent(view.arg)]] : []);
+  return [];
+};
+const pagerReady = (k, q) => { const p = pagerOf(k); return p.key === q && p.who === me && p.loaded; };
+// plus petit identifiant déjà chargé (0 si tout l'est) : sert de borne aux éléments locaux plus récents
+const pagerFloor = (k, q) => { const p = pagerOf(k); return pagerReady(k, q) && p.more && p.ids.length ? Math.min(...p.ids) : 0; };
+async function pagerLoad(k, q, reset) {
+  const p = pagerOf(k);
+  if (reset || p.key !== q || p.who !== me) Object.assign(p, { key: q, who: me, ids: [], users: [], total: 0, more: false, top: 0, fresh: 0, loaded: false, busy: false, gen: p.gen + 1 });
+  if (p.busy) return;
+  const gen = p.gen; p.busy = true;
+  try {
+    const j = await sync.get(`/api/feed?scope=${k}&${q}${q ? '&' : ''}limit=${PAGE}${p.ids.length ? '&before=' + p.ids[p.ids.length - 1] : ''}`);
+    if (gen !== p.gen) return;
+    p.ids.push(...j.ids.filter(i => !p.ids.includes(i))); p.more = j.more; p.total = j.total; if (j.users) p.users = j.users; p.top = p.top || p.ids[0] || 0; p.loaded = true;
+    if (k === 'notifs' && !p.marked) { p.marked = true; net.notifications(me, true); }
+  } catch (e) { if (gen === p.gen) { err = e.message; p.loaded = true; } }
+  p.busy = false;
+  if (gen === p.gen) refresh(); else pagerLoad(k, q);
+}
+async function pagerFresh() {
+  for (const [k, q] of pagerSpecs()) {
+    const p = pagerOf(k); if (k === 'dm' || k === 'convs' || !pagerReady(k, q)) continue;
+    try { const j = await sync.get(`/api/feed?scope=${k}&${q}${q ? '&' : ''}after=${p.top || 0}`); if (pagerReady(k, q) && j.count !== p.fresh) { p.fresh = j.count; refresh(); } } catch (e) {}
+  }
+}
+const pagerMore = k => { const q = (pagerSpecs().find(x => x[0] === k) || [])[1]; if (q !== undefined) pagerLoad(k, q); };
+const pmore = new IntersectionObserver(es => { for (const x of es) if (x.isIntersecting) pagerMore(x.target.dataset.pmore); }, { rootMargin: '300px' });
+const moreBtn = (k, label) => { const q = (pagerSpecs().find(x => x[0] === k) || [])[1]; return q !== undefined && pagerReady(k, q) && pagerOf(k).more ? `<button class="card morebar" data-pmore="${k}">${label || t('loading.more')}</button>` : ''; };
+const freshBar = (k, one, many) => { const p = pagerOf(k); return p.fresh ? `<button class="card newbar" data-pfresh="${k}">${p.fresh} ${p.fresh > 1 ? many : one}</button>` : ''; };
+const byId = (list, cache) => { if (cache.n !== list.length || cache.l !== list) { cache.l = list; cache.n = list.length; cache.m = new Map(list.map(x => [x.id, x])); } return cache.m; };
 const more = new IntersectionObserver(es => { if (es.some(x => x.isIntersecting)) feedLoad(); }, { rootMargin: '300px' });
 // ---- messages privés : « écrit… » (éphémère, via le flux temps réel) ----
 const typing = {}; // pseudo -> expiration
@@ -82,7 +120,7 @@ const typingHTML = () => typingNow().includes(view.arg) ? `<span id="typing" cla
 let lastTyped = 0;
 let navOpen = false; // menu « Plus » de la barre de navigation
 const onLive = (ev, d) => {
-  if (ev === 'update') { sync.poll().then(feedFresh); if (view.page === 'stats') statsLoad(); }
+  if (ev === 'update') { sync.poll().then(() => { feedFresh(); pagerFresh(); }); if (view.page === 'stats') statsLoad(); }
   else if (ev === 'dev') { if (view.page === 'dev') devLoad(); }
   else if (ev === 'typing') { typing[d.from] = Date.now() + 4000; if (view.page === 'dm') refresh(); setTimeout(() => { if (view.page === 'dm') refresh(); }, 4100); }
 };
@@ -102,8 +140,9 @@ function trackNews() {
   counts.n = n; counts.d = d;
   if (view.page === 'notifs') news.notifs = false; if (view.page === 'dm') news.dm = false;
 }
-sync.onState(() => { livePill(); if (me && sync.connected()) sync.poll().then(feedFresh); });
+sync.onState(() => { livePill(); if (me && sync.connected()) sync.poll().then(() => { feedFresh(); pagerFresh(); }); });
 
+const pc = { posts: {}, notifs: {} };
 let err = '';
 const diag = { res: null, busy: false };
 async function runDiag() {
@@ -681,7 +720,7 @@ function render() {
   let h = '';
   const paged = () => {
     if (fs.scope !== feedScope() || fs.who !== me || !fs.loaded) return `<p class="mut" role="status">${t('loading.feed')}</p>`;
-    const ps = fs.ids.map(i => net.db().posts.find(p => p.id === i)).filter(Boolean);
+    const pm = byId(net.db().posts, pc.posts), ps = fs.ids.map(i => pm.get(i)).filter(Boolean);
     return (fs.fresh ? `<button class="card newbar" data-newposts>${I18n.tn('new', fs.fresh)}</button>` : '') + list(ps)
       + (fs.more ? `<button class="card morebar" id="more" data-more>${t('loading.more')}</button>` : ps.length ? `<p class="mut" role="status">${t('seen.all')}</p>` : '');
   };
@@ -712,7 +751,7 @@ function render() {
   } else if (view.page === 'bookmarks') {
     h = `<div class="card"><h2>🔖 Mes favoris</h2><p class="mut">Les posts que tu as mis de côté (visibles par toi seul).</p></div>${e}` + list(net.bookmarks(me));
   } else if (view.page === 'search') {
-    const o = net.parseSearch(view.arg), r = net.find(o, me), ss = net.searches(me), day = ms => ms == null ? '' : new Date(ms).toLocaleDateString('sv-SE'), cur = ss.find(s => s.q === (view.arg || '').trim() && s.sort === o.sort);
+    const o = net.parseSearch(view.arg), sq = pagerSpecs()[0], sp = pagerOf('search'), rdy = !!sq && pagerReady('search', sq[1]), pm = byId(net.db().posts, pc.posts), r = { posts: rdy ? sp.ids.map(i => pm.get(i)).filter(Boolean) : [], users: rdy ? sp.users.map(n => net.profile(n)) : [] }, ss = net.searches(me), day = ms => ms == null ? '' : new Date(ms).toLocaleDateString('sv-SE'), cur = ss.find(s => s.q === (view.arg || '').trim() && s.sort === o.sort);
     const bare = [o.text, o.from ? 'de:@' + o.from : '', o.since != null ? 'depuis:' + day(o.since) : '', o.until != null ? 'avant:' + day(o.until - 86400000) : '', o.image ? 'avec:image' : '', o.poll ? 'avec:sondage' : ''].filter(Boolean).join(' ');
     h = `<div class="card"><b>🔎 Recherche avancée</b>
       <div class="row"><input id="q" placeholder="Mot, #tag ou pseudo (opérateurs : de:@pseudo depuis:2025-01-31 avant: avec:image avec:sondage)" value="${esc(view.arg || '')}" aria-label="Recherche"><button data-dosearch>Chercher</button></div>
@@ -726,12 +765,13 @@ function render() {
       <div class="row">${bare ? (cur ? `<span class="mut">🔔 Recherche enregistrée : vous serez alerté des nouveaux résultats.</span> <button data-ssdel="${cur.id}">🗑 Retirer</button>` : `<input id="ss-name" placeholder="Nom (facultatif)" maxlength="40" aria-label="Nom de la recherche"><button data-sssave>💾 Enregistrer cette recherche</button>`) : ''}</div>
       <details class="ssmenu" ${ss.length ? 'open' : ''}><summary>📌 Mes recherches enregistrées ${ss.reduce((a, s) => a + s.fresh, 0) ? `<span class="badge">${ss.reduce((a, s) => a + s.fresh, 0)}</span>` : ''}</summary>
       ${ss.map(s => `<div class="row"><button data-ssopen="${s.id}">🔎 ${esc(s.name)}${s.name !== s.q ? ` <span class="mut">${esc(s.q)}</span>` : ''} · ${s.sort === 'popular' ? 'populaires' : 'récents'}</button>${s.fresh ? ` <span class="badge" title="Nouveaux résultats">${s.fresh} nouveau${s.fresh > 1 ? 'x' : ''}</span>` : ''} <button data-ssdel="${s.id}" aria-label="Supprimer ${esc(s.name)}">✕</button></div>`).join('') || '<p class="mut">Aucune recherche enregistrée.</p>'}</details></div>` +
-      (bare ? `<p class="mut">${r.posts.length} post${r.posts.length > 1 ? 's' : ''}${r.users.length ? ` · ${r.users.length} compte${r.users.length > 1 ? 's' : ''}` : ''} · tri : ${o.sort === 'popular' ? 'populaire' : 'récent'}</p>` : '') +
-      r.users.map(u => `<div class="card">${av(u.name)}<span class="who" data-user="${u.name}">${esc(shown(u.name))}</span> <span class="mut">${esc(u.bio)}</span></div>`).join('') + list(r.posts);
+      (bare ? `<p class="mut">${rdy ? sp.total : 0} post${sp.total > 1 && rdy ? 's' : ''}${r.users.length ? ` · ${r.users.length} compte${r.users.length > 1 ? 's' : ''}` : ''} · tri : ${o.sort === 'popular' ? 'populaire' : 'récent'}</p>` : '') +
+      (sq && !rdy ? `<p class="mut" role="status">Recherche en cours…</p>` : freshBar('search', 'nouveau résultat', 'nouveaux résultats') + r.users.map(u => `<div class="card">${av(u.name)}<span class="who" data-user="${u.name}">${esc(shown(u.name))}</span> <span class="mut">${esc(u.bio)}</span></div>`).join('') + (bare ? list(r.posts) : '') + moreBtn('search') + (rdy && !sp.more && r.posts.length ? `<p class="mut" role="status">${t('seen.all')}</p>` : ''));
   } else if (view.page === 'notifs') {
     const L = { dm: 'vous a écrit', sanction: 'a pris une mesure de modération contre votre compte', like: 'a aimé votre post', reply: 'a répondu à votre post', mention: 'vous a mentionné', follow: 'vous suit', repost: 'a repartagé votre post', quote: 'a cité votre post', react: 'a réagi à votre post', group: Notif.TEXT.group, poll: 'Votre sondage est terminé : voir les résultats', search: 'a de nouveaux résultats' };
     const gname = id => { try { return net.group(id).name; } catch (x) { return 'une communauté supprimée'; } };
-    h = net.notifications(me, true).map(n => `<div class="card" ${n.type === 'dm' ? `data-chat="${esc(n.from)}"` : n.type === 'search' ? `data-ssopen="${n.search}"` : n.type === 'group' ? `data-cmopen="${n.group}"` : n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}>${n.type === 'search' ? `🔎 <b>${esc(n.name)}</b> : ${n.count} nouveau${n.count > 1 ? 'x' : ''} résultat${n.count > 1 ? 's' : ''}` : ''}${n.type === 'search' ? '' : n.from ? `<b>${esc(n.from)}</b> ` : '📊 '}${n.type === 'react' && n.emoji ? n.emoji + ' ' : ''}${n.type === 'dm' && n.count > 1 ? `(×${n.count}) ` : ''}${n.type === 'group' ? `${L.group[n.what] || 'communauté'} · 👥 ${esc(gname(n.group))}` : n.type === 'search' ? '' : n.type === 'sanction' ? ({ warn: 'vous a averti', suspend: 'a suspendu votre compte', ban: 'a banni votre compte' })[n.what] || L.sanction : n.type === 'hide' ? 'a masqué votre post (vous pouvez faire appel)' : n.type === 'appeal' ? ({ new: 'a fait appel d’une décision', accepted: 'a accepté votre appel', rejected: 'a rejeté votre appel' })[n.what] + (n.answer ? ' : « ' + esc(n.answer) + ' »' : '') : L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') || '<p class="mut">Aucune notification.</p>';
+    const nq = pagerSpecs()[0], np = pagerOf('notifs'), nready = pagerReady('notifs', nq[1]), nm = byId(net.db().notifs, pc.notifs), nl = nready ? np.ids.map(i => nm.get(i)).filter(Boolean) : [];
+    h = (!nready ? `<p class="mut" role="status">Chargement des notifications…</p>` : freshBar('notifs', 'nouvelle notification', 'nouvelles notifications')) + nl.map(n => `<div class="card" ${n.type === 'dm' ? `data-chat="${esc(n.from)}"` : n.type === 'search' ? `data-ssopen="${n.search}"` : n.type === 'group' ? `data-cmopen="${n.group}"` : n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}>${n.type === 'search' ? `🔎 <b>${esc(n.name)}</b> : ${n.count} nouveau${n.count > 1 ? 'x' : ''} résultat${n.count > 1 ? 's' : ''}` : ''}${n.type === 'search' ? '' : n.from ? `<b>${esc(n.from)}</b> ` : '📊 '}${n.type === 'react' && n.emoji ? n.emoji + ' ' : ''}${n.type === 'dm' && n.count > 1 ? `(×${n.count}) ` : ''}${n.type === 'group' ? `${L.group[n.what] || 'communauté'} · 👥 ${esc(gname(n.group))}` : n.type === 'search' ? '' : n.type === 'sanction' ? ({ warn: 'vous a averti', suspend: 'a suspendu votre compte', ban: 'a banni votre compte' })[n.what] || L.sanction : n.type === 'hide' ? 'a masqué votre post (vous pouvez faire appel)' : n.type === 'appeal' ? ({ new: 'a fait appel d’une décision', accepted: 'a accepté votre appel', rejected: 'a rejeté votre appel' })[n.what] + (n.answer ? ' : « ' + esc(n.answer) + ' »' : '') : L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') + (nready ? moreBtn('notifs') + (!np.more && nl.length ? `<p class="mut" role="status">${t('seen.all')}</p>` : '') : '') + (nready && !nl.length ? '<p class="mut">Aucune notification.</p>' : '');
   } else if (view.page === 'thread') {
     const p = net.db().posts.find(x => x.id === view.arg);
     h = p ? postHTML(p) + composer(t('composer.reply'), p.id) + e + net.replies(p.id, me).map(r => postHTML(r)).join('') : '<p class="mut">Post supprimé.</p>';
@@ -795,11 +835,12 @@ function render() {
       <div class="card"><b>Se déconnecter partout</b><p class="mut">Ferme toutes les sessions ouvertes, y compris celle-ci.</p><button data-logoutall>🚪 Déconnecter tous mes appareils</button></div>
       <div class="card"><b>Supprimer mon compte</b><p class="mut">La suppression se programme depuis la page Confidentialité, avec un délai de grâce de 7 jours pour changer d’avis.</p><button data-page="privacy">🛡️ Aller à la page Confidentialité</button></div>${e}${view.ok ? `<p class="ok">${esc(view.ok)}</p>` : ''}`;
   } else if (view.page === 'dm') {
-    const convs = net.conversations(me), others = Object.values(net.db().users).filter(u => u.name !== me && !net.isHidden(me, u.name) && !convs.some(c => c.peer === u.name));
+    const cq = ['convs', ''], cfloor = pagerFloor('convs', ''), cready = pagerReady('convs', ''), convs = cready ? net.conversations(me).filter(c => c.last.id >= cfloor) : [], allConvs = net.conversations(me);
+    const others = Object.values(net.db().users).filter(u => u.name !== me && !net.isHidden(me, u.name) && !allConvs.some(c => c.peer === u.name)), OTH = 30;
     const prev = m => (m.from === me ? 'Vous : ' : '') + (m.text ? m.text : '📷 image');
-    h = `<div class="card"><h2>✉️ Mes conversations ${unreadDm.total ? `<b class="badge">${unreadDm.total}</b>` : ''}</h2><ul class="convs" style="list-style:none;padding:0;margin:0;display:grid;gap:6px">${convs.map(c => `<li><button data-chat="${esc(c.peer)}" class="${view.arg === c.peer ? 'on' : ''}" style="width:100%;text-align:left"><b>${esc(shown(c.peer))}</b>${c.unread ? ` <b class="badge" aria-label="${c.unread} non lu(s)">${c.unread}</b>` : ''}${typingNow().includes(c.peer) ? ' ✍️' : ''} <span class="mut">· ${ago(c.last.at)}</span><br><span class="${c.unread ? '' : 'mut'}">${esc(prev(c.last).slice(0, 80))}</span></button></li>`).join('') || '<li class="mut">Aucune conversation : choisis quelqu’un ci-dessous.</li>'}</ul></div>
-      <div class="card"><b>Nouvelle discussion</b><br>${others.map(u => `<button data-chat="${esc(u.name)}" class="${view.arg === u.name ? 'on' : ''}">${esc(u.name)}</button>`).join(' ') || '<span class="mut">Personne d’autre pour l’instant.</span>'}</div>`;
-    if (view.arg) h += `<div class="card" style="display:grid;gap:6px"><div class="row"><b>💬 ${esc(shown(view.arg))}</b> ${view.askDelDm ? `<span class="err">Supprimer cet échange de ton côté ?</span> <button data-dmdelyes>Oui, supprimer</button> <button data-dmdelno>Annuler</button>` : net.conversation(me, view.arg).length ? `<button data-dmdel>🗑 Supprimer l’échange</button>` : ''}</div>${net.conversation(me, view.arg).map(m => `<div class="msg ${m.from === me ? 'me' : ''}">${m.text ? esc(m.text) : ''}${gallery(m.images, 'm', m.id)}</div>`).join('') || '<span class="mut">Dites bonjour 👋</span>'}
+    h = `<div class="card"><h2>✉️ Mes conversations ${unreadDm.total ? `<b class="badge">${unreadDm.total}</b>` : ''}</h2><ul class="convs" style="list-style:none;padding:0;margin:0;display:grid;gap:6px">${convs.map(c => `<li><button data-chat="${esc(c.peer)}" class="${view.arg === c.peer ? 'on' : ''}" style="width:100%;text-align:left"><b>${esc(shown(c.peer))}</b>${c.unread ? ` <b class="badge" aria-label="${c.unread} non lu(s)">${c.unread}</b>` : ''}${typingNow().includes(c.peer) ? ' ✍️' : ''} <span class="mut">· ${ago(c.last.at)}</span><br><span class="${c.unread ? '' : 'mut'}">${esc(prev(c.last).slice(0, 80))}</span></button></li>`).join('') || (cready ? '<li class="mut">Aucune conversation : choisis quelqu’un ci-dessous.</li>' : '<li class="mut" role="status">Chargement des conversations…</li>')}</ul>${moreBtn('convs', 'Conversations plus anciennes')}</div>
+      <div class="card"><b>Nouvelle discussion</b><br>${others.slice(0, OTH).map(u => `<button data-chat="${esc(u.name)}" class="${view.arg === u.name ? 'on' : ''}">${esc(u.name)}</button>`).join(' ')}${others.length > OTH ? ` <span class="mut">… et ${others.length - OTH} autres (utilise la recherche ou un profil pour écrire)</span>` : ''}${others.length ? '' : '<span class="mut">Personne d’autre pour l’instant.</span>'}</div>`;
+    if (view.arg) h += `<div class="card" style="display:grid;gap:6px"><div class="row"><b>💬 ${esc(shown(view.arg))}</b> ${view.askDelDm ? `<span class="err">Supprimer cet échange de ton côté ?</span> <button data-dmdelyes>Oui, supprimer</button> <button data-dmdelno>Annuler</button>` : net.conversation(me, view.arg).length ? `<button data-dmdel>🗑 Supprimer l’échange</button>` : ''}</div>${(() => { const dq = 'peer=' + encodeURIComponent(view.arg), dr = pagerReady('dm', dq), fl = pagerFloor('dm', dq), ms = dr ? net.conversation(me, view.arg).filter(m => m.id >= fl) : []; return !dr ? '<span class="mut" role="status">Chargement des messages…</span>' : moreBtn('dm', '⬆ Messages plus anciens') + (ms.map(m => `<div class="msg ${m.from === me ? 'me' : ''}">${m.text ? esc(m.text) : ''}${gallery(m.images, 'm', m.id)}</div>`).join('') || '<span class="mut">Dites bonjour 👋</span>'); })()}
       ${typingHTML()}<input id="dm" placeholder="Message à ${esc(view.arg)}">${attachBox('dm')}<button data-dm>Envoyer</button></div>${e}`;
   }
   if (view.page === 'dm' && view.arg && unreadDm.peers[view.arg] && document.hasFocus()) net.markDmRead(me, view.arg).catch(() => {}); // conversation ouverte : lue
@@ -807,6 +848,8 @@ function render() {
   a11yPass();
   ensureLive();
   const m = $('#more'); if (m) more.observe(m);
+  document.querySelectorAll('#app [data-pmore]').forEach(x => { if (x.dataset.pmore !== 'dm') pmore.observe(x); });
+  for (const [k, q] of pagerSpecs()) if (pagerOf(k).key !== q || pagerOf(k).who !== me) pagerLoad(k, q, true);
   watchViews();
   if (feedScope() && (fs.scope !== feedScope() || fs.who !== me)) feedLoad(true);
 }
@@ -1092,7 +1135,7 @@ document.addEventListener('click', async ev => {
   } else if ('notiftest' in b.dataset) Notif.show({ id: 'test' + Date.now(), type: 'mention' }, 'Le bocal');
 });
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-ob],*[data-atab],*[data-bkcreate],*[data-bkkeep],*[data-bkask],*[data-bkno],*[data-bkrestore],*[data-bkdl],*[data-bkdel],*[data-asanc],*[data-adelask],*[data-adelno],*[data-adel],*[data-tr],*[data-trclose],*[data-lang],*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-react],*[data-picker],*[data-rwho],*[data-quote],*[data-sendquote],*[data-cancelquote],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-tag],*[data-trange],*[data-topic],*[data-login],*[data-mfago],*[data-mfaback],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sfapply],*[data-sssave],*[data-ssdel],*[data-ssopen],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-appeal],*[data-cancelappeal],*[data-sendappeal],*[data-decide],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-modhist],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lshare],*[data-lcopy],*[data-lforget],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
+  const d = ev.target.closest('*[data-ob],*[data-atab],*[data-bkcreate],*[data-bkkeep],*[data-bkask],*[data-bkno],*[data-bkrestore],*[data-bkdl],*[data-bkdel],*[data-asanc],*[data-adelask],*[data-adelno],*[data-adel],*[data-tr],*[data-trclose],*[data-lang],*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-react],*[data-picker],*[data-rwho],*[data-quote],*[data-sendquote],*[data-cancelquote],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-pmore],*[data-pfresh],*[data-user],*[data-search],*[data-tag],*[data-trange],*[data-topic],*[data-login],*[data-mfago],*[data-mfaback],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sfapply],*[data-sssave],*[data-ssdel],*[data-ssopen],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-appeal],*[data-cancelappeal],*[data-sendappeal],*[data-decide],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-modhist],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lshare],*[data-lcopy],*[data-lforget],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
   if ('ob' in D) obClick(D, v);
@@ -1178,6 +1221,8 @@ document.addEventListener('click', ev => {
   else if ('restore' in D) { const [i, j] = D.restore.split(':'), p = net.db().posts.find(x => x.id === +i); if (p) { view.editing = p.id; view.hist = p.id; view.restore = { id: p.id, text: p.history[+j].text }; render(); } }
   else if ('newposts' in D) { feedLoad(true); window.scrollTo({ top: 0 }); }
   else if ('more' in D) feedLoad();
+  else if ('pmore' in D) pagerMore(D.pmore);
+  else if ('pfresh' in D) { const sp = pagerSpecs().find(x => x[0] === D.pfresh); if (sp) { pagerLoad(sp[0], sp[1], true); window.scrollTo({ top: 0 }); } }
   else if ('like' in D) attempt(() => net.toggleLike(me, +D.like));
   else if ('react' in D) { const [i, em] = D.react.split('|'); view.picker = null; attempt(() => net.react(me, +i, em)); }
   else if ('picker' in D) { view.picker = view.picker === +D.picker ? null : +D.picker; render(); }
