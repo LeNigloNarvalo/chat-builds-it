@@ -1,6 +1,7 @@
 // Moteur de Agora : les données sont PARTAGÉES via un « storage » injecté (localStorage).
 // Chaque appel relit le storage (lecture-modification-écriture) : aucune copie ancienne n'est conservée en mémoire.
 (function (root) {
+  const AM = typeof require !== 'undefined' ? require('./automod.js') : root.Automod;
   const KEY = 'twitchgram.v1';
   const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], appeals: [], tickets: [], verifs: [], badgeLog: [], drafts: [], media: [], groups: [], events: [], rooms: [], msgReports: [], audit: [], seq: 1, attempts: Object.create(null) });
   const MSG_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '🎉'], MAX_PINS = 3, MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000, POLL_MAX_MIN = 7 * 1440, MAX_OWN_GROUPS = 10, MAX_RULES = 600;
@@ -290,11 +291,34 @@ function Net(storage, now) {
           p.poll = { options: opts.map(text => ({ text, votes: [] })), endsAt: now() + Math.round(min * 60000), closed: false };
         }
         db.posts.push(p);
-        const seeable = n => !g || isMember(g, n);
-        if (replyTo) { const to = db.posts.find(x => x.id === replyTo).author; if (seeable(to)) notify(to, p.author, 'reply', p.id); }
-        for (const m of new Set((text.match(/@\w+/g) || []).map(lc))) { const t = db.users[m.slice(1).toLowerCase()]; if (t && seeable(t.name)) notify(t.name, p.author, 'mention', p.id); }
+        // modération automatique de la communauté : un post masqué ou en attente de validation ne notifie personne tant qu'il n'est pas libéré
+        const hit = g && !canMod(g, p.author) ? amApply(g, p, { text }) : null;
+        if (!hit || hit.action === 'warn') fanout(p, g);
       return p;
     };
+    const fanout = (p, g) => {
+      const seeable = n => !g || isMember(g, n);
+      if (p.replyTo) { const tp = db.posts.find(x => x.id === p.replyTo); if (tp && seeable(tp.author)) notify(tp.author, p.author, 'reply', p.id); }
+      for (const m of new Set((p.text.match(/@\w+/g) || []).map(lc))) { const t = db.users[m.slice(1).toLowerCase()]; if (t && seeable(t.name)) notify(t.name, p.author, 'mention', p.id); }
+    };
+    // ---- modération automatique (règles par communauté, journal des décisions, annulation) ----
+    const amOf = g => g.automod || (g.automod = { rules: [], log: [], seq: 1 });
+    const amCtx = (p, extra) => Object.assign({ text: p.text, joined: (db.users[lc(p.author)] || {}).joined, now: now(), reports: (((db.groups.find(x => x.id === p.group) || {}).automod || {}).reportTimes || {})[p.id] || db.reports.filter(r => r.postId === p.id).map(r => r.at) }, extra);
+    // applique l'action de la première règle qui correspond et la journalise ; renvoie { action, rule, why } ou null
+    const amApply = (g, p, extra, only) => {
+      const am = amOf(g), hit = AM.evaluate(am.rules, amCtx(p, extra), only); if (!hit) return null;
+      const r = hit.rule, a = r.action, by = 'Modération automatique';
+      if (a === 'hide') p.hidden = { at: now(), by, reason: r.name, auto: true, rule: r.id };
+      else if (a === 'queue') p.pending = { at: now(), rule: r.id, reason: r.name };
+      else p.autoWarn = { at: now(), rule: r.id, reason: r.name };
+      r.hits = (r.hits || 0) + 1;
+      am.log.unshift({ id: am.seq++, at: now(), postId: p.id, ruleId: r.id, rule: r.name, action: a, why: hit.why, author: p.author, excerpt: (p.text || '').slice(0, 140), status: 'active' });
+      am.log = am.log.slice(0, AM.MAX_LOG);
+      if (a === 'warn') notify(p.author, 'Modération automatique', 'group', p.id, { group: g.id, what: 'automod-warn', rule: r.name });
+      else notify(p.author, 'Modération automatique', 'group', p.id, { group: g.id, what: a === 'hide' ? 'automod-hide' : 'automod-queue', rule: r.name });
+      return { action: a, rule: r, why: hit.why };
+    };
+    const amPostVisible = (p, by) => !p.pending || lc(p.author) === lc(by) || (() => { const g = db.groups.find(x => x.id === p.group); return !!g && canMod(g, by); })();
 
     const cleanTag = t => { t = String(t || '').trim().toLowerCase(); if (t[0] !== '#') t = '#' + t; need(/^#\w{1,60}$/.test(t), 'Hashtag invalide'); return t; };
     const shareToken = () => randHex(12);
@@ -833,7 +857,7 @@ function Net(storage, now) {
         return db.posts.filter(p => !p.replyTo && !p.group && !hiddenFor(by, p.author) && (p.author === me.name || me.following.includes(p.author))).sort((a, b) => b.id - a.id);
       },
       explore: by => visP(by, db.posts.filter(p => !p.replyTo && !p.group), p => p.author).sort((a, b) => b.id - a.id),
-      replies: (postId, by) => visP(by, db.posts.filter(p => p.replyTo === postId), p => p.author).sort((a, b) => a.id - b.id),
+      replies: (postId, by) => visP(by, db.posts.filter(p => p.replyTo === postId && amPostVisible(p, by)), p => p.author).sort((a, b) => a.id - b.id),
       byUser: (n, by) => visP(by, db.posts.filter(p => !p.replyTo && !p.group && p.author.toLowerCase() === n.toLowerCase()), p => p.author).sort((a, b) => b.id - a.id),
       // membres proposés par l'autocomplétion @ : préfixe du pseudo ou du nom affiché, abonnements d'abord
       mentionable(q, by, limit) {
@@ -1671,7 +1695,11 @@ function Net(storage, now) {
         note = (note || '').trim(); need(note.length <= 300, 'Précisions : 300 caractères max');
         need(!db.reports.some(r => r.postId === postId && r.by === me.name && r.status === 'open'), 'Vous avez déjà signalé ce post');
         const r = { id: id(), postId, by: me.name, target: p.author, reason, note, at: now(), status: 'open', snap: { text: p.text, images: (p.images || []).length, replyTo: p.replyTo } };
-        db.reports.push(r); save(); return r;
+        db.reports.push(r);
+        // rafale de signalements : les règles « signalements » de la communauté s'appliquent au post (une seule fois par post)
+        const pg = p.group && db.groups.find(x => x.id === p.group);
+        if (pg && !canMod(pg, p.author) && !p.hidden && !p.pending && !p.autoWarn) amApply(pg, p, {}, x => x.type === 'reports');
+        save(); return r;
       },
       hasReported: (by, postId) => db.reports.some(r => r.postId === postId && lc(r.by) === lc(by) && r.status === 'open'),
       // file de modération (admin) : signalements ouverts regroupés par post, les plus signalés d'abord
@@ -1948,6 +1976,49 @@ function Net(storage, now) {
         g.mods = g.mods.filter(x => lc(x) !== lc(t.name)); if (on) { g.mods.push(t.name); notify(t.name, g.owner, 'group', null, { group: g.id, what: 'mod' }); }
         save(); return !!on;
       },
+      // ---- modération automatique : règles (mots, liens, comptes récents, rafales de signalements) -> masquer, valider avant, avertir ----
+      automod(by, gid) {
+        const g = grp(gid); needMod(g, by); const am = amOf(g);
+        return { rules: am.rules.map(r => Object.assign({}, r)), log: am.log.map(l => Object.assign({}, l)), pending: db.posts.filter(p => p.group === g.id && p.pending).map(p => p.id) };
+      },
+      automodSave(by, gid, o) {
+        const g = grp(gid); needMod(g, by); guard(by); const am = amOf(g), c = AM.clean(o), cur = o && o.id ? am.rules.find(x => x.id === +o.id) : null;
+        if (o && o.id) need(cur, 'Règle introuvable'); else need(am.rules.length < AM.MAX_RULES, `${AM.MAX_RULES} règles maximum par communauté`);
+        need(!am.rules.some(x => x !== cur && lc(x.name) === lc(c.name)), 'Une règle porte déjà ce nom');
+        let r; if (cur) { Object.assign(cur, c); r = cur; } else { r = Object.assign({ id: am.seq++, at: now(), by: user(by).name, hits: 0 }, c); am.rules.push(r); }
+        audit(by, 'automod-rule', g.name, `règle « ${r.name} » (${r.type} → ${r.action})`); save(); return Object.assign({}, r);
+      },
+      automodToggle(by, gid, rid, on) {
+        const g = grp(gid); needMod(g, by); const r = amOf(g).rules.find(x => x.id === +rid); need(r, 'Règle introuvable'); r.on = !!on; save(); return r.on;
+      },
+      automodDelete(by, gid, rid) {
+        const g = grp(gid); needMod(g, by); const am = amOf(g), r = am.rules.find(x => x.id === +rid); need(r, 'Règle introuvable'); am.rules = am.rules.filter(x => x !== r); save();
+      },
+      // aperçu : la règle (non enregistrée) appliquée aux posts récents de la communauté, sans rien modifier
+      automodPreview(by, gid, o, limit) {
+        const g = grp(gid); needMod(g, by); const c = AM.clean(Object.assign({}, o, { on: true })), n = Math.min(200, Math.max(1, +limit || 50));
+        const posts = db.posts.filter(p => p.group === g.id).sort((a, b) => b.id - a.id).slice(0, n), out = [];
+        for (const p of posts) { const why = AM.match(c, amCtx(p)); if (why) out.push({ postId: p.id, author: p.author, excerpt: (p.text || '').slice(0, 140), why, exempt: canMod(g, p.author), at: p.at }); }
+        return { scanned: posts.length, matches: out, action: c.action };
+      },
+      // annuler une décision : le post masqué réapparaît, le post en attente est publié, l'avertissement est retiré
+      automodUndo(by, gid, logId) {
+        const g = grp(gid); needMod(g, by); guard(by); const am = amOf(g), e = am.log.find(x => x.id === +logId); need(e, 'Décision introuvable'); need(e.status === 'active', 'Décision déjà traitée');
+        const p = db.posts.find(x => x.id === e.postId), me = user(by).name;
+        if (p) {
+          if (e.action === 'hide' && p.hidden && p.hidden.auto) delete p.hidden;
+          else if (e.action === 'queue' && p.pending) { delete p.pending; fanout(p, g); }
+          else if (e.action === 'warn') delete p.autoWarn;
+        }
+        e.status = 'undone'; e.by = me; e.undoneAt = now();
+        audit(by, 'automod-undo', e.author, `${e.action} annulé · règle « ${e.rule} » · post #${e.postId}`); save(); return e;
+      },
+      // file de validation : refuser supprime définitivement le post en attente
+      automodReject(by, gid, logId) {
+        const g = grp(gid); needMod(g, by); guard(by); const am = amOf(g), e = am.log.find(x => x.id === +logId); need(e && e.action === 'queue' && e.status === 'active', 'Aucun post en attente pour cette décision');
+        db.posts = db.posts.filter(p => p.id !== e.postId && p.replyTo !== e.postId); db.notifs = db.notifs.filter(n => n.postId !== e.postId);
+        e.status = 'rejected'; e.by = user(by).name; e.undoneAt = now(); audit(by, 'automod-reject', e.author, `post #${e.postId} refusé · règle « ${e.rule} »`); save(); return e;
+      },
       groups: () => db.groups.slice().sort((a, b) => b.members.length - a.members.length || a.name.localeCompare(b.name)),
       group: gid => grp(gid),
       groupRole: (by, gid) => roleIn(grp(gid), by),
@@ -1955,7 +2026,7 @@ function Net(storage, now) {
       // fil dédié : posts racines de la communauté (lisible par tous si publique, par ses membres sinon)
       groupFeed(by, gid) {
         const g = grp(gid); need(canRead(g, by), 'Communauté privée : demandez à la rejoindre');
-        return db.posts.filter(p => p.group === g.id && !p.replyTo && !hiddenFor(by, p.author)).sort((a, b) => b.id - a.id);
+        return db.posts.filter(p => p.group === g.id && !p.replyTo && !hiddenFor(by, p.author) && amPostVisible(p, by)).sort((a, b) => b.id - a.id);
       },
       notifications(by, markRead) {
         const bell = normPrefs(user(by).notifPrefs).types;
@@ -1991,12 +2062,14 @@ function Net(storage, now) {
       const r = g.owner === me.name ? 'owner' : g.mods.includes(me.name) ? 'mod' : g.members.includes(me.name) ? 'member' : null, mod = r === 'owner' || r === 'mod', full = !!r || g.public;
       if (full) readable.add(g.id);
       const c = JSON.parse(JSON.stringify(g));
-      if (!mod) { c.banned = []; c.requests = g.requests.filter(x => x === me.name); c.invites = g.invites.filter(x => x === me.name); }
+      if (!mod) { c.banned = []; c.requests = g.requests.filter(x => x === me.name); c.invites = g.invites.filter(x => x === me.name); delete c.automod; }
+      else { c.automod = c.automod || { rules: [], log: [], seq: 1 }; c.automod.reportTimes = {}; for (const r of db.reports) { const rp = db.posts.find(x => x.id === r.postId); if (rp && rp.group === g.id) (c.automod.reportTimes[r.postId] = c.automod.reportTimes[r.postId] || []).push(r.at); } }
       if (!full) { c.members = []; c.mods = []; c.count = g.members.length; }
       return c;
     });
+    const modOf = new Set(db.groups.filter(g => g.owner === me.name || g.mods.includes(me.name)).map(g => g.id));
     return {
-      users, posts: db.posts.filter(p => p.group ? readable.has(p.group) : privOk(db, me.name, p.author, 'posts')).map(p => p.hidden && !me.admin && p.author !== me.name ? Object.assign({}, p, { text: '', images: [], poll: undefined, history: [], quoteOf: undefined }) : p), groups, events: db.events.filter(e => !e.group || readable.has(e.group)), reposts: db.reposts.filter(r => { const p = db.posts.find(x => x.id === r.postId); return !p || p.group || privOk(db, me.name, p.author, 'posts'); }), seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), media: (db.media || []).filter(m => m.owner === me.name).map(({ src, ...m }) => m), attempts: {},
+      users, posts: db.posts.filter(p => p.group ? readable.has(p.group) && (!p.pending || p.author === me.name || modOf.has(p.group)) : privOk(db, me.name, p.author, 'posts')).map(p => p.hidden && !me.admin && p.author !== me.name && !modOf.has(p.group) ? Object.assign({}, p, { text: '', images: [], poll: undefined, history: [], quoteOf: undefined }) : p), groups, events: db.events.filter(e => !e.group || readable.has(e.group)), reposts: db.reposts.filter(r => { const p = db.posts.find(x => x.id === r.postId); return !p || p.group || privOk(db, me.name, p.author, 'posts'); }), seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), media: (db.media || []).filter(m => m.owner === me.name).map(({ src, ...m }) => m), attempts: {},
       messages: db.messages.filter(m => m.from === me.name || m.to === me.name),
       notifs: db.notifs.filter(n => n.to === me.name),
       rooms: db.rooms.filter(r => r.members.includes(me.name)).map(r => ({ ...r, msgs: r.msgs.slice(-200) })),
@@ -2016,6 +2089,6 @@ function Net(storage, now) {
     };
   }
 
-  const exported = { normImport, MSG_EMOJIS, Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
+  const exported = { AM, normImport, MSG_EMOJIS, Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, cleanMedia, MAX_VIDEO_S, MAX_AUDIO_S, REASONS, MEDIA_QUOTA, BADGES };
   if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);
