@@ -109,6 +109,17 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   await new Promise(ok => setTimeout(ok, 1500));
   s = await call('/api/state?v=-1', np2.token); assert.strictEqual(s.state.drafts.length, 0); assert.ok(s.state.posts.some(x => x.text === 'programmé !'));
   assert.strictEqual((await act(np2.token, 'publishDue')).status, 400);
+  // pages publiques + flux RSS/Atom, sans compte
+  const raw0 = async p => { const r = await fetch(base + p); return { status: r.status, type: r.headers.get('content-type'), text: await r.text() }; };
+  const pp = await act(a1.token, 'post', '<b>Salut</b> #Cornichon public'); const pid = pp.result.id;
+  let pg = await raw0('/p/' + pid); assert.strictEqual(pg.status, 200);
+  assert.ok(pg.text.includes('property="og:title"') && pg.text.includes('property="og:description"') && !pg.text.includes('<b>Salut</b>') && pg.text.includes('&lt;b&gt;Salut'));
+  pg = await raw0('/u/ALICE'); assert.ok(pg.status === 200 && pg.text.includes('application/rss+xml') && pg.text.includes('/tag/cornichon'));
+  let fd = await raw0('/u/alice/feed.xml'); assert.ok(/rss/.test(fd.type) && fd.text.includes('<item>') && fd.text.includes('/p/' + pid));
+  fd = await raw0('/tag/cornichon/atom.xml'); assert.ok(/atom/.test(fd.type) && fd.text.includes('<entry>') && fd.text.includes('/p/' + pid));
+  assert.ok((await raw0('/tag/cornichon')).text.includes('og:title'));
+  assert.strictEqual((await raw0('/p/99999')).status, 404); assert.strictEqual((await raw0('/u/personne')).status, 404); assert.strictEqual((await raw0('/p/abc')).status, 404);
+  assert.ok((await raw0('/public')).text.includes('/p/' + pid)); assert.ok((await raw0('/public/feed.xml')).text.includes('<rss'));
   // persistance : redémarrage sur le même fichier
   const raw = fs.readFileSync(dbFile); assert.ok(!raw.includes('secret2') && !raw.includes('nouveau1'));
   await new Promise(ok => server.close(ok));

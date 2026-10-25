@@ -3,7 +3,7 @@
 // et envoient leurs actions à /api/call, authentifiées par une session aléatoire (seul son hachage SHA-256 est stocké).
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
-const Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp } = require('./totp.js'), { Backups } = require('./backup.js');
+const Social = require('./social.js'), Stats = require('./stats.js'), { Dev } = require('./devapi.js'), { Totp } = require('./totp.js'), { Backups } = require('./backup.js'), { Public } = require('./public.js');
 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
@@ -33,6 +33,7 @@ function createServer(opts = {}) {
   const backups = dbFile === ':memory:' ? null : Backups(db, opts.backupDir || path.join(path.dirname(dbFile), 'backups'), { keep: opts.backupKeep });
   const dailyBackup = () => { try { backups.daily(); } catch (e) { console.error('Sauvegarde automatique :', e); } };
   const backupTimer = backups && setInterval(dailyBackup, opts.backupCheckMs || 3600000); if (backupTimer) { backupTimer.unref(); dailyBackup(); }
+  const pub = Public(net, { publicUrl: process.env.PUBLIC_URL || opts.publicUrl });
   const dev = Dev(db, net, { allowPrivate: opts.webhookPrivate || process.env.WEBHOOK_ALLOW_PRIVATE === '1' });
 
   // ---- temps réel (SSE) : chaque changement des données est annoncé aux clients connectés, qui rapatrient alors leur vue ----
@@ -294,6 +295,10 @@ function createServer(opts = {}) {
     try {
       const url = new URL(req.url, 'http://x');
       if (url.pathname.startsWith('/api/')) return await api(req, res, url);
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        const r = pub.handle(req, url);
+        if (r) { res.writeHead(r.status, Object.assign({ 'Content-Type': r.type, 'Cache-Control': 'public, max-age=60' }, HEAD, { 'Content-Security-Policy': "default-src 'none'; img-src https: data: 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'" })); return res.end(req.method === 'HEAD' ? undefined : r.body); }
+      }
       const file = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
       if (req.method !== 'GET' || !STATIC.has(file)) throw new Http(404, 'Introuvable');
       res.writeHead(200, Object.assign({ 'Content-Type': TYPES[file.split('.').pop()], 'Cache-Control': 'no-cache' }, HEAD));
