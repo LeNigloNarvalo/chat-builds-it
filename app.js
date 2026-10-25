@@ -1,4 +1,4 @@
-// Vraie application partagée : les données (twitchgram.v1) sont communes à tous les visiteurs et au stream ;
+// Vraie application partagée : les données (clé de stockage historique twitchgram.v1, conservée pour ne pas perdre les données) sont communes à tous les visiteurs et au stream ;
 // seule la session (app.session) reste propre à chaque visiteur. Vue stream (?stream=1) : session du vrai compte « Streamer ».
 const STREAM = new URLSearchParams(location.search).get('stream') === '1';
 const SESSION = 'app.session', A11Y_KEY = A11y.KEY;
@@ -115,7 +115,7 @@ function render() {
   $('#me').innerHTML = me ? `${STREAM ? '<b>🔴 STREAM</b> ' : ''}@${esc(me)}${net.isAdmin(me) ? ' 👑 admin' : ''} <button data-logout>Quitter</button>` : '';
   if (!me) {
     nav.innerHTML = '';
-    app.innerHTML = `<div class="card"><h2>Bienvenue sur TwitchGram</h2><input id="u" placeholder="Pseudo"><input id="pw" type="password" placeholder="Mot de passe"><input id="bio" placeholder="Bio (inscription)">
+    app.innerHTML = `<div class="card"><h2>Bienvenue dans le bocal Cornichon</h2><input id="u" placeholder="Pseudo"><input id="pw" type="password" placeholder="Mot de passe"><input id="bio" placeholder="Bio (inscription)">
     <button data-login>Connexion</button> <button data-signup>Créer un compte</button><p class="err">${esc(err)}</p></div>`;
     return;
   }
@@ -178,7 +178,7 @@ function render() {
       <p class="mut">Navigation au clavier : Tab / Maj+Tab, Entrée ou Espace pour activer. Ces préférences restent sur cet appareil.</p></div>
       <div class="card" role="group" aria-labelledby="h-data"><h2 id="h-data">📦 Mes données</h2><p class="mut">Exporte ton profil, tes posts et tes messages en JSON (sans mot de passe), ou importe un export pour les fusionner dans ton compte.</p>
       <div class="row"><button data-export>⬇️ Exporter en JSON</button><label class="mut">Importer un fichier <input id="imp-file" type="file" accept="application/json,.json"></label></div>
-      <label for="imp-txt">Ou colle le JSON ici</label><textarea id="imp-txt" class="json" placeholder='{"format":"twitchgram-export",…}'></textarea><button data-import>⬆️ Importer</button>
+      <label for="imp-txt">Ou colle le JSON ici</label><textarea id="imp-txt" class="json" placeholder='{"format":"cornichon-export",…}'></textarea><button data-import>⬆️ Importer</button>
       <p class="ok" role="status">${esc(notice)}</p></div>`;
   } else if (view.page === 'security') {
     h = `<div class="card"><h2>🔒 Sécurité</h2><b>Changer le mot de passe</b>
@@ -241,7 +241,7 @@ function themePage() {
       <label class="inl"><input type="checkbox" data-tf="anim" ${th.anim ? 'checked' : ''}> Fond animé</label><label class="inl"><input type="checkbox" data-tf="glow" ${th.glow ? 'checked' : ''}> Lueur néon</label></div>
       <p class="mut" id="tcontrast" role="status">${contrastMsg()}</p></div>
     <div class="card tp" role="group" aria-labelledby="h-th3"><h3 id="h-th3">📤 Partager mon thème</h3><div class="row"><button data-texport>📋 Copier / exporter</button><button data-timport>📥 Importer</button></div>
-      <label for="t-json">JSON du thème</label><textarea id="t-json" class="json" placeholder='{"format":"twitchgram-theme",…}'>${esc(tjson)}</textarea><p class="ok" role="status">${esc(notice)}</p>${err ? `<p class="err">${esc(err)}</p>` : ''}</div>`;
+      <label for="t-json">JSON du thème</label><textarea id="t-json" class="json" placeholder='{"format":"cornichon-theme",…}'>${esc(tjson)}</textarea><p class="ok" role="status">${esc(notice)}</p>${err ? `<p class="err">${esc(err)}</p>` : ''}</div>`;
 }
 let tjson = '';
 const contrastMsg = () => { const r = Theme.ratio(th.fg, Theme.mix(th.bg)), ok = r >= 4.5; return `Contraste texte / fond : ${r.toFixed(1)}:1 ${ok ? '✔ lisible' : '⚠ faible, choisis un texte plus clair ou plus foncé'}`; };
@@ -305,7 +305,7 @@ document.addEventListener('click', ev => {
   });
   else if ('theme' in D) { prefs = A11y.save(store, { theme: D.theme }); applyPrefs(); render(); }
   else if ('size' in D) { const i = A11y.SIZES.indexOf(prefs.size), j = D.size === '0' ? A11y.SIZES.indexOf(100) : Math.max(0, Math.min(A11y.SIZES.length - 1, i + +D.size)); prefs = A11y.save(store, { size: A11y.SIZES[j] }); applyPrefs(); render(); }
-  else if ('export' in D) { download(`twitchgram-${me}.json`, JSON.stringify(net.exportUser(me), null, 2)); notice = 'Export téléchargé ✔'; render(); }
+  else if ('export' in D) { download(`cornichon-${me}.json`, JSON.stringify(net.exportUser(me), null, 2)); notice = 'Export téléchargé ✔'; render(); }
   else if ('import' in D) attempt(async () => {
     const f = ($('#imp-file') || {}).files && $('#imp-file').files[0], txt = f ? await f.text() : v('#imp-txt');
     const r = net.importUser(me, txt); notice = `Import réussi ✔ : ${r.posts} post(s), ${r.messages} message(s), ${r.following} abonnement(s)`;

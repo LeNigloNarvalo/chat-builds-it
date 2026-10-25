@@ -1,4 +1,4 @@
-// Moteur du réseau social : les données sont PARTAGÉES via un « storage » injecté (localStorage).
+// Moteur de Cornichon : les données sont PARTAGÉES via un « storage » injecté (localStorage).
 // Chaque appel relit le storage (lecture-modification-écriture) : aucune copie ancienne n'est conservée en mémoire.
 (function (root) {
   const KEY = 'twitchgram.v1';
@@ -255,7 +255,7 @@
       // export JSON des données de l'utilisateur (jamais le mot de passe)
       exportUser(by) {
         const u = user(by);
-        return { format: 'twitchgram-export', version: 1, exportedAt: now(),
+        return { format: 'cornichon-export', version: 1, exportedAt: now(),
           profile: { name: u.name, display: u.display || '', bio: u.bio || '', avatar: u.avatar || '', banner: u.banner || '', link: u.link || '', following: u.following.slice() },
           posts: db.posts.filter(p => p.author === u.name).map(p => ({ text: p.text, at: p.at, replyTo: p.replyTo, images: p.images || [] })),
           messages: db.messages.filter(m => m.from === u.name || m.to === u.name).map(m => ({ from: m.from, to: m.to, text: m.text, at: m.at, images: m.images || [] })) };
@@ -263,7 +263,7 @@
       // import : fusionne profil, abonnements, posts et messages (sans doublons) dans le compte courant
       importUser(by, data) {
         if (typeof data === 'string') { try { data = JSON.parse(data); } catch (e) { throw new Error('Fichier JSON invalide'); } }
-        need(data && data.format === 'twitchgram-export' && data.profile && Array.isArray(data.posts), 'Ce fichier n’est pas un export TwitchGram');
+        need(data && (data.format === 'cornichon-export' || data.format === 'twitchgram-export') && data.profile && Array.isArray(data.posts), 'Ce fichier n’est pas un export Cornichon');
         const pr = data.profile, r = { posts: 0, messages: 0, following: 0 };
         api.updateProfile(user(by).name, pr); // relit le storage : on reprend l'objet utilisateur après
         const u = user(by);

@@ -1,1 +1,1 @@
-{"name":"twitchgram","scripts":{"test":"node test.js","start":"npx http-server . -p 8080"}}
+{"name":"cornichon","scripts":{"test":"node test.js","start":"npx http-server . -p 8080"}}

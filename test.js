@@ -60,7 +60,7 @@ await assert.rejects(() => n.deleteAccount('Streamer', 'x'), /Streamer/);
 n = Net(mem); await n.signup('fred', 'pass6'); await n.signup('gina', 'pass7');
 n.updateProfile('fred', { display: 'Fred', bio: 'yo', avatar: '#112233' }); n.toggleFollow('fred', 'gina'); n.post('fred', 'mon post #exp'); n.send('fred', 'gina', 'salut');
 const ex = n.exportUser('fred'); const exs = JSON.stringify(ex);
-assert.ok(ex.format === 'twitchgram-export' && ex.posts.length === 1 && ex.messages.length === 1 && !exs.includes('$') && !exs.includes('pass6'));
+assert.ok(ex.format === 'cornichon-export' && ex.posts.length === 1 && ex.messages.length === 1 && !exs.includes('$') && !exs.includes('pass6'));
 const m2 = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
 const n2 = Net(m2); await n2.signup('fred', 'autre1'); await n2.signup('gina', 'autre2');
 assert.deepStrictEqual(n2.importUser('fred', exs), { posts: 1, messages: 1, following: 1 });

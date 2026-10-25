@@ -54,8 +54,8 @@
     set('--glow', t.glow ? `0 0 14px ${accm}` : 'none');
     el.dataset.custom = '1'; if (t.anim) el.dataset.anim = '1'; else delete el.dataset.anim;
   };
-  const exportText = t => JSON.stringify({ format: 'twitchgram-theme', theme: clean(Object.assign({}, t, { on: true })) }, null, 2);
-  const importText = txt => { let o; try { o = JSON.parse(txt); } catch (e) { throw new Error('JSON invalide'); } if (!o || o.format !== 'twitchgram-theme' || !o.theme) throw new Error('Ce n’est pas un thème TwitchGram'); return clean(Object.assign({}, o.theme, { on: true })); };
+  const exportText = t => JSON.stringify({ format: 'cornichon-theme', theme: clean(Object.assign({}, t, { on: true })) }, null, 2);
+  const importText = txt => { let o; try { o = JSON.parse(txt); } catch (e) { throw new Error('JSON invalide'); } if (!o || (o.format !== 'cornichon-theme' && o.format !== 'twitchgram-theme') || !o.theme) throw new Error('Ce n’est pas un thème TwitchGram'); return clean(Object.assign({}, o.theme, { on: true })); };
   const exported = { KEY, TYPES, FONTS, PRESETS, DEF, MAX_STOPS, clean, load, save, css, apply, mix, ratio, onAcc, exportText, importText };
   if (typeof module !== 'undefined') module.exports = exported; else root.Theme = exported;
 })(this);
