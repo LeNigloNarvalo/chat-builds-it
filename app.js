@@ -1039,3 +1039,39 @@ render();
 })();
 // la page Tendances se rafraîchit seule (le score dépend de l'heure)
 setInterval(() => { if (me && view.page === 'trends') refresh(); }, 3000);
+
+// ---- autocomplétion des mentions : taper @ dans un champ de texte propose les membres ----
+(() => {
+  let box = null, ta = null, items = [], sel = 0, from = 0;
+  const close = () => { if (box) box.remove(); box = null; ta = null; items = []; };
+  const eligible = x => x && x.tagName === 'TEXTAREA' && !x.classList.contains('json') && x.closest('#app') && me;
+  const draw = () => {
+    if (!items.length) return close();
+    if (!box) { box = document.createElement('div'); box.className = 'mentionbox card'; box.setAttribute('role', 'listbox'); box.setAttribute('aria-label', 'Mentionner un membre'); document.body.appendChild(box); }
+    const r = ta.getBoundingClientRect();
+    box.style.left = Math.max(4, r.left + scrollX) + 'px'; box.style.top = (r.bottom + scrollY + 2) + 'px'; box.style.minWidth = Math.min(r.width, 280) + 'px';
+    box.innerHTML = items.map((u, i) => `<div role="option" class="mopt${i === sel ? ' on' : ''}" aria-selected="${i === sel}" data-mi="${i}">${av(u.name)}<b>${esc(u.display || u.name)}</b> <span class="mut">@${esc(u.name)}</span></div>`).join('');
+  };
+  const pick = i => {
+    const u = items[i]; if (!u || !ta) return;
+    const el = ta, end = el.selectionStart, ins = '@' + u.name + ' ';
+    el.value = el.value.slice(0, from) + ins + el.value.slice(end);
+    el.setSelectionRange(from + ins.length, from + ins.length); close(); el.focus();
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  document.addEventListener('input', ev => {
+    const x = ev.target; if (!eligible(x)) return close();
+    const pos = x.selectionStart, m = /(^|[\s(])@(\w{0,30})$/.exec(x.value.slice(0, pos));
+    if (!m) return close();
+    try { items = net.mentionable(m[2], me, 5); } catch (e) { items = []; }
+    ta = x; from = pos - m[2].length - 1; sel = 0; draw();
+  });
+  document.addEventListener('keydown', ev => {
+    if (!box || !items.length) return;
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); sel = (sel + (ev.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length; draw(); }
+    else if (ev.key === 'Enter' || ev.key === 'Tab') { ev.preventDefault(); ev.stopImmediatePropagation(); pick(sel); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); close(); }
+  }, true);
+  document.addEventListener('mousedown', ev => { const o = ev.target.closest && ev.target.closest('.mopt'); if (o) { ev.preventDefault(); pick(+o.dataset.mi); } else if (box && ev.target !== ta) close(); });
+  document.addEventListener('focusout', ev => { if (ev.target === ta) setTimeout(() => { if (document.activeElement !== ta) close(); }, 150); });
+})();

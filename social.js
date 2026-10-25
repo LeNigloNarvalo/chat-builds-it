@@ -116,7 +116,7 @@
         db.posts.push(p);
         const seeable = n => !g || isMember(g, n);
         if (replyTo) { const to = db.posts.find(x => x.id === replyTo).author; if (seeable(to)) notify(to, p.author, 'reply', p.id); }
-        for (const m of text.match(/@\w+/g) || []) { const t = db.users[m.slice(1).toLowerCase()]; if (t && seeable(t.name)) notify(t.name, p.author, 'mention', p.id); }
+        for (const m of new Set((text.match(/@\w+/g) || []).map(lc))) { const t = db.users[m.slice(1).toLowerCase()]; if (t && seeable(t.name)) notify(t.name, p.author, 'mention', p.id); }
       return p;
     };
 
@@ -407,6 +407,15 @@
       explore: by => vis(by, db.posts.filter(p => !p.replyTo && !p.group), p => p.author).sort((a, b) => b.id - a.id),
       replies: (postId, by) => vis(by, db.posts.filter(p => p.replyTo === postId), p => p.author).sort((a, b) => a.id - b.id),
       byUser: (n, by) => vis(by, db.posts.filter(p => !p.replyTo && !p.group && p.author.toLowerCase() === n.toLowerCase()), p => p.author).sort((a, b) => b.id - a.id),
+      // membres proposés par l'autocomplétion @ : préfixe du pseudo ou du nom affiché, abonnements d'abord
+      mentionable(q, by, limit) {
+        q = lc(q).replace(/^@/, '');
+        const me = db.users[lc(by)], fol = me ? me.following.map(lc) : [];
+        const hit = u => !q || lc(u.name).startsWith(q) || lc(u.display).split(/\s+/).some(w => w.startsWith(q));
+        return vis(by, Object.values(db.users).filter(u => hit(u) && lc(u.name) !== lc(by)), u => u.name)
+          .sort((a, b) => (fol.includes(lc(b.name)) - fol.includes(lc(a.name))) || (lc(b.name).startsWith(q) - lc(a.name).startsWith(q)) || lc(a.name).localeCompare(lc(b.name)))
+          .slice(0, limit || 5).map(u => ({ name: u.name, display: u.display || '' }));
+      },
       search(q, by) {
         q = (q || '').trim().toLowerCase(); if (!q) return { users: [], posts: [] };
         return {

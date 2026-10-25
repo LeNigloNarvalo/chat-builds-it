@@ -98,3 +98,4 @@ h2,h3{line-height:1.2}h2{font-size:var(--t2)}h3{font-size:var(--t1)}
 .qcard{border:1px solid var(--acc);border-radius:10px;padding:6px 10px;margin:6px 0;cursor:pointer}.qcard p{margin:4px 0}
 .reacts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;align-items:center}.chip{padding:2px 8px;border-radius:99px}.chip.on,.picker .on{color:var(--acc);border-color:var(--acc)}
 .picker{display:flex;gap:4px;margin-top:6px}.picker button{font-size:1.2em}.rwho{margin-top:6px;font-size:.9em}.quoteform textarea{width:100%}
+.mentionbox{position:absolute;z-index:50;padding:4px;max-width:90vw}.mopt{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:8px;cursor:pointer}.mopt.on,.mopt:hover{background:var(--bd)}

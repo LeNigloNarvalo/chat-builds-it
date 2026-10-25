@@ -24,12 +24,15 @@ n.toggleLike('alice', p.id); n.post('alice', 'réponse', p.id);
 assert.strictEqual(n.replies(p.id).length, 1);
 assert.deepStrictEqual(n.notifications('Bob').map(x => x.type).sort(), ['follow', 'like', 'reply']);
 assert.strictEqual(n.notifications('alice')[0].type, 'mention');
+const m0 = n.notifications('bob').filter(x => x.type === 'mention').length; n.post('alice', 'double @Bob et @bob'); assert.strictEqual(n.notifications('bob').filter(x => x.type === 'mention').length, m0 + 1);
+assert.deepStrictEqual(n.mentionable('@b', 'alice').map(x => x.name), ['Bob']);
+assert.ok(!n.mentionable('', 'alice').some(x => x.name === 'alice'));
 n.send('alice', 'bob', 'yo'); assert.strictEqual(n.conversation('bob', 'alice').length, 1);
 assert.deepStrictEqual(n.trending()[0], ['#twitch', 1]);
 assert.throws(() => n.post('alice', 'x'.repeat(281)));
 assert.throws(() => n.deletePost('alice', p.id));
 // persistance : « redémarrage »
-n = Net(mem); assert.strictEqual(n.explore().length, 1); assert.strictEqual(n.followers('bob')[0], 'alice');
+n = Net(mem); assert.strictEqual(n.explore().length, 2); assert.strictEqual(n.followers('bob')[0], 'alice');
 const tl = (n.post('alice', 'a #x #y'), n.post('alice', 'b #x'), n.trendingLive()); assert.ok(tl[0].tag === '#x' && tl[0].count === 3 - 1 + 0 || tl[0].tag.startsWith('#'));
 assert.ok(n.ranking(2).every(r => !r.post.replyTo));
 n.deletePost('Bob', p.id); assert.strictEqual(n.db().posts.filter(x => x.id === p.id).length, 0);
