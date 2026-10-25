@@ -351,4 +351,22 @@ console.log('ok');
   assert.strictEqual(r.quoteCount(q0.id), 1); assert.throws(() => r.quote('ben', q0.id, '  '));
   assert.ok(r.notifications('ann').some(x => x.type === 'quote') && r.notifications('ann').some(x => x.type === 'react' && x.emoji === '🔥'));
 }
+// hashtags et sujets tendance : fil d'un #tag, tendances 24 h / 7 j, abonnement
+{
+  let clock = 1e12; const m2 = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
+  const r = Net(m2, () => clock); await r.signup('tia', 'pass1'); await r.signup('tom', 'pass2');
+  const old = r.post('tia', 'vieux #Retro'); clock += 3 * 86400000;
+  const a = r.post('tia', 'salut #Live et #retro'); clock += 1000; r.post('tom', 'encore #live'); r.toggleLike('tom', a.id);
+  assert.deepStrictEqual(r.tagFeed('#LIVE', 'tom').map(p => p.author), ['tom', 'tia']);
+  assert.strictEqual(r.tagFeed('retro').length, 2);
+  assert.deepStrictEqual(r.trendingTopics('24h', 'tom').map(x => x.tag), ['#live', '#retro']);
+  assert.strictEqual(r.trendingTopics('24h', 'tom')[0].count, 2);
+  assert.strictEqual(r.trendingTopics('7d', 'tom').find(x => x.tag === '#retro').count, 2);
+  assert.strictEqual(r.trendingTopics('24h', 'tom').find(x => x.tag === '#retro').count, 1);
+  assert.strictEqual(r.trendingPosts('24h', 'tom')[0].post.id, a.id);
+  assert.strictEqual(r.toggleTopic('tom', 'Live'), true); assert.deepStrictEqual(r.topics('tom'), ['#live']); assert.ok(r.isTopic('tom', '#live'));
+  assert.strictEqual(r.topicsFeed('tom').length, 2); assert.throws(() => r.toggleTopic('tom', '#a b'), /invalide/);
+  assert.strictEqual(r.toggleTopic('tom', '#live'), false); assert.strictEqual(r.topics('tom').length, 0);
+  assert.ok(!('topics' in require('./social.js').snapshot(r.db(), 'tia').users.tom));
+}
 })();

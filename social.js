@@ -121,6 +121,7 @@
       return p;
     };
 
+    const cleanTag = t => { t = String(t || '').trim().toLowerCase(); if (t[0] !== '#') t = '#' + t; need(/^#\w{1,60}$/.test(t), 'Hashtag invalide'); return t; };
     const ownList = (by, listId) => { const l = (user(by).lists || []).find(x => x.id === +listId); need(l, 'Liste introuvable'); return l; };
 
     const api = {
@@ -440,6 +441,44 @@
         const c = {};
         for (const p of db.posts) if (!p.group) for (const t of new Set((p.text.match(/#\w+/g) || []).map(x => x.toLowerCase()))) { const e = c[t] || (c[t] = { tag: t, count: 0, score: 0 }); e.count++; e.score += scoreOf(p); }
         return Object.values(c).sort((a, b) => b.score - a.score).slice(0, limit || 8);
+      },
+      // ---- sujets (#hashtags) : fil d'un sujet, tendances sur 24 h / 7 j, abonnement personnel ----
+      // posts (racines et réponses) contenant le hashtag, récents d'abord
+      tagFeed(tag, by) {
+        tag = cleanTag(tag);
+        return vis(by, db.posts.filter(p => !p.group && !p.hidden && (p.text.toLowerCase().match(/#\w+/g) || []).includes(tag)), p => p.author).sort((a, b) => b.at - a.at);
+      },
+      // sujets les plus actifs sur une fenêtre (24h | 7d) : posts, auteurs distincts, interactions
+      trendingTopics(range, by, limit) {
+        const span = range === '7d' ? 7 * 86400000 : 86400000, since = now() - span, c = {};
+        for (const p of vis(by, db.posts.filter(x => !x.group && !x.hidden && x.at >= since), x => x.author)) {
+          const weight = 1 + p.likes.length * 2 + db.posts.filter(r => r.replyTo === p.id).length * 3;
+          for (const t of new Set((p.text.toLowerCase().match(/#\w+/g) || []))) { const e = c[t] || (c[t] = { tag: t, count: 0, authors: new Set(), score: 0 }); e.count++; e.authors.add(p.author); e.score += weight; }
+        }
+        return Object.values(c).map(e => ({ tag: e.tag, count: e.count, authors: e.authors.size, score: e.score + e.authors.size }))
+          .sort((a, b) => b.score - a.score || b.count - a.count || a.tag.localeCompare(b.tag)).slice(0, limit || 10);
+      },
+      // posts les plus actifs de la fenêtre (racines) : likes + réponses
+      trendingPosts(range, by, limit) {
+        const span = range === '7d' ? 7 * 86400000 : 86400000, since = now() - span;
+        return vis(by, db.posts.filter(p => !p.replyTo && !p.group && !p.hidden && p.at >= since), p => p.author)
+          .map(p => ({ post: p, likes: p.likes.length, replies: db.posts.filter(r => r.replyTo === p.id).length }))
+          .map(r => Object.assign(r, { score: r.likes * 2 + r.replies * 3 }))
+          .sort((a, b) => b.score - a.score || b.post.at - a.post.at).slice(0, limit || 6);
+      },
+      topics: by => ((db.users[lc(by)] || {}).topics || []).slice(),
+      isTopic: (by, tag) => ((db.users[lc(by)] || {}).topics || []).includes(String(tag || '').toLowerCase()),
+      // s'abonner / se désabonner d'un sujet ; renvoie true si abonné
+      toggleTopic(by, tag) {
+        const u = user(by); tag = cleanTag(tag); guard(by);
+        const l = u.topics = u.topics || [], i = l.indexOf(tag);
+        if (i >= 0) l.splice(i, 1); else { need(l.length < 50, '50 sujets suivis maximum'); l.push(tag); }
+        save(); return i < 0;
+      },
+      // fil des sujets suivis
+      topicsFeed(by) {
+        const t = new Set(api.topics(by));
+        return vis(by, db.posts.filter(p => !p.group && !p.hidden && !p.replyTo && (p.text.toLowerCase().match(/#\w+/g) || []).some(x => t.has(x))), p => p.author).sort((a, b) => b.at - a.at).slice(0, 50);
       },
       // profil éditable : pseudo affiché, bio, couleur d'avatar, bannière (URL d'image ou dégradé), lien web
       updateProfile(by, f) {
@@ -822,9 +861,9 @@
     if (!me) throw new Error('Utilisateur introuvable');
     const lcm = me.name.toLowerCase(), users = Object.create(null);
     for (const [k, u] of Object.entries(db.users)) {
-      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, ...pub } = u;
+      const { pass, epoch, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending, lists, dismissed, topics, ...pub } = u;
       if (lists) pub.lists = k === lcm ? lists : lists.filter(l => l.public);
-      if (k === lcm) Object.assign(pub, { dismissed, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
+      if (k === lcm) Object.assign(pub, { dismissed, topics, blocked, muted, bookmarks, sanction, sanctions, dmRead, dmCleared, email, emailPending });
       else if (me.admin) Object.assign(pub, { sanction });
       users[k] = JSON.parse(JSON.stringify(pub));
     }

@@ -36,9 +36,10 @@ let linkMsg = ''; // résultat du lien ouvert (confirmation / réinitialisation)
 let me = null;
 const checkSession = () => { me = sync.me(); };
 let view = { page: 'feed' };
+let trendRange = '24h'; // période de la page Tendances : '24h' | '7d'
 const $ = s => document.querySelector(s);
 const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const rich = s => esc(s).replace(/#\w+/g, t => `<span class="tag" data-search="${t}">${t}</span>`).replace(/@\w+/g, t => `<span class="mention" data-user="${t.slice(1)}">${t}</span>`);
+const rich = s => esc(s).replace(/#\w+/g, t => `<span class="tag" data-tag="${t}">${t}</span>`).replace(/@\w+/g, t => `<span class="mention" data-user="${t.slice(1)}">${t}</span>`);
 const color = n => `hsl(${[...n].reduce((a, c) => a + c.charCodeAt(0) * 7, 0) % 360},60%,45%)`;
 const prof = n => { try { return net.profile(n); } catch (e) { return {}; } };
 const shown = n => prof(n).display || n;
@@ -505,11 +506,19 @@ function render() {
   else if (view.page === 'lists') h = listsPage(e);
   else if (view.page === 'list') h = listPage(e, paged);
   else if (view.page === 'explore') {
-    h = composer(t('composer.ph')) + whoToFollow() + e + `<div class="card"><b>Tendances</b> ${net.trending().map(([t, c]) => `<span class="tag" data-search="${t}">${t} (${c})</span>`).join(' ') || '<span class="mut">aucune</span>'}</div>` + paged();
+    h = composer(t('composer.ph')) + whoToFollow() + e + `<div class="card"><b>Tendances</b> ${net.trending().map(([t, c]) => `<span class="tag" data-tag="${t}">${t} (${c})</span>`).join(' ') || '<span class="mut">aucune</span>'}</div>` + paged();
+  } else if (view.page === 'tag') {
+    const tg = view.arg, sub = net.isTopic(me, tg), ps = net.tagFeed(tg, me), au = new Set(ps.map(p => p.author)).size;
+    h = `<div class="card"><h2>${esc(tg)}</h2><p class="mut">${ps.length} post${ps.length > 1 ? 's' : ''} · ${au} auteur${au > 1 ? 's' : ''}</p>
+      <div class="row"><button data-topic="${esc(tg)}" aria-pressed="${sub}">${sub ? '✔ Sujet suivi' : '＋ Suivre ce sujet'}</button> <button data-page="trends">🔥 Tendances</button></div></div>${e}` + list(ps);
   } else if (view.page === 'trends') {
-    const medal = i => ['🥇', '🥈', '🥉'][i] || `#${i + 1}`;
-    h = `<div class="card"><b>🔴 En direct · hashtags du moment</b><ol class="trend">${net.trendingLive().map(t => `<li><span class="tag" data-search="${t.tag}">${t.tag}</span> <span class="mut">${t.count} post${t.count > 1 ? 's' : ''}</span><i class="bar" style="width:${Math.max(6, Math.round(t.score / (net.trendingLive(1)[0].score || 1) * 100))}%"></i></li>`).join('') || '<li class="mut">aucun hashtag</li>'}</ol></div>
-    <div class="card"><b>🏆 Classement des posts</b></div>` + net.ranking(6, me).map((r, i) => `<div class="rank"><span class="medal">${medal(i)}</span>${postHTML(r.post)}<span class="mut">score ${r.score.toFixed(1)}</span></div>`).join('') + (e || '');
+    const medal = i => ['🥇', '🥈', '🥉'][i] || `#${i + 1}`, rg = trendRange, tt = net.trendingTopics(rg, me, 10), tp = net.trendingPosts(rg, me, 6), my = net.topics(me);
+    const top = tt.length ? tt[0].score : 1, per = rg === '7d' ? '7 jours' : '24 h';
+    h = `<div class="card"><h2>🔥 Tendances</h2><div class="tabs" role="tablist" aria-label="Période">${[['24h', '24 heures'], ['7d', '7 jours']].map(([k, l]) => `<button role="tab" aria-selected="${rg === k}" class="${rg === k ? 'on' : ''}" data-trange="${k}">${l}</button>`).join('')}</div></div>${e}
+    <div class="card"><b>#️⃣ Sujets les plus actifs · ${per}</b><ol class="trend">${tt.map(x => `<li><span class="tag" data-tag="${esc(x.tag)}">${esc(x.tag)}</span> <span class="mut">${x.count} post${x.count > 1 ? 's' : ''} · ${x.authors} auteur${x.authors > 1 ? 's' : ''}</span> <button data-topic="${esc(x.tag)}" aria-pressed="${my.includes(x.tag)}">${my.includes(x.tag) ? '✔ Suivi' : '＋ Suivre'}</button><i class="bar" style="width:${Math.max(6, Math.round(x.score / top * 100))}%"></i></li>`).join('') || '<li class="mut">Aucun sujet sur cette période.</li>'}</ol></div>
+    <div class="card"><b>⭐ Sujets que je suis</b> ${my.map(x => `<span class="tag" data-tag="${esc(x)}">${esc(x)}</span>`).join(' ') || '<span class="mut">Aucun : suis un sujet pour le retrouver ici.</span>'}</div>` +
+      (my.length ? `<div class="card"><b>📰 Dans mes sujets</b></div>` + list(net.topicsFeed(me)) : '') +
+      `<div class="card"><b>🏆 Posts les plus actifs · ${per}</b></div>` + (tp.map((r, i) => `<div class="rank"><span class="medal">${medal(i)}</span>${postHTML(r.post)}<span class="mut">${r.likes} ❤ · ${r.replies} 💬</span></div>`).join('') || '<p class="mut">Aucun post sur cette période.</p>');
   } else if (view.page === 'drafts') {
     h = draftsPage(e);
   } else if (view.page === 'bookmarks') {
@@ -750,7 +759,7 @@ function profileLists(name, self) {
 }
 // accessibilité : éléments cliquables non-boutons focalisables, états ARIA, libellés
 function a11yPass() {
-  document.querySelectorAll('#app [data-user]:not(button),#app [data-search]:not(button),#app [data-open]:not(button),#app [data-cmopen]:not(button)').forEach(x => { x.tabIndex = 0; x.setAttribute('role', 'button'); });
+  document.querySelectorAll('#app [data-user]:not(button),#app [data-search]:not(button),#app [data-tag]:not(button),#app [data-open]:not(button),#app [data-cmopen]:not(button)').forEach(x => { x.tabIndex = 0; x.setAttribute('role', 'button'); });
   document.querySelectorAll('#nav button').forEach(b => { if (b.classList.contains('on')) b.setAttribute('aria-current', 'page'); });
   document.querySelectorAll('#app [data-like]').forEach(b => { b.setAttribute('aria-pressed', b.classList.contains('on')); b.setAttribute('aria-label', b.textContent.trim().slice(2) + ' j’aime'); });
   document.querySelectorAll('#app [data-open]:is(button)').forEach(b => b.setAttribute('aria-label', b.textContent.trim().slice(2) + ' réponses'));
@@ -855,7 +864,7 @@ document.addEventListener('click', async ev => {
   } else if ('notiftest' in b.dataset) Notif.show({ id: 'test' + Date.now(), type: 'mention' }, 'Le bocal');
 });
 document.addEventListener('click', ev => {
-  const d = ev.target.closest('*[data-atab],*[data-bkcreate],*[data-bkkeep],*[data-bkask],*[data-bkno],*[data-bkrestore],*[data-bkdl],*[data-bkdel],*[data-asanc],*[data-adelask],*[data-adelno],*[data-adel],*[data-tr],*[data-trclose],*[data-lang],*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-react],*[data-picker],*[data-rwho],*[data-quote],*[data-sendquote],*[data-cancelquote],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-login],*[data-mfago],*[data-mfaback],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-appeal],*[data-cancelappeal],*[data-sendappeal],*[data-decide],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
+  const d = ev.target.closest('*[data-atab],*[data-bkcreate],*[data-bkkeep],*[data-bkask],*[data-bkno],*[data-bkrestore],*[data-bkdl],*[data-bkdel],*[data-asanc],*[data-adelask],*[data-adelno],*[data-adel],*[data-tr],*[data-trclose],*[data-lang],*[data-page],*[data-dvnew],*[data-dvcopy],*[data-dvrevoke],*[data-dvhook],*[data-dvtoggle],*[data-dvhookdel],*[data-dvtest],*[data-dvredo],*[data-dvdetail],*[data-dvclose],*[data-sfollow],*[data-sdismiss],*[data-plan],*[data-drplan],*[data-drunplan],*[data-drpub],*[data-drdel],*[data-restore],*[data-diag],*[data-like],*[data-react],*[data-picker],*[data-rwho],*[data-quote],*[data-sendquote],*[data-cancelquote],*[data-open],*[data-del],*[data-send],*[data-pollon],*[data-polloff],*[data-polladd],*[data-pollrm],*[data-vote],*[data-newposts],*[data-more],*[data-user],*[data-search],*[data-tag],*[data-trange],*[data-topic],*[data-login],*[data-mfago],*[data-mfaback],*[data-signup],*[data-logout],*[data-follow],*[data-chat],*[data-dm],*[data-dosearch],*[data-sub],*[data-grad],*[data-saveprofile],*[data-chpw],*[data-forgot],*[data-doforgot],*[data-backlogin],*[data-doreset],*[data-endlink],*[data-setmail],*[data-rmmail],*[data-logoutall],*[data-delacc],*[data-theme],*[data-size],*[data-export],*[data-import],*[data-bm],*[data-repost],*[data-edit],*[data-saveedit],*[data-canceledit],*[data-hist],*[data-gal],*[data-rmimg],*[data-lbclose],*[data-lbnav],*[data-tpreset],*[data-tadd],*[data-trm],*[data-trev],*[data-trandom],*[data-treset],*[data-texport],*[data-timport],*[data-report],*[data-appeal],*[data-cancelappeal],*[data-sendappeal],*[data-decide],*[data-sendreport],*[data-cancelreport],*[data-block],*[data-mute],*[data-unblock],*[data-unmute],*[data-mod],*[data-lift],*[data-cmopen],*[data-cmnew],*[data-cmjoin],*[data-cmleave],*[data-cmreq],*[data-cminv],*[data-cmrespond],*[data-cmcancel],*[data-cmrm],*[data-cmunban],*[data-cmmod],*[data-cmtab],*[data-cmsave],*[data-cmdel],*[data-cmsend],*[data-lopen],*[data-lcreate],*[data-lpub],*[data-lren],*[data-ldel],*[data-ladd],*[data-lmem]');
   if (!d || d === document.documentElement || d === document.body) return;   // <html data-theme> ne doit pas déclencher d'action (sinon chaque clic re-rendait la page et effaçait le focus des champs)
   const D = d.dataset, v = id => ($(id) || {}).value;
   if (Object.keys(D).some(k => /^t(preset|add|rm|rev|random|reset|export|import)$/.test(k))) themeClick(D, v);
@@ -1019,6 +1028,9 @@ document.addEventListener('click', ev => {
   else if ('dmdelno' in D) { view.askDelDm = false; render(); }
   else if ('dmdelyes' in D) attempt(async () => { await net.deleteConversation(me, view.arg); view.askDelDm = false; });
   else if ('dm' in D) attempt(async () => { await net.send(me, view.arg, v('#dm'), pend.dm); pend.dm = []; });
+  else if ('tag' in D) go('tag', D.tag);
+  else if ('trange' in D) { trendRange = D.trange === '7d' ? '7d' : '24h'; render(); }
+  else if ('topic' in D) attempt(() => net.toggleTopic(me, D.topic));
   else if ('search' in D) go('search', D.search);
   else if ('dosearch' in D) go('search', v('#q'));
 });
