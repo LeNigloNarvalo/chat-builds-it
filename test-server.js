@@ -419,6 +419,32 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
     await new Promise(ok => setTimeout(ok, 70)); assert.ok(bk.daily(), 'sauvegarde suivante après l\'intervalle');
     await new Promise(ok => setTimeout(ok, 70)); bk.daily(); assert.strictEqual(bk.list().filter(b => b.kind === 'auto').length, 2, 'rotation'); sdb.close();
   }
+  // médiathèque + badges de confiance via l'API : écritures protégées, vue filtrée selon le compte
+  {
+    const tsrv = createServer({ db: ':memory:', authPerMin: 1000 }); await new Promise(ok => tsrv.listen(0, '127.0.0.1', ok));
+    const base = 'http://127.0.0.1:' + tsrv.address().port;
+    const call = async (p, tok, data) => { const r = await fetch(base + p, { method: data === undefined ? 'GET' : 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, tok ? { Authorization: 'Bearer ' + tok } : {}), body: data === undefined ? undefined : JSON.stringify(data) }); return Object.assign(await r.json(), { status: r.status }); };
+    const act = (tok, method, ...args) => call('/api/call', tok, { method, args });
+    const open = async name => (await call('/api/signup', null, { name, password: 'secret1' })).token;
+    const a1 = { token: await open('mdalice') }, b = { token: await open('mdbob') }, adm = (await call('/api/stream-session', null, {})).token;
+    const px = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==', m = (await act(a1.token, 'addMedia', { name: 'x', src: px, thumb: px, orig: 999 })).result;
+    const st = await call('/api/state?v=-1', a1.token); assert.strictEqual(st.state.media.length, 1); assert.ok(!('src' in st.state.media[0]) && st.state.media[0].thumb === px);
+    assert.strictEqual((await call('/api/state?v=-1', b.token)).state.media.length, 0);
+    const r = await fetch(base + '/api/media?id=' + m.id, { headers: { Authorization: 'Bearer ' + a1.token } }); assert.strictEqual(r.status, 200); assert.strictEqual(r.headers.get('content-type'), 'image/jpeg');
+    assert.strictEqual((await fetch(base + '/api/media?id=' + m.id, { headers: { Authorization: 'Bearer ' + b.token } })).status, 400);
+    assert.strictEqual((await act(a1.token, 'deleteMedia', [m.id])).result, 1);
+    // badges : demande du membre, décision réservée aux admins, vue filtrée (demandes et historique privés)
+    const req = (await act(a1.token, 'requestVerification', 'Je suis le créateur de cette chaîne')).result; assert.ok(req.id);
+    assert.strictEqual((await act(b.token, 'decideVerification', req.id, true)).status, 400);
+    let sv = (await call('/api/state?v=-1', b.token)).state; assert.strictEqual(sv.verifs.length, 0); assert.strictEqual(sv.badgeLog.length, 0);
+    sv = (await call('/api/state?v=-1', adm)).state; assert.strictEqual(sv.verifs.length, 1);
+    assert.strictEqual((await act(adm, 'decideVerification', req.id, true)).status, 200);
+    sv = (await call('/api/state?v=-1', b.token)).state; assert.ok(sv.users.mdalice.badges.verified); assert.strictEqual(sv.badgeLog.length, 0);
+    assert.strictEqual((await call('/api/state?v=-1', a1.token)).state.badgeLog.length, 2);
+    assert.strictEqual((await act(adm, 'revokeBadge', 'mdalice', 'verified', 'Test de révocation')).status, 200);
+    assert.ok(!(await call('/api/state?v=-1', b.token)).state.users.mdalice.badges.verified);
+    tsrv.close();
+  }
   for (const x of [s3, srv, rcv]) x.close(); rcv.closeAllConnections && rcv.closeAllConnections();
   console.log('ok jetons, webhooks, double authentification, statistiques & sauvegardes'); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });

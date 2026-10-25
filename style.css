@@ -130,3 +130,10 @@ table{width:100%;border-collapse:collapse;font-size:.9em}th,td{text-align:left;p
 mark { background: #ffe066; color: #000; border-radius: 3px; padding: 0 2px; }
 .ftsres { cursor: pointer; }
 .ftsres p { margin: .4em 0 0; }
+
+.quota{height:12px;border-radius:6px;background:var(--bd,#8884);overflow:hidden;margin:8px 0}.quota .bar{height:100%;margin:0;border-radius:6px}
+.mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:var(--s2,10px)}.mcard{display:grid;gap:6px;align-content:start}.mth{padding:0;border:0;background:none;cursor:pointer}.mth img{width:100%;height:150px;object-fit:cover;border-radius:8px;display:block}.mcard input[type=text],.mcard input:not([type]){width:100%;box-sizing:border-box}
+
+.tbadge{display:inline-block;margin-left:.25em;font-size:.85em;cursor:help;vertical-align:baseline}.tbadge.verified{filter:hue-rotate(0deg)}
+.trchip{display:inline-block;padding:.1em .6em;margin:0 .3em .3em 0;border-radius:999px;background:var(--bd,#8883);font-size:.9em}.trchip.verified{background:#1d9bf033}.trchip.moderator{background:#9146ff33}.trchip.veteran{background:#f5b30033}
+.trlog{margin:.4em 0;padding-left:1.1em;display:grid;gap:3px}

@@ -48,7 +48,9 @@ const shown = n => prof(n).display || n;
 const av = (n, big) => { const p = prof(n); return p.photo ? `<span class="av${big ? ' big' : ''}" style="background:center/cover url('${p.photo}')" role="img" aria-label="${esc(shown(n))}"></span>` : `<span class="av${big ? ' big' : ''}" style="background:${p.avatar || color(n)}">${esc(shown(n)[0].toUpperCase())}</span>`; };
 const GRADS = ['linear-gradient(135deg,#9146ff,#ff4d8d)', 'linear-gradient(135deg,#00c6ff,#0072ff)', 'linear-gradient(135deg,#f7971e,#ffd200)', 'linear-gradient(135deg,#11998e,#38ef7d)', 'linear-gradient(135deg,#232526,#9146ff)', 'linear-gradient(135deg,#ff512f,#dd2476)'];
 const bannerCss = b => !b ? GRADS[0] : b.startsWith('grad:') ? GRADS[+b.slice(5)] : `center/cover url("${encodeURI(b).replace(/"/g, '%22')}"), ${GRADS[4]}`;
-const peopleList = names => names.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b> <span class="mut">@${esc(n)} · ${esc(prof(n).bio || '')}</span></div>`).join('') || '<p class="mut">Personne pour l’instant.</p>';
+// badges de confiance (vérifié, ancien, modérateur) affichés à côté du nom sur les posts, profils et listes
+const tbadges = n => net.badgesOf(n).map(k => { const b = Social.BADGES[k]; return `<span class="tbadge ${k}" title="${b.label}" role="img" aria-label="${b.label}">${b.icon}</span>`; }).join('');
+const peopleList = names => names.map(n => `<div class="card person" data-user="${esc(n)}">${av(n)}<b>${esc(shown(n))}</b>${tbadges(n)} <span class="mut">@${esc(n)} · ${esc(prof(n).bio || '')}</span></div>`).join('') || '<p class="mut">Personne pour l’instant.</p>';
 const ago = I18n.ago;
 const go = (page, arg) => { if (page === 'security' || page === 'privacy') { ses.loaded = false; ses.msg = ''; } if (page === 'settings') { tfa.loaded = false; tfa.setup = null; tfa.codes = null; } if (page === 'stats') st.loaded = false; if (page === 'dev') { dev.loaded = false; dev.fresh = null; dev.detail = null; } if (view.page !== page) for (const k in pagers) pagers[k].key = null; view = { page, arg }; pend.post = []; pend.dm = []; curDraft = null; fs.scope = null; render(); };
 // ---- fil paginé côté serveur (/api/feed) : pages de 10 posts, défilement infini, bandeau « N nouveaux posts » ----
@@ -486,7 +488,7 @@ function postHTML(p, thread) {
   const pollH = pollHTML(p), tx = trans[p.id];
   const hid = p.hidden, seeHidden = hid && (p.author === me || net.isAdmin(me));
   const modBanner = hid ? `<div class="err" role="status">🙈 Post masqué par la modération (${esc(hid.reason || '')}).${p.author === me ? (net.hasAppealed(me, 'hide', p.id) ? ' Appel en cours d’examen.' : ` <button data-appeal="hide:${p.id}">📨 Faire appel</button>`) : ''}</div>${view.appealing === 'hide:' + p.id ? appealForm('hide', p.id) : ''}` : '';
-  return `<div class="card post" data-pid="${p.id}">${av(p.author)}<span class="who" data-user="${p.author}">${esc(shown(p.author))}</span> <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span> ${edited}${p.group ? groupTag(p.group) : ''}
+  return `<div class="card post" data-pid="${p.id}">${av(p.author)}<span class="who" data-user="${p.author}">${esc(shown(p.author))}</span>${tbadges(p.author)} <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span> ${edited}${p.group ? groupTag(p.group) : ''}
   ${modBanner}${hid && !seeHidden ? '<p class="mut">Ce contenu a été masqué par la modération.</p>' : body + quoteCard(p) + pollH}${histHTML}${view.reporting === p.id ? reportForm(p.id) : ''}<div class="acts"><button data-like="${p.id}" class="${liked ? 'on' : ''}">♥ ${p.likes.length}</button><button data-picker="${p.id}" aria-expanded="${view.picker === p.id}" aria-label="Réagir avec un émoji">😊</button>
   <button data-open="${p.id}">💬 ${n}</button>${!p.replyTo && p.author !== me ? `<button data-repost="${p.id}" class="${rp ? 'on' : ''}" aria-pressed="${rp}" aria-label="${rp ? t('post.unrepost') : t('post.repost')}">🔁 ${rc}</button>` : rc ? `<span class="mut">🔁 ${rc}</span>` : ''}
   ${!p.group && me ? `<button data-quote="${p.id}" class="${view.quoting === p.id ? 'on' : ''}" aria-label="Citer le post" title="Citer">❝ ${net.quoteCount(p.id)}</button>` : ''}${p.author !== me && !net.isAdmin(p.author) ? `<button data-report="${p.id}" class="${net.hasReported(me, p.id) ? 'on' : ''}" aria-label="${net.hasReported(me, p.id) ? t('post.reported') : t('post.report')}" ${net.hasReported(me, p.id) ? 'disabled' : ''}>🚩</button>` : ''}<a class="btn" href="/p/${p.id}" target="_blank" rel="noopener" aria-label="${t('share.page')}" title="${t('share.page')}">🔗</a><button data-bm="${p.id}" class="${saved ? 'on' : ''}" aria-pressed="${saved}" aria-label="${saved ? t('post.unbookmark') : t('post.bookmark')}">${saved ? '🔖' : '📑'}</button>${net.canEdit(me, p.id) && !editing ? `<button data-edit="${p.id}" aria-label="${t('post.edit')}">✏️</button>` : ''}${p.author === me || net.isAdmin(me) ? `<button data-del="${p.id}">🗑</button>` : ''}</div>${reactionsHTML(p)}${view.quoting === p.id ? `<div class="card quoteform"><label>Votre commentaire<textarea id="quote-txt" maxlength="280"></textarea></label>${quoteCard({ quoteOf: p.id })}<button data-sendquote="${p.id}">Citer</button> <button data-cancelquote>Annuler</button></div>` : ''}</div>`;
@@ -608,12 +610,59 @@ function backupsPage(head) {
       : `<div class="row"><button data-bkask="${esc(b.id)}">♻️ Restaurer</button><button data-bkdl="${esc(b.id)}">⬇️ Télécharger</button><button data-bkdel="${esc(b.id)}">🗑 Supprimer</button></div>`}</div>`).join('') || '<p class="mut">Aucune version disponible.</p>');
 }
 const AUDIT = { 'report-dismiss': '✅ signalement classé', 'report-delete': '🗑 post supprimé', 'report-hide': '🙈 post masqué', 'appeal-accept': '✅ appel accepté', 'appeal-reject': '❌ appel rejeté', 'report-warn': '⚠️ avertissement (signalement)', 'report-suspend': '⏸ suspension (signalement)', 'report-ban': '⛔ bannissement (signalement)', 'user-warn': '⚠️ avertissement', 'user-mute': '🔇 mute', 'report-mute': '🔇 mute (signalement)', 'user-suspend': '⏸ suspension', 'user-ban': '⛔ bannissement', 'user-delete': '🗑 compte supprimé', lift: '🔓 sanction levée' };
+// ---- profils vérifiés et badges de confiance : demande depuis le profil, revue par les admins, historique et révocation ----
+const tr = { msg: '' };
+const TR_ACT = { request: '📨 Demande', grant: '✅ Attribué', reject: '❌ Refusée', revoke: '🚫 Révoqué' };
+const TR_DESC = { verified: 'Identité du compte confirmée par un administrateur.', moderator: 'Membre de confiance qui aide à garder le bocal propre.', veteran: 'Automatique : compte ouvert depuis plus de 30 jours.' };
+const trLog = (list, withUser) => list.length ? `<ul class="trlog">${list.map(x => `<li>${TR_ACT[x.action] || x.action} · ${(Social.BADGES[x.badge] || {}).icon || ''} ${esc((Social.BADGES[x.badge] || {}).label || x.badge)}${withUser ? ` · @${esc(x.user)}` : ''} <span class="mut">· par @${esc(x.by)} · ${ago(x.at)}${x.reason ? ' · « ' + esc(x.reason) + ' »' : ''}</span></li>`).join('')}</ul>` : '<p class="mut">Aucun événement pour l’instant.</p>';
+const trBadges = n => { const l = net.badgesOf(n); return l.length ? l.map(k => `<span class="trchip ${k}" title="${esc(TR_DESC[k])}">${Social.BADGES[k].icon} ${Social.BADGES[k].label}</span>`).join(' ') : '<span class="mut">Aucun badge</span>'; };
+function trustCard(name) {
+  if (!me) return '';
+  const self = name.toLowerCase() === me.toLowerCase(), admin = net.isAdmin(me), u = net.profile(name);
+  if (self && !admin) {
+    const reqs = net.verifRequests(me), open = reqs.find(r => r.status === 'open'), last = reqs.find(r => r.status === 'rejected'), ver = net.badgesOf(me).includes('verified');
+    return `<div class="card trust" role="group" aria-labelledby="h-trust"><h2 id="h-trust">🏷 Badges de confiance</h2><p>${trBadges(me)}</p>
+      ${ver ? '<p class="ok">✅ Votre profil est vérifié.</p>' : open ? `<p class="mut" role="status">⏳ Demande de vérification envoyée ${ago(open.at)} : un administrateur va l’examiner.</p>`
+      : `${last ? `<p class="err">Dernière demande refusée ${ago(last.closedAt)}${last.answer ? ' : « ' + esc(last.answer) + ' »' : ''}</p>` : ''}
+        <label>Pourquoi faire vérifier votre profil ? <textarea id="tr-note" maxlength="400" placeholder="Qui êtes-vous, quel rôle jouez-vous dans la communauté ?"></textarea></label><button data-tr="req">✅ Demander la vérification</button>`}
+      ${tr.msg ? `<p class="ok" role="status">${esc(tr.msg)}</p>` : ''}
+      <details><summary>Historique de mes badges</summary>${trLog(net.badgeHistory(me, me))}</details></div>`;
+  }
+  if (!admin) return '';
+  const held = Object.keys(u.badges || {}), imp = u.admin;
+  return `<div class="card trust" role="group" aria-label="Badges de ${esc(u.name)}"><h2>🏷 Badges de @${esc(u.name)}</h2><p>${trBadges(u.name)}</p>
+    ${imp ? '<p class="mut">Le compte Streamer possède d’office tous les badges.</p>' : `<label>Motif (inscrit à l’historique, obligatoire pour révoquer) <input id="tr-reason" maxlength="200"></label>
+    <div class="row">${['verified', 'moderator'].map(k => held.includes(k) ? `<button data-tr="revoke:${esc(u.name)}:${k}">🚫 Révoquer « ${Social.BADGES[k].label} »</button>` : `<button data-tr="grant:${esc(u.name)}:${k}">${Social.BADGES[k].icon} Attribuer « ${Social.BADGES[k].label} »</button>`).join('')}</div>`}
+    ${tr.msg ? `<p class="ok" role="status">${esc(tr.msg)}</p>` : ''}
+    <details open><summary>Historique</summary>${trLog(net.badgeHistory(me, u.name))}</details></div>`;
+}
+function trustAdmin() {
+  const q = net.verifRequests(me), users = net.adminUsers(me).filter(u => !u.admin), log = net.badgeHistory(me);
+  return `<div class="card"><h2>✅ Vérifications et badges</h2><p class="mut">Les membres demandent la vérification depuis leur profil. Vous pouvez aussi attribuer ou révoquer un badge ; tout est inscrit à l’historique et au journal d’audit.</p>
+    <label>Motif (obligatoire pour un refus ou une révocation) <input id="tr-reason" maxlength="200"></label>${tr.msg ? `<p class="ok" role="status">${esc(tr.msg)}</p>` : ''}</div>
+    <div class="card"><b>Demandes à examiner (${q.length})</b>${q.map(r => `<div class="card"><b data-user="${esc(r.user)}">@${esc(r.user)}</b> ${tbadges(r.user)} <span class="mut">· ${ago(r.at)}</span><p>« ${esc(r.note)} »</p>
+      <div class="row"><button data-tr="ok:${r.id}">✅ Vérifier</button><button data-tr="no:${r.id}">❌ Refuser</button></div></div>`).join('') || '<p class="mut">Aucune demande en attente.</p>'}</div>
+    <div class="card"><b>Badges des membres</b>${users.map(u => { const held = Object.keys((net.profile(u.name).badges) || {}); return `<div class="card person"><div>${av(u.name)}<b>${esc(u.display)}</b> <span class="mut">@${esc(u.name)}</span> ${trBadges(u.name)}</div><div class="row">${['verified', 'moderator'].map(k => held.includes(k) ? `<button data-tr="revoke:${esc(u.name)}:${k}">🚫 ${Social.BADGES[k].label}</button>` : `<button data-tr="grant:${esc(u.name)}:${k}">${Social.BADGES[k].icon} ${Social.BADGES[k].label}</button>`).join('')}</div></div>`; }).join('') || '<p class="mut">Aucun membre.</p>'}</div>
+    <div class="card"><b>Historique complet (${log.length})</b>${trLog(log.slice(0, 100), true)}</div>`;
+}
+document.addEventListener('click', ev => {
+  const b = ev.target.closest('[data-tr]'); if (!b) return;
+  const [a, x, k] = b.dataset.tr.split(':'), reason = () => (($('#tr-reason') || {}).value || '');
+  attempt(async () => {
+    tr.msg = '';
+    if (a === 'req') { await net.requestVerification(me, ($('#tr-note') || {}).value); tr.msg = 'Demande envoyée ✔'; }
+    else if (a === 'ok' || a === 'no') { await net.decideVerification(me, +x, a === 'ok', reason()); tr.msg = a === 'ok' ? 'Profil vérifié ✔' : 'Demande refusée ✔'; }
+    else if (a === 'grant') { await net.grantBadge(me, x, k, reason()); tr.msg = `Badge « ${Social.BADGES[k].label} » attribué à @${x} ✔`; }
+    else if (a === 'revoke') { await net.revokeBadge(me, x, k, reason()); tr.msg = `Badge « ${Social.BADGES[k].label} » révoqué pour @${x} ✔`; }
+  });
+});
 function adminPage(e) {
   const S = net.adminStats(me), nq = net.queue(me).length + net.appeals(me).length;
-  const tabs = [['overview', '📊 Vue d’ensemble'], ['users', `👥 Utilisateurs (${S.users})`], ['reports', `🚩 Signalements${nq ? ' (' + nq + ')' : ''}`], ['audit', '📜 Journal d’audit'], ['backups', '💾 Sauvegardes'], ['status', '🩺 État']];
+  const tabs = [['overview', '📊 Vue d’ensemble'], ['users', `👥 Utilisateurs (${S.users})`], ['reports', `🚩 Signalements${nq ? ' (' + nq + ')' : ''}`], ['trust', `✅ Vérifications${net.verifRequests(me).length ? ' (' + net.verifRequests(me).length + ')' : ''}`], ['audit', '📜 Journal d’audit'], ['backups', '💾 Sauvegardes'], ['status', '🩺 État']];
   const head = `<div class="card"><h2>🛠 Tableau de bord d’administration</h2><p class="mut">Réservé aux administrateurs : toute action de modération est inscrite au journal d’audit.</p>
     <div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${adm.tab === k}" data-atab="${k}" class="${adm.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>${e}`;
   if (adm.tab === 'reports') return head + modPage('');
+  if (adm.tab === 'trust') return head + trustAdmin();
   if (adm.tab === 'backups') return backupsPage(head);
   if (adm.tab === 'status') return statusPage(head);
   if (adm.tab === 'audit') {
@@ -685,7 +734,7 @@ const ftsTyped = () => { clearTimeout(fts.timer); fts.timer = setTimeout(() => {
 function ftsPage() {
   const r = fts.res, best = r && r.posts.length ? Math.min(...r.posts.map(p => p.rank)) : 0, s = fts.sug;
   const chips = s && fts.q.trim() ? [...s.words.map(w => ['w', w, w]), ...s.tags.map(x => ['t', x, x]), ...s.users.map(u => ['u', u.name, '@' + u.name + (u.display ? ' · ' + u.display : '')])] : [];
-  const postCard = p => `<div class="card ftsres" data-open="${p.id}" role="article">${av(p.author)}<b data-user="${esc(p.author)}">${esc(shown(p.author))}</b> <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span> <span class="badge" title="Score de pertinence BM25">⚡ ${best && p.rank ? Math.max(1, Math.round(100 * p.rank / best)) : 100} %</span><p>${ftsMark(p.snippet)}</p></div>`;
+  const postCard = p => `<div class="card ftsres" data-open="${p.id}" role="article">${av(p.author)}<b data-user="${esc(p.author)}">${esc(shown(p.author))}</b>${tbadges(p.author)} <span class="mut">@${esc(p.author)} · ${ago(p.at)}</span> <span class="badge" title="Score de pertinence BM25">⚡ ${best && p.rank ? Math.max(1, Math.round(100 * p.rank / best)) : 100} %</span><p>${ftsMark(p.snippet)}</p></div>`;
   return `<div class="card"><h2>⚡ Recherche rapide</h2><p class="mut">Recherche plein texte (index SQLite FTS5) dans les posts, les membres et les hashtags : résultats classés par pertinence, mots trouvés surlignés.</p>
     <div class="row"><input id="fts-q" type="search" placeholder="Tapez un mot… (« corn » trouve « cornichon »)" value="${esc(fts.q)}" maxlength="120" autocomplete="off" aria-label="Recherche plein texte" aria-controls="fts-sug"></div>
     <div id="fts-sug" class="row" role="listbox" aria-label="Suggestions">${chips.map(([k, v, l]) => `<button role="option" data-ftssug="${k}:${esc(v)}">${k === 't' ? '' : k === 'u' ? '👤 ' : '🔤 '}${esc(l)}</button>`).join('')}</div>
@@ -713,6 +762,60 @@ document.addEventListener('click', ev => {
   const [k, ...rest] = b.dataset.ftssug.split(':'), v = rest.join(':'), words = fts.q.replace(/\s+$/, '').split(/\s+/);
   if (k === 'u') { fts.from = v; words.pop(); fts.q = words.join(' '); } else { words[words.length - 1] = k === 't' ? v.replace(/^#/, '') : v; fts.q = words.join(' ') + ' '; }
   fts.sug = null; ftsRun(); setTimeout(() => { const x = document.getElementById('fts-q'); if (x) { x.focus(); x.setSelectionRange(x.value.length, x.value.length); } });
+});
+// ---- médiathèque : tous mes médias envoyés, compressés avec miniature, texte alternatif modifiable, quota visible, suppression groupée ----
+const md = { sel: new Set(), busy: '', msg: '', confirm: false };
+const fmtSize = n => n < 1024 ? n + ' o' : n < 1048576 ? (n / 1024).toFixed(n < 10240 ? 1 : 0) + ' Ko' : (n / 1048576).toFixed(1) + ' Mo';
+// compression automatique (JPEG, 1600 px max, qualité dégressive) + miniature 240 px, calculées dans le navigateur
+async function prepMedia(file) {
+  if (!/^image\/(jpeg|png|webp|gif)$/.test(file.type)) throw new Error(`« ${file.name} » : format non pris en charge`);
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ko(new Error(`« ${file.name} » : image illisible`)); i.src = url; });
+    const draw = (side, q) => { const k = Math.min(1, side / Math.max(img.naturalWidth, img.naturalHeight)), c = document.createElement('canvas'); c.width = Math.max(1, Math.round(img.naturalWidth * k)); c.height = Math.max(1, Math.round(img.naturalHeight * k));
+      const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height); return { data: c.toDataURL('image/jpeg', q), w: c.width, h: c.height }; };
+    let side = 1600, q = 0.82, main;
+    for (let n = 0; n < 8; n++) { main = draw(side, q); if (main.data.length <= MAX_CHARS) break; q = Math.max(0.5, q - 0.08); side = Math.round(side * 0.8); }
+    if (main.data.length > MAX_CHARS) throw new Error(`« ${file.name} » : image trop lourde`);
+    let tq = 0.7, th = draw(240, tq); while (th.data.length > 38000 && tq > 0.3) { tq -= 0.1; th = draw(240, tq); }
+    return { name: file.name.replace(/\.[^.]+$/, '').slice(0, 100), src: main.data, thumb: th.data, orig: file.size, w: main.w, h: main.h, alt: '' };
+  } finally { URL.revokeObjectURL(url); }
+}
+function mediaPage(e) {
+  const list = net.media(me), u = net.mediaUsage(me), pct = Math.min(100, Math.round(u.used / u.quota * 100)), ids = new Set(list.map(m => m.id));
+  for (const i of [...md.sel]) if (!ids.has(i)) md.sel.delete(i);
+  const n = md.sel.size, card = m => `<div class="card mcard"><label class="inl"><input type="checkbox" data-mdsel="${m.id}" ${md.sel.has(m.id) ? 'checked' : ''} aria-label="Sélectionner ${esc(m.name)}"> <b>${esc(m.name)}</b></label>
+    <button class="gi mth" data-mdopen="${m.id}" aria-label="Ouvrir ${esc(m.name)} en grand"><img src="${m.thumb}" alt="${esc(m.alt || 'Miniature de ' + m.name)}" loading="lazy"></button>
+    <p class="mut">${fmtSize(m.size)}${m.orig > m.size ? ` · <span class="ok">−${Math.round((1 - m.size / m.orig) * 100)} % (${fmtSize(m.orig)} à l’origine)</span>` : ''}${m.w ? ` · ${m.w}×${m.h}` : ''} · ${esc(ago(m.at))}</p>
+    <input id="mdalt-${m.id}" data-mdalt="${m.id}" maxlength="200" placeholder="Texte alternatif (décris l’image)" aria-label="Texte alternatif de ${esc(m.name)}" value="${esc(m.alt)}">${m.alt ? '' : '<p class="mut">⚠ Sans texte alternatif</p>'}</div>`;
+  return `<div class="card"><h2>🖼 Mes médias</h2>
+    <div class="quota" role="meter" aria-valuemin="0" aria-valuemax="${u.quota}" aria-valuenow="${u.used}" aria-label="Stockage utilisé"><span class="bar" style="width:${pct}%"></span></div>
+    <p class="${pct >= 90 ? 'err' : 'mut'}">💾 ${fmtSize(u.used)} utilisés sur ${fmtSize(u.quota)} (${pct} %) · ${u.count} média${u.count > 1 ? 's' : ''}${u.saved ? ` · ${fmtSize(u.saved)} économisés par la compression` : ''}</p>
+    <div class="row"><label class="filebtn">⬆ Envoyer des images<input type="file" data-mdpick accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden></label> <span class="mut">compressées et miniaturisées automatiquement</span></div>
+    ${md.busy ? `<p class="mut" role="status">${esc(md.busy)}</p>` : ''}${md.msg ? `<p class="ok" role="status">${esc(md.msg)}</p>` : ''}</div>${e}
+    ${list.length ? `<div class="card row" role="group" aria-label="Sélection"><button data-mdall>${n === list.length ? '☐ Tout désélectionner' : '☑ Tout sélectionner'}</button><span class="mut" aria-live="polite">${n} sélectionné${n > 1 ? 's' : ''}</span>
+      ${md.confirm && n ? `<span class="err">Supprimer définitivement ${n} média${n > 1 ? 's' : ''} ?</span> <button data-mddelyes>🗑 Oui, supprimer</button><button data-mdno>Annuler</button>` : `<button data-mddel ${n ? '' : 'disabled'}>🗑 Supprimer la sélection</button>`}</div>
+    <div class="mgrid">${list.map(card).join('')}</div>` : '<div class="card mut">Aucun média pour l’instant : envoie ta première image.</div>'}`;
+}
+document.addEventListener('change', async ev => {
+  const t = ev.target, D = t.dataset; if (!D) return;
+  if ('mdsel' in D) { const i = +D.mdsel; if (t.checked) md.sel.add(i); else md.sel.delete(i); md.confirm = false; return refresh(); }
+  if ('mdalt' in D) return attempt(async () => { md.msg = ''; await net.setMediaAlt(me, +D.mdalt, t.value); md.msg = 'Texte alternatif enregistré ✔'; });
+  if (!('mdpick' in D)) return;
+  const files = [...t.files]; t.value = ''; err = ''; md.msg = ''; let ok = 0;
+  for (const [i, f] of files.entries()) {
+    md.busy = `Compression et envoi ${i + 1}/${files.length} : ${f.name}…`; refresh();
+    try { await net.addMedia(me, await prepMedia(f)); ok++; } catch (x) { err = x.message; break; }
+  }
+  md.busy = ''; if (ok) md.msg = `${ok} média${ok > 1 ? 's' : ''} envoyé${ok > 1 ? 's' : ''} ✔`; refresh();
+});
+document.addEventListener('click', ev => {
+  const b = ev.target.closest('[data-mdall],[data-mddel],[data-mddelyes],[data-mdno],[data-mdopen]'); if (!b || !me) return; const D = b.dataset;
+  if ('mdall' in D) { const l = net.media(me); if (md.sel.size === l.length) md.sel.clear(); else l.forEach(m => md.sel.add(m.id)); md.confirm = false; refresh(); }
+  else if ('mddel' in D) { md.confirm = true; md.msg = ''; refresh(); }
+  else if ('mdno' in D) { md.confirm = false; refresh(); }
+  else if ('mddelyes' in D) attempt(async () => { const k = await net.deleteMedia(me, [...md.sel]); md.sel.clear(); md.confirm = false; md.msg = `${k} média${k > 1 ? 's' : ''} supprimé${k > 1 ? 's' : ''} ✔`; });
+  else if ('mdopen' in D) sync.blob('/api/media?id=' + encodeURIComponent(D.mdopen)).then(bl => { const u = URL.createObjectURL(bl), w = window.open(u, '_blank', 'noopener'); setTimeout(() => URL.revokeObjectURL(u), 60000); if (!w) location.href = u; }, x => { err = x.message; refresh(); });
 });
 function draftsPage(e) {
   const ds = net.drafts(me), sch = ds.filter(d => d.scheduledAt), plain = ds.filter(d => !d.scheduledAt);
@@ -836,7 +939,7 @@ function render() {
     return;
   }
   const unread = net.notifications(me).filter(n => !n.read).length, unreadDm = net.unreadDm(me);
-  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['fts', '⚡ Recherche rapide'], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
+  const items = [['feed', t('nav.feed')], ['explore', t('nav.explore')], ['trends', t('nav.trends')], ['events', `${t('nav.events')} ${net.agenda(me).filter(x => x.start - Date.now() < 86400000).length || ''}`], ['fts', '⚡ Recherche rapide'], ['search', `${t('nav.search')} ${net.searches(me).reduce((a, s) => a + s.fresh, 0) || ''}`], ['notifs', `🔔 ${unread || ''}`], ['bookmarks', t('nav.bookmarks')], ['groups', `${t('nav.groups')} ${net.groups().filter(g => net.groupRole(me, g.id) === 'invited').length || ''}`], ['lists', `${t('nav.lists')} ${(net.lists(me, me) || []).length || ''}`], ['media', `🖼 Médias ${net.media(me).length || ''}`], ['drafts', `${t('nav.drafts')} ${net.drafts(me).length || ''}`], ['dm', `${t('nav.dm')} ${unreadDm.total || ''}`], ['profile', t('nav.profile')], ['theme', t('nav.theme')], ['prefs', t('nav.prefs')], ['settings', t('nav.settings')], ['blocks', t('nav.blocks')], ['security', t('nav.security')], ['privacy', t('nav.privacy')], ['stats', t('nav.stats')], ['dev', t('nav.dev')], ['modcenter', '🛡 Modération et appels'], ['diag', t('nav.diag')]].concat(net.isAdmin(me) ? [['admin', `${t('nav.mod')} ${(net.queue(me).length + net.appeals(me).length) || ''}`]] : []);
   const MAIN = ['feed', 'explore', 'fts', 'dm', 'profile'], btn = ([k, l]) => { const [ic, ...rest] = String(l).split(' '); return `<button data-page="${k}" class="${view.page === k ? 'on' : ''}" aria-label="${esc(rest.join(' ').trim() || l)}">${ic}<span class="lt"> ${rest.join(' ')}</span></button>`; };
   const main = MAIN.map(k => items.find(x => x[0] === k)), more = items.filter(x => !MAIN.includes(x[0]));
   const moreOn = more.some(x => x[0] === view.page), badge = more.some(x => /\d/.test(x[1].replace(/^\S+\s*/, ''))) ? ' •' : '';
@@ -882,6 +985,8 @@ function render() {
     <div class="card"><b>⭐ Sujets que je suis</b> ${my.map(x => `<span class="tag" data-tag="${esc(x)}">${esc(x)}</span>`).join(' ') || '<span class="mut">Aucun : suis un sujet pour le retrouver ici.</span>'}</div>` +
       (my.length ? `<div class="card"><b>📰 Dans mes sujets</b></div>` + list(net.topicsFeed(me)) : '') +
       `<div class="card"><b>🏆 Posts les plus actifs · ${per}</b></div>` + (tp.map((r, i) => `<div class="rank"><span class="medal">${medal(i)}</span>${postHTML(r.post)}<span class="mut">${r.likes} ❤ · ${r.replies} 💬</span></div>`).join('') || '<p class="mut">Aucun post sur cette période.</p>');
+  } else if (view.page === 'media') {
+    h = mediaPage(e);
   } else if (view.page === 'drafts') {
     h = draftsPage(e);
   } else if (view.page === 'bookmarks') {
@@ -911,16 +1016,17 @@ function render() {
     const center = `<div class="card" role="group" aria-labelledby="h-nc"><h2 id="h-nc">🔔 Centre de notifications ${unreadN ? `<span class="badge" role="status">${unreadN} non lue${unreadN > 1 ? 's' : ''}</span>` : ''}</h2>
       <div class="row" role="group" aria-label="Filtrer par type">${NFILTERS.map(([k, l]) => { const c = allN.filter(n => k !== 'all' && k !== 'unread' ? nmatch(n, k) && !n.read : k === 'unread' ? !n.read : false).length; return `<button data-nfilter="${k}" aria-pressed="${nfilter === k}" class="${nfilter === k ? 'on' : ''}">${l}${c && k !== 'unread' ? ` <span class="badge">${c}</span>` : ''}</button>`; }).join(' ')}</div>
       <div class="row"><button data-nreadall ${unreadN ? '' : 'disabled'}>✅ Tout marquer comme lu</button> <span class="mut">${unreadN ? 'Les non lues sont en gras avec une pastille 🔵.' : 'Tout est lu.'}</span></div></div>`;
-    h = center + (!nready ? `<p class="mut" role="status">Chargement des notifications…</p>` : freshBar('notifs', 'nouvelle notification', 'nouvelles notifications')) + shownN.map(n => `<div class="card" ${n.read ? '' : 'style="border-left:4px solid #9146ff;font-weight:600"'} ${n.type === 'dm' ? `data-chat="${n.room ? '#' + n.room : esc(n.from)}"` : n.type === 'search' ? `data-ssopen="${n.search}"` : n.type === 'group' ? `data-cmopen="${n.group}"` : n.type === 'event' ? 'data-page="events"' : n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}>${n.read ? '' : '🔵 '}${n.type === 'search' ? `🔎 <b>${esc(n.name)}</b> : ${n.count} nouveau${n.count > 1 ? 'x' : ''} résultat${n.count > 1 ? 's' : ''}` : ''}${n.type === 'search' ? '' : n.from ? `<b>${esc(n.from)}</b> ` : n.type === 'event' ? '📅 ' : '📊 '}${n.type === 'react' && n.emoji ? n.emoji + ' ' : ''}${n.type === 'dm' && n.count > 1 ? `(×${n.count}) ` : ''}${n.type === 'event' ? `${Notif.TEXT.event[n.what] || 'événement'} · <b>${esc(n.title)}</b> · ${esc(evWhen(n.start))}` : n.type === 'group' ? `${L.group[n.what] || 'communauté'} · 👥 ${esc(gname(n.group))}` : n.type === 'search' ? '' : n.type === 'sanction' ? ({ warn: 'vous a averti', suspend: 'a suspendu votre compte', ban: 'a banni votre compte' })[n.what] || L.sanction : n.type === 'hide' ? 'a masqué votre post (vous pouvez faire appel)' : n.type === 'appeal' ? ({ new: 'a fait appel d’une décision', accepted: 'a accepté votre appel', rejected: 'a rejeté votre appel' })[n.what] + (n.answer ? ' : « ' + esc(n.answer) + ' »' : '') : L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') + (nready ? moreBtn('notifs') + (!np.more && nl.length ? `<p class="mut" role="status">${t('seen.all')}</p>` : '') : '') + (nready && !shownN.length ? `<p class="mut">${nl.length ? 'Aucune notification dans ce filtre.' : 'Aucune notification.'}</p>` : '') + `<details class="card" open><summary><b>⚙️ Réglages par type (cloche, push, e-mail)</b></summary>${prefsPage()}</details>`;
+    h = center + (!nready ? `<p class="mut" role="status">Chargement des notifications…</p>` : freshBar('notifs', 'nouvelle notification', 'nouvelles notifications')) + shownN.map(n => `<div class="card" ${n.read ? '' : 'style="border-left:4px solid #9146ff;font-weight:600"'} ${n.type === 'dm' ? `data-chat="${n.room ? '#' + n.room : esc(n.from)}"` : n.type === 'search' ? `data-ssopen="${n.search}"` : n.type === 'group' ? `data-cmopen="${n.group}"` : n.type === 'event' ? 'data-page="events"' : n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}>${n.read ? '' : '🔵 '}${n.type === 'search' ? `🔎 <b>${esc(n.name)}</b> : ${n.count} nouveau${n.count > 1 ? 'x' : ''} résultat${n.count > 1 ? 's' : ''}` : ''}${n.type === 'search' ? '' : n.from ? `<b>${esc(n.from)}</b> ` : n.type === 'event' ? '📅 ' : '📊 '}${n.type === 'react' && n.emoji ? n.emoji + ' ' : ''}${n.type === 'dm' && n.count > 1 ? `(×${n.count}) ` : ''}${n.type === 'event' ? `${Notif.TEXT.event[n.what] || 'événement'} · <b>${esc(n.title)}</b> · ${esc(evWhen(n.start))}` : n.type === 'group' ? `${L.group[n.what] || 'communauté'} · 👥 ${esc(gname(n.group))}` : n.type === 'search' ? '' : n.type === 'sanction' ? ({ warn: 'vous a averti', suspend: 'a suspendu votre compte', ban: 'a banni votre compte' })[n.what] || L.sanction : n.type === 'hide' ? 'a masqué votre post (vous pouvez faire appel)' : n.type === 'verif' ? ({ new: 'demande la vérification de son profil', accepted: 'a vérifié votre profil ✅', rejected: 'a refusé votre demande de vérification', granted: `vous a attribué le badge ${(Social.BADGES[n.badge] || {}).label || ''}`, revoked: `a révoqué votre badge ${(Social.BADGES[n.badge] || {}).label || ''}` })[n.what] + (n.answer ? ' : « ' + esc(n.answer) + ' »' : '') : n.type === 'appeal' ? ({ new: 'a fait appel d’une décision', accepted: 'a accepté votre appel', rejected: 'a rejeté votre appel' })[n.what] + (n.answer ? ' : « ' + esc(n.answer) + ' »' : '') : L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') + (nready ? moreBtn('notifs') + (!np.more && nl.length ? `<p class="mut" role="status">${t('seen.all')}</p>` : '') : '') + (nready && !shownN.length ? `<p class="mut">${nl.length ? 'Aucune notification dans ce filtre.' : 'Aucune notification.'}</p>` : '') + `<details class="card" open><summary><b>⚙️ Réglages par type (cloche, push, e-mail)</b></summary>${prefsPage()}</details>`;
   } else if (view.page === 'thread') {
     const p = net.db().posts.find(x => x.id === view.arg);
     h = p ? postHTML(p) + composer(t('composer.reply'), p.id) + e + net.replies(p.id, me).map(r => postHTML(r)).join('') : '<p class="mut">Post supprimé.</p>';
   } else if (view.page === 'profile') {
     const name = view.arg || me, u = net.profile(name), fl = net.followers(name), self = u.name === me;
-    h = `<div class="card prof"><div class="banner" style="background:${bannerCss(u.banner)}"></div><div class="pbody">${av(u.name, true)}<b class="pname">${esc(u.display || u.name)}</b> <span class="mut">@${esc(u.name)}</span>
+    h = `<div class="card prof"><div class="banner" style="background:${bannerCss(u.banner)}"></div><div class="pbody">${av(u.name, true)}<b class="pname">${esc(u.display || u.name)}</b>${tbadges(u.name)} <span class="mut">@${esc(u.name)}</span>
       <p>${u.locked ? '<span class="mut">🔒 Profil privé : ce compte n’a pas ouvert son profil à tout le monde.</span>' : esc(u.bio) || '<span class="mut">Pas de bio</span>'}</p>${u.link ? `<p><a href="${esc(u.link)}" target="_blank" rel="noopener noreferrer nofollow">🔗 ${esc(u.link.replace(/^https?:\/\//, ''))}</a></p>` : ''}
       <p class="stats"><button data-sub="followers:${u.name}" class="${view.sub === 'followers' ? 'on' : ''}"><b>${I18n.num(fl.length)}</b> ${t('followers')}</button> <button data-sub="following:${u.name}" class="${view.sub === 'following' ? 'on' : ''}"><b>${I18n.num(u.following.length)}</b> ${t('following')}</button></p>` +
       `<p class="feeds"><a href="/u/${encodeURIComponent(u.name)}" target="_blank" rel="noopener">🔗 ${t('share.page')}</a> · <a href="/u/${encodeURIComponent(u.name)}/feed.xml" target="_blank" rel="noopener">📡 ${t('share.rss')}</a> · <a href="/u/${encodeURIComponent(u.name)}/atom.xml" target="_blank" rel="noopener">${t('share.atom')}</a> · <a href="/public" target="_blank" rel="noopener">${t('share.index')}</a></p>` + (self ? `<button data-page="settings">⚙️ Modifier le profil</button>` : `<button data-follow="${u.name}">${fl.includes(me) ? t('unfollow') : t('follow')}</button> <button data-chat="${u.name}">${t('message')}</button>` + (u.admin ? '' : ` <button data-mute="${u.name}" aria-pressed="${net.isMuted(me, u.name)}">${net.isMuted(me, u.name) ? '🔊 Ne plus masquer' : '🔇 Masquer'}</button> <button data-block="${u.name}" aria-pressed="${net.isBlocked(me, u.name)}">${net.isBlocked(me, u.name) ? '✅ Débloquer' : '🚫 Bloquer'}</button>`)) + (net.sanctionOf(u.name) && net.isAdmin(me) ? ` <span class="err">${sancLabel(net.sanctionOf(u.name))}</span>` : '') + `</div></div>${e}` + profileLists(u.name, self) +
+      trustCard(u.name) +
       (view.sub ? `<div class="card"><b>${view.sub === 'followers' ? 'Abonnés' : 'Abonnements'}</b> <button data-sub="">✕</button></div>` + peopleList(view.sub === 'followers' ? fl : u.following) : (net.timeline(name, me).map(t => (t.by ? `<p class="mut rt">🔁 ${esc(shown(t.by))} a repartagé</p>` : '') + postHTML(t.post)).join('') || (u.lockedPosts ? '<p class="mut">🔒 Les publications de ce compte sont privées.</p>' : '<p class="mut">Rien ici pour l’instant.</p>')));
   } else if (view.page === 'modcenter') {
     h = modCenter(e);

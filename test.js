@@ -563,4 +563,43 @@ console.log('ok');
     clock += 3 * H; assert.throws(() => q.rsvp('evo', e1.id, 'no'), /terminé/);
     console.log('ok événements');
   }
+  {
+    const q = Net(mem), px = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==';
+    await q.signup('mdi', 'pass1'); await q.signup('mdj', 'pass2');
+    const a = q.addMedia('mdi', { name: 'chat', src: px, thumb: px, alt: ' un chat ', orig: 5000, w: 10, h: 8 }), b = q.addMedia('mdi', { src: px, thumb: px });
+    assert.strictEqual(q.media('mdi').length, 2); assert.strictEqual(q.media('mdj').length, 0); assert.strictEqual(q.media('mdi').find(m => m.id === a.id).alt, 'un chat');
+    const u = q.mediaUsage('mdi'); assert.strictEqual(u.count, 2); assert.ok(u.used > 0 && u.used < u.quota && u.saved > 0);
+    assert.throws(() => q.addMedia('mdi', { src: 'data:text/html;base64,AAAA', thumb: px }), /invalide/);
+    assert.throws(() => q.addMedia('mdi', { src: px, thumb: 'x' }), /Miniature/);
+    assert.throws(() => q.mediaSrc('mdj', a.id), /introuvable/); assert.strictEqual(q.mediaSrc('mdi', a.id), px);
+    assert.throws(() => q.setMediaAlt('mdj', a.id, 'x'), /introuvable/); q.setMediaAlt('mdi', a.id, 'chat noir'); assert.strictEqual(q.media('mdi').find(m => m.id === a.id).alt, 'chat noir');
+    assert.strictEqual(q.deleteMedia('mdj', [a.id, b.id]), 0); assert.strictEqual(q.deleteMedia('mdi', [a.id, b.id]), 2); assert.strictEqual(q.media('mdi').length, 0);
+    const big = 'data:image/jpeg;base64,' + 'A'.repeat(396000); const thumb = px; let n = 0;
+    assert.throws(() => { for (;;) { q.addMedia('mdi', { src: big, thumb }); n++; } }, /Quota/); assert.ok(n >= 20 && n < 30);
+    console.log('ok médias');
+  }
+  // profils vérifiés et badges de confiance : demande, revue admin, badges visibles, historique, révocation
+  {
+    let clock = 5e12; const m = { d: {}, getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = v; } };
+    const v = Net(m, () => clock); await v.signup('vera', 'pass1'); await v.signup('wim', 'pass2'); await v.ensureStreamer();
+    assert.deepStrictEqual(v.badgesOf('vera'), []); assert.deepStrictEqual(v.badgesOf('Streamer'), ['verified', 'moderator']);
+    clock += 31 * 86400000; assert.deepStrictEqual(v.badgesOf('vera'), ['veteran']);
+    assert.throws(() => v.requestVerification('vera', 'court'), /10 à 400/);
+    const r = v.requestVerification('vera', 'Je suis la créatrice de la chaîne'); assert.throws(() => v.requestVerification('vera', 'Je suis la créatrice de la chaîne'), /déjà en cours/);
+    assert.strictEqual(v.verifRequests('Streamer').length, 1); assert.strictEqual(v.verifRequests('wim').length, 0);
+    assert.throws(() => v.decideVerification('wim', r.id, true), /administrateur/); assert.throws(() => v.decideVerification('Streamer', r.id, false, ''), /motif/);
+    v.decideVerification('Streamer', r.id, false, 'Preuves insuffisantes'); assert.throws(() => v.requestVerification('vera', 'Je suis la créatrice de la chaîne'), /24 h/);
+    clock += 86400000 + 1; const r2 = v.requestVerification('vera', 'Voici davantage de preuves publiques'); v.decideVerification('Streamer', r2.id, true);
+    assert.deepStrictEqual(v.badgesOf('vera'), ['verified', 'veteran']); assert.throws(() => v.requestVerification('vera', 'Encore une demande inutile'), /déjà vérifié/);
+    assert.throws(() => v.grantBadge('wim', 'wim', 'moderator'), /administrateur/); assert.throws(() => v.grantBadge('Streamer', 'wim', 'veteran'), /inconnu/);
+    v.grantBadge('Streamer', 'wim', 'moderator', 'Aide au quotidien'); assert.ok(v.badgesOf('wim').includes('moderator')); assert.throws(() => v.grantBadge('Streamer', 'wim', 'moderator'), /déjà/);
+    assert.throws(() => v.revokeBadge('Streamer', 'vera', 'verified', ''), /motif/); v.revokeBadge('Streamer', 'vera', 'verified', 'Compte usurpé');
+    assert.ok(!v.badgesOf('vera').includes('verified')); assert.throws(() => v.revokeBadge('Streamer', 'vera', 'verified', 'x y z'), /pas attribué/);
+    const h = v.badgeHistory('vera', 'vera'); assert.deepStrictEqual(h.map(x => x.action), ['revoke', 'grant', 'request', 'reject', 'request']); assert.strictEqual(h[0].reason, 'Compte usurpé');
+    assert.throws(() => v.badgeHistory('wim', 'vera'), /administrateur/); assert.throws(() => v.badgeHistory('wim'), /administrateur/); assert.ok(v.badgeHistory('Streamer').length === 6);
+    assert.ok(v.auditLog('Streamer').some(a => a.type === 'badge-revoke'));
+    const s = Social.snapshot(JSON.parse(m.d[Social.KEY]), 'wim'); assert.ok(s.badgeLog.every(e => e.user === 'wim') && s.badgeLog.length === 1);
+    assert.strictEqual(Social.snapshot(JSON.parse(m.d[Social.KEY]), 'wim').verifs.length, 0);
+    console.log('ok badges de confiance');
+  }
 })().catch(e => { console.error(e); process.exit(1); });

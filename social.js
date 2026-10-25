@@ -2,7 +2,7 @@
 // Chaque appel relit le storage (lecture-modification-écriture) : aucune copie ancienne n'est conservée en mémoire.
 (function (root) {
   const KEY = 'twitchgram.v1';
-  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], appeals: [], drafts: [], groups: [], events: [], rooms: [], msgReports: [], audit: [], seq: 1, attempts: Object.create(null) });
+  const empty = () => ({ users: Object.create(null), posts: [], messages: [], notifs: [], reposts: [], reports: [], appeals: [], verifs: [], badgeLog: [], drafts: [], media: [], groups: [], events: [], rooms: [], msgReports: [], audit: [], seq: 1, attempts: Object.create(null) });
   const MAX_FAILS = 5, LOCK_MS = 60000, EDIT_MS = 15 * 60000, MAX_DRAFTS = 30, MAX_LISTS = 20, MAX_LIST_MEMBERS = 200, MAX_AHEAD_MS = 366 * 86400000, POLL_MAX_MIN = 7 * 1440, MAX_OWN_GROUPS = 10, MAX_RULES = 600;
 
   const EV_ANSWERS = ['yes', 'maybe', 'no'], EV_REMINDS = [0, 15, 60, 180, 1440], EV_GRACE = 3 * 3600000, MAX_EVENTS = 30;
@@ -23,6 +23,8 @@
     }
     L.push('END:VCALENDAR'); return L.map(fold).join('\r\n') + '\r\n';
   }
+  // badges de confiance : « vérifié » et « modérateur » sont attribués (et révocables) par les administrateurs, « ancien » est automatique
+  const BADGES = { verified: { icon: '✅', label: 'Vérifié' }, moderator: { icon: '🛡', label: 'Modérateur' }, veteran: { icon: '🏅', label: 'Ancien' } }, GRANTABLE = ['verified', 'moderator'], VETERAN_MS = 30 * 86400000, VERIF_COOLDOWN_MS = 86400000;
   const RESERVED = 'streamer';
   // signalements : motifs, sanctions de modération (durée de suspension en heures)
   const REASONS = { spam: 'Spam ou publicité', harcelement: 'Harcèlement', haine: 'Haine ou discrimination', violence: 'Violence ou menace', nsfw: 'Contenu inapproprié', autre: 'Autre' };
@@ -41,6 +43,9 @@
       return { src, alt: String((i && i.alt) || '').trim().slice(0, 200) };
     });
   }
+  // médiathèque personnelle : images compressées + miniature (faites dans le navigateur), texte alternatif, quota de stockage par compte
+  const MEDIA_QUOTA = 8 * 1024 * 1024, MAX_THUMB_CHARS = 40000, MAX_MEDIA = 200;
+  const b64Bytes = s => Math.floor((s.length - s.indexOf(',') - 1) * 3 / 4);
   const subtle = () => (root.crypto || require('crypto').webcrypto).subtle;
   const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
   const sha = async s => hex(await subtle().digest('SHA-256', new TextEncoder().encode(s)));
@@ -111,10 +116,13 @@ function Net(storage, now) {
     };
     // journal d'audit des actions de modération (visible des seuls administrateurs)
     const audit = (by, type, target, detail) => { db.audit = db.audit || []; db.audit.push({ id: id(), at: now(), by: user(by).name, type, target: target || null, detail: detail || '' }); if (db.audit.length > 2000) db.audit = db.audit.slice(-2000); };
+    // historique des badges (demandes, attributions, refus, révocations), conservé même après révocation
+    const blog = (name, badge, action, by, reason) => { db.badgeLog = db.badgeLog || []; db.badgeLog.push({ id: id(), at: now(), user: name, badge, action, by: by || name, reason: reason || '' }); if (db.badgeLog.length > 3000) db.badgeLog.splice(0, db.badgeLog.length - 3000); };
     const purge = u => { // supprime un compte avec tout ce qui le concerne
         const n = u.name;
         for (const g of db.groups.filter(x => lc(x.owner) === lc(n))) dropGroup(g); // ses communautés disparaissent avec lui
         for (const g of db.groups) for (const k of ['mods', 'members', 'requests', 'invites', 'banned']) g[k] = g[k].filter(x => lc(x) !== lc(n));
+        db.verifs = (db.verifs || []).filter(v => lc(v.user) !== lc(n)); db.badgeLog = (db.badgeLog || []).filter(e => lc(e.user) !== lc(n));
         const gone = new Set(db.posts.filter(p => p.author === n).map(p => p.id));
         db.posts = db.posts.filter(p => !gone.has(p.id) && !gone.has(p.replyTo));
         for (const p of db.posts) { p.likes = p.likes.filter(x => x !== n); for (const e of Object.keys(p.reactions || {})) p.reactions[e] = p.reactions[e].filter(x => x !== n); }
@@ -122,7 +130,7 @@ function Net(storage, now) {
         db.messages = db.messages.filter(m => m.from !== n && m.to !== n);
         for (const r of db.rooms) { r.members = r.members.filter(x => x !== n); r.msgs = r.msgs.filter(m => m.from !== n); delete r.read[lc(n)]; if (r.owner === n) r.owner = r.members[0]; }
         db.rooms = db.rooms.filter(r => r.members.length >= 2); db.msgReports = db.msgReports.filter(r => r.by !== n && r.target !== n);
-        db.drafts = db.drafts.filter(d => d.author !== n);
+        db.drafts = db.drafts.filter(d => d.author !== n); db.media = (db.media || []).filter(m => m.owner !== n);
         db.reposts = db.reposts.filter(r => r.by !== n && !gone.has(r.postId));
         db.reports = db.reports.filter(r => r.by !== n && r.target !== n); db.appeals = (db.appeals || []).filter(a => a.user !== n);
         for (const x of Object.values(db.users)) { if (x.blocked) x.blocked = x.blocked.filter(f => f !== n); if (x.muted) x.muted = x.muted.filter(f => f !== n); }
@@ -344,6 +352,27 @@ function Net(storage, now) {
       },
       canEdit: (by, postId) => { const p = db.posts.find(x => x.id === postId); return !!(p && by && p.author.toLowerCase() === by.toLowerCase() && now() - p.at <= EDIT_MS); },
       editLeft: postId => { const p = db.posts.find(x => x.id === postId); return p ? Math.max(0, p.at + EDIT_MS - now()) : 0; },
+      // ---- médias envoyés : privés à leur propriétaire, quota de stockage, texte alternatif modifiable, suppression groupée ----
+      media: by => (db.media || []).filter(m => lc(m.owner) === lc(by)).sort((a, b) => b.at - a.at || b.id - a.id),
+      mediaUsage(by) { const l = this.media(by); return { used: l.reduce((a, m) => a + m.size, 0), quota: MEDIA_QUOTA, count: l.length, saved: l.reduce((a, m) => a + Math.max(0, m.orig - m.size), 0) }; },
+      mediaSrc(by, mid) { const m = (db.media || []).find(x => x.id === +mid && lc(x.owner) === lc(by)); need(m, 'Média introuvable'); return m.src; },
+      addMedia(by, f) {
+        const u = user(by); guard(u.name, true); f = f || {}; db.media = db.media || [];
+        const src = String(f.src || ''), thumb = String(f.thumb || '');
+        need(IMG_RE.test(src), 'Image invalide (JPEG, PNG, WebP ou GIF)'); need(src.length <= MAX_IMG_CHARS, 'Image trop lourde');
+        need(/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/.test(thumb) && thumb.length <= MAX_THUMB_CHARS, 'Miniature invalide');
+        need(db.media.filter(m => m.owner === u.name).length < MAX_MEDIA, `${MAX_MEDIA} médias maximum`);
+        const size = b64Bytes(src) + b64Bytes(thumb), used = db.media.filter(m => m.owner === u.name).reduce((a, m) => a + m.size, 0);
+        need(used + size <= MEDIA_QUOTA, 'Quota de stockage dépassé : supprimez des médias');
+        const m = { id: id(), owner: u.name, name: String(f.name || 'image').replace(/[\u0000-\u001f]/g, '').trim().slice(0, 100) || 'image', src, thumb, alt: String(f.alt || '').trim().slice(0, 200), size, orig: Math.max(size, Math.min(Math.floor(+f.orig) || size, 200 * 1024 * 1024)), w: Math.min(10000, Math.max(0, Math.floor(+f.w) || 0)), h: Math.min(10000, Math.max(0, Math.floor(+f.h) || 0)), at: now() };
+        db.media.push(m); save(); return { id: m.id };
+      },
+      setMediaAlt(by, mid, alt) { const m = (db.media || []).find(x => x.id === +mid && lc(x.owner) === lc(user(by).name)); need(m, 'Média introuvable'); m.alt = String(alt || '').trim().slice(0, 200); save(); return m.alt; },
+      // supprime plusieurs médias d'un coup (ceux qui ne sont pas à vous sont ignorés) ; renvoie le nombre supprimé
+      deleteMedia(by, ids) {
+        const u = user(by); need(Array.isArray(ids), 'Sélection invalide'); const set = new Set(ids.map(Number)), before = (db.media || []).length;
+        db.media = (db.media || []).filter(m => !(m.owner === u.name && set.has(m.id))); save(); return before - db.media.length;
+      },
       // ---- brouillons & publication planifiée : privés à l'auteur, enregistrés automatiquement ----
       // opts.scheduledAt : absent = inchangé, null = retire la planification, nombre = date de publication (ms, dans le futur)
       saveDraft(by, draftId, text, images, opts) {
@@ -1113,6 +1142,70 @@ function Net(storage, now) {
         notify(a.user, user(by).name, 'appeal', a.postId, { what: accept ? 'accepted' : 'rejected', answer });
         save();
       },
+      // ---- profils vérifiés et badges de confiance : demande depuis le profil, revue par les admins, historique et révocation ----
+      badgesOf(n) {
+        const u = db.users[lc(n)]; if (!u) return [];
+        const g = u.badges || {}, out = [];
+        if (u.admin || g.verified) out.push('verified');
+        if (u.admin || g.moderator) out.push('moderator');
+        if (!u.admin && now() - u.joined >= VETERAN_MS) out.push('veteran');
+        return out;
+      },
+      badgeInfo: () => BADGES,
+      requestVerification(by, note) {
+        const u = user(by); guard(by, true); note = String(note || '').trim();
+        need(!u.admin, 'Le compte Streamer est déjà vérifié'); need(!(u.badges || {}).verified, 'Votre profil est déjà vérifié');
+        need(note.length >= 10 && note.length <= 400, 'Expliquez votre demande : 10 à 400 caractères');
+        db.verifs = db.verifs || [];
+        need(!db.verifs.some(v => v.user === u.name && v.status === 'open'), 'Une demande est déjà en cours d’examen');
+        const last = db.verifs.filter(v => v.user === u.name && v.status === 'rejected').pop();
+        need(!last || now() - last.closedAt >= VERIF_COOLDOWN_MS, 'Une demande a été refusée il y a moins de 24 h : patientez avant de redemander');
+        const v = { id: id(), user: u.name, note, at: now(), status: 'open' };
+        db.verifs.push(v); blog(u.name, 'verified', 'request', u.name, note);
+        for (const m of Object.values(db.users)) if (m.admin) notify(m.name, u.name, 'verif', null, { what: 'new' });
+        save(); return v;
+      },
+      // admin : demandes ouvertes (les plus anciennes d'abord) ; membre : ses propres demandes
+      verifRequests(by) {
+        const u = user(by), l = db.verifs || [];
+        return u.admin ? l.filter(v => v.status === 'open').sort((a, b) => a.at - b.at) : l.filter(v => v.user === u.name).sort((a, b) => b.at - a.at);
+      },
+      decideVerification(by, vid, accept, answer) {
+        need(api.isAdmin(by), 'Réservé à l’administrateur');
+        const v = (db.verifs || []).find(x => x.id === vid); need(v && v.status === 'open', 'Demande introuvable ou déjà traitée');
+        answer = String(answer || '').trim().slice(0, 300); const admin = user(by).name, u = db.users[lc(v.user)];
+        need(accept || answer.length >= 3, 'Indiquez le motif du refus');
+        Object.assign(v, { status: accept ? 'approved' : 'rejected', answer, closedAt: now(), closedBy: admin });
+        if (accept && u) { u.badges = Object.assign({}, u.badges, { verified: { at: now(), by: admin } }); }
+        blog(v.user, 'verified', accept ? 'grant' : 'reject', admin, answer || 'Demande acceptée');
+        audit(by, accept ? 'verif-approve' : 'verif-reject', v.user, answer);
+        notify(v.user, admin, 'verif', null, { what: accept ? 'accepted' : 'rejected', answer });
+        save();
+      },
+      grantBadge(by, n, badge, reason) {
+        need(api.isAdmin(by), 'Réservé à l’administrateur'); need(GRANTABLE.includes(badge), 'Badge inconnu');
+        const u = user(n); need(!u.admin, 'Le compte Streamer possède déjà tous les badges'); need(!(u.badges || {})[badge], 'Ce badge est déjà attribué');
+        reason = String(reason || '').trim().slice(0, 200) || 'Décision de l’administrateur'; const admin = user(by).name;
+        u.badges = Object.assign({}, u.badges, { [badge]: { at: now(), by: admin } });
+        for (const v of db.verifs || []) if (badge === 'verified' && v.user === u.name && v.status === 'open') Object.assign(v, { status: 'approved', answer: reason, closedAt: now(), closedBy: admin });
+        blog(u.name, badge, 'grant', admin, reason); audit(by, 'badge-grant', u.name, `${BADGES[badge].label} · ${reason}`);
+        notify(u.name, admin, 'verif', null, { what: 'granted', badge }); save();
+      },
+      revokeBadge(by, n, badge, reason) {
+        need(api.isAdmin(by), 'Réservé à l’administrateur'); need(GRANTABLE.includes(badge), 'Badge inconnu');
+        const u = user(n); need(!u.admin, 'Les badges du compte Streamer ne se révoquent pas'); need((u.badges || {})[badge], 'Ce badge n’est pas attribué');
+        reason = String(reason || '').trim().slice(0, 200); need(reason.length >= 3, 'Indiquez le motif de la révocation'); const admin = user(by).name;
+        const b = Object.assign({}, u.badges); delete b[badge]; u.badges = b;
+        blog(u.name, badge, 'revoke', admin, reason); audit(by, 'badge-revoke', u.name, `${BADGES[badge].label} · ${reason}`);
+        notify(u.name, admin, 'verif', null, { what: 'revoked', badge, answer: reason }); save();
+      },
+      // historique : celui d'un compte (le sien ou, pour un admin, n'importe lequel), ou le journal global (admin)
+      badgeHistory(by, n) {
+        const me = user(by);
+        if (n === undefined || n === null) { need(me.admin, 'Réservé à l’administrateur'); return (db.badgeLog || []).slice().reverse(); }
+        const u = user(n); need(me.admin || me.name === u.name, 'Réservé à l’administrateur');
+        return (db.badgeLog || []).filter(e => lc(e.user) === lc(u.name)).reverse();
+      },
       // historique d'un compte (admin) : sanctions successives, signalements reçus, appels
       accountHistory(by, n) {
         need(api.isAdmin(by), 'Réservé à l’administrateur'); const u = user(n);
@@ -1283,18 +1376,20 @@ function Net(storage, now) {
       return c;
     });
     return {
-      users, posts: db.posts.filter(p => p.group ? readable.has(p.group) : privOk(db, me.name, p.author, 'posts')).map(p => p.hidden && !me.admin && p.author !== me.name ? Object.assign({}, p, { text: '', images: [], poll: undefined, history: [], quoteOf: undefined }) : p), groups, events: db.events.filter(e => !e.group || readable.has(e.group)), reposts: db.reposts.filter(r => { const p = db.posts.find(x => x.id === r.postId); return !p || p.group || privOk(db, me.name, p.author, 'posts'); }), seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), attempts: {},
+      users, posts: db.posts.filter(p => p.group ? readable.has(p.group) : privOk(db, me.name, p.author, 'posts')).map(p => p.hidden && !me.admin && p.author !== me.name ? Object.assign({}, p, { text: '', images: [], poll: undefined, history: [], quoteOf: undefined }) : p), groups, events: db.events.filter(e => !e.group || readable.has(e.group)), reposts: db.reposts.filter(r => { const p = db.posts.find(x => x.id === r.postId); return !p || p.group || privOk(db, me.name, p.author, 'posts'); }), seq: db.seq, drafts: db.drafts.filter(d => d.author === me.name), media: (db.media || []).filter(m => m.owner === me.name).map(({ src, ...m }) => m), attempts: {},
       messages: db.messages.filter(m => m.from === me.name || m.to === me.name),
       notifs: db.notifs.filter(n => n.to === me.name),
       rooms: db.rooms.filter(r => r.members.includes(me.name)).map(r => ({ ...r, msgs: r.msgs.slice(-200) })),
       msgReports: me.admin ? db.msgReports.filter(r => r.status === 'open') : db.msgReports.filter(r => r.by === me.name && r.status === 'open').map(r => ({ id: r.id, room: r.room, msgId: r.msgId, by: r.by, status: r.status })),
       peerRead: Object.fromEntries(Object.values(db.users).filter(u => u.name !== me.name && !(u.blocked || []).includes(me.name) && !(me.blocked || []).includes(u.name) && (u.dmRead || {})[lcm]).map(u => [u.name.toLowerCase(), u.dmRead[lcm]])),
       audit: me.admin ? (db.audit || []).slice(-300) : [], totals: me.admin ? { hiddenPosts: db.posts.filter(p => !p.replyTo && p.group && !readable.has(p.group)).length, hiddenMessages: db.messages.filter(m => m.from !== me.name && m.to !== me.name).length } : undefined,
+      verifs: me.admin ? (db.verifs || []).slice(-200) : (db.verifs || []).filter(v => v.user === me.name),
+      badgeLog: me.admin ? (db.badgeLog || []).slice(-500) : (db.badgeLog || []).filter(e => e.user === me.name),
       appeals: me.admin ? (db.appeals || []).slice(-200) : (db.appeals || []).filter(a => a.user === me.name),
       reports: me.admin ? db.reports : db.reports.filter(r => r.by === me.name).map(r => ({ id: r.id, postId: r.postId, by: r.by, status: r.status })),
     };
   }
 
-  const exported = { Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, REASONS };
+  const exported = { Net, snapshot, ics, EV_REMINDS, GRACE_MS, PRIV_LEVELS, normPrefs, inQuiet, NP_TYPES, KEY, MAX_IMAGES, cleanImages, REASONS, MEDIA_QUOTA, BADGES };
   if (typeof module !== 'undefined') module.exports = exported; else root.Social = exported;
 })(this);
