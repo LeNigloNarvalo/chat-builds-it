@@ -285,7 +285,7 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
   {
     const ssrv = createServer({ db: path.join(dir, 'ses.db'), authPerMin: 1000 }); await new Promise(ok => ssrv.listen(0, '127.0.0.1', ok));
     const base = 'http://127.0.0.1:' + ssrv.address().port;
-    const call = async (p, tok, data, ua) => { const r = await fetch(base + p, { method: data === undefined ? 'GET' : 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, ua ? { 'User-Agent': ua } : {}, tok ? { Authorization: 'Bearer ' + tok } : {}), body: data === undefined ? undefined : JSON.stringify(data) }); return Object.assign(await r.json(), { status: r.status }); };
+    const call = async (p, tok, data, ua) => { const r = await fetch(base + p, { method: data === undefined ? 'GET' : 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, ua ? { 'User-Agent': ua } : {}, ua === 'Mozilla/5.0 (Windows NT 10.0) Chrome/120 Safari/537 Edg/120' ? { 'X-Timezone': 'Europe/Paris' } : {}, tok ? { Authorization: 'Bearer ' + tok } : {}), body: data === undefined ? undefined : JSON.stringify(data) }); return Object.assign(await r.json(), { status: r.status }); };
     const FF = 'Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0', ED = 'Mozilla/5.0 (Windows NT 10.0) Chrome/120 Safari/537 Edg/120';
     const a = await call('/api/signup', null, { name: 'sesuser', password: 'secret1' }, FF);
     await call('/api/login', null, { name: 'sesuser', password: 'faux' }, ED);
@@ -293,6 +293,7 @@ const outbox = [], server = createServer({ db: dbFile, authPerMin: 1000, publicU
     let r = await call('/api/sessions', a.token); assert.strictEqual(r.sessions.length, 2);
     assert.ok(r.sessions.find(x => x.current).label === 'Firefox · Linux' && r.sessions.some(x => x.label === 'Edge · Windows'));
     assert.deepStrictEqual(r.log.map(x => x.kind), ['login', 'login_fail', 'signup']);
+    assert.strictEqual(r.sessions.find(x => !x.current).place, 'Paris (Europe)', 'lieu approximatif déduit du fuseau'); assert.strictEqual(r.log[0].place, 'Paris (Europe)'); assert.strictEqual(r.sessions.find(x => x.current).place, '');
     assert.strictEqual((await call('/api/sessions')).status, 401);
     const other = await call('/api/sessions', b.token), ob = r.sessions.find(x => !x.current);
     assert.strictEqual((await call('/api/session-revoke', a.token, { id: r.sessions.find(x => x.current).id })).status, 400, 'pas sa propre session');

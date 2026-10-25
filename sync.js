@@ -13,6 +13,7 @@
       : status >= 502 && status <= 504 ? 'Le serveur redémarre ou est surchargé : réessayez dans un instant' : 'Erreur du serveur (' + status + ') : réessayez dans un instant';
     async function req(path, method, data) {
       const s = session(), h = { 'Content-Type': 'application/json' };
+      try { h['X-Timezone'] = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { /* fuseau inconnu */ }
       if (s) h.Authorization = 'Bearer ' + s.token;
       let r;
       try { r = await fetch(path, { method, headers: h, body: data === undefined ? undefined : JSON.stringify(data) }); } catch (e) { online = false; throw new Error('Serveur injoignable : réessayez dans un instant'); }

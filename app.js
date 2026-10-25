@@ -200,11 +200,11 @@ function sessionsCard() {
   if (!ses.loaded) { sesLoad(); return '<div class="card"><h2>💻 Sessions actives</h2><p class="mut" role="status">Chargement…</p></div>'; }
   const d = ses.data || { sessions: [], log: [] };
   return `<div class="card" role="group" aria-labelledby="h-ses"><h2 id="h-ses">💻 Sessions actives (${d.sessions.length})</h2>
-    <p class="mut">Les appareils connectés à votre compte : navigateur, date de connexion et dernière activité.</p>
-    ${d.sessions.map(x => `<div class="card"><b>${esc(x.label)}</b>${x.current ? ' <span class="ok">· cet appareil</span>' : ''}<br><span class="mut">connecté ${dt(x.created)} · dernière activité ${dt(x.lastSeen)}</span>${x.current ? '' : ` <button data-ses="rm:${x.id}" aria-label="Révoquer la session ${esc(x.label)}">Révoquer</button>`}</div>`).join('') || '<p class="mut">Aucune session.</p>'}
+    <p class="mut">Les appareils connectés à votre compte : navigateur, lieu approximatif (d’après le fuseau horaire, jamais l’IP), date de connexion et dernière activité. Une alerte s’affiche à chaque nouvelle connexion.</p>
+    ${d.sessions.map(x => `<div class="card"><b>${esc(x.label)}</b>${x.current ? ' <span class="ok">· cet appareil</span>' : ''}<br><span class="mut">${x.place ? '📍 ' + esc(x.place) + ' · ' : ''}connecté ${dt(x.created)} · dernière activité ${dt(x.lastSeen)}</span>${x.current ? '' : ` <button data-ses="rm:${x.id}" aria-label="Révoquer la session ${esc(x.label)}">Révoquer</button>`}</div>`).join('') || '<p class="mut">Aucune session.</p>'}
     ${d.sessions.length > 1 ? '<button data-ses="rmall">🛑 Révoquer tous les autres appareils</button>' : ''}${ses.msg ? `<p class="ok" role="status">${esc(ses.msg)}</p>` : ''}</div>
     <div class="card" role="group" aria-labelledby="h-slog"><h2 id="h-slog">📜 Journal de sécurité</h2><p class="mut">Connexions, échecs et changements de mot de passe (100 derniers événements, sans adresse IP).</p>
-    <ul class="slog" style="list-style:none;padding:0;margin:0;display:grid;gap:4px">${d.log.map(x => `<li>${SEC_EVENTS[x.kind] || esc(x.kind)} <span class="mut">· ${dt(x.at)}${x.label ? ' · ' + esc(x.label) : ''}</span></li>`).join('') || '<li class="mut">Aucun événement pour l’instant.</li>'}</ul></div>`;
+    <ul class="slog" style="list-style:none;padding:0;margin:0;display:grid;gap:4px">${d.log.map(x => `<li>${SEC_EVENTS[x.kind] || esc(x.kind)} <span class="mut">· ${dt(x.at)}${x.label ? ' · ' + esc(x.label) : ''}${x.place ? ' · 📍 ' + esc(x.place) : ''}</span></li>`).join('') || '<li class="mut">Aucun événement pour l’instant.</li>'}</ul></div>`;
 }
 document.addEventListener('click', ev => {
   const b = ev.target.closest('[data-ses]'); if (!b) return;
@@ -216,6 +216,26 @@ document.addEventListener('click', ev => {
 // ---- confidentialité : visibilité du profil et des publications, export, connexions actives, suppression avec délai de grâce ----
 const PRIV_OPTS = [['all', '🌍 Tout le monde'], ['followers', '👥 Mes abonnés'], ['me', '🔒 Moi seul·e']];
 const DAY = 86400000;
+// alerte de nouvelle connexion : une session ouverte ailleurs depuis la dernière visite de cet appareil (repère propre à l'appareil)
+const LOGIN_SEEN = 'app.loginseen.';
+const loginAlert = { list: [], at: 0 };
+async function loginCheck() {
+  if (!me || Date.now() - loginAlert.at < 15000) return; loginAlert.at = Date.now();
+  try {
+    const d = await sync.get('/api/sessions'), key = LOGIN_SEEN + me, seen = localStorage.getItem(key);
+    const newest = d.sessions.reduce((m, x) => Math.max(m, x.created), 0);
+    if (seen === null) localStorage.setItem(key, String(newest));
+    else { const l = d.sessions.filter(x => !x.current && x.created > +seen); if (l.length !== loginAlert.list.length) { loginAlert.list = l; refresh(); } }
+  } catch (e) { /* hors-ligne : on réessaiera */ }
+}
+function loginBanner() {
+  if (!me || !loginAlert.list.length) return '';
+  return `<div class="card err" role="alert">🔔 Nouvelle connexion à votre compte : ${loginAlert.list.map(x => `<b>${esc(x.label)}</b>${x.place ? ' 📍 ' + esc(x.place) : ''} (${dt(x.created)})`).join(', ')}. <button data-loginok>✅ C’était moi</button> <button data-page="security">🔒 Voir les appareils</button></div>`;
+}
+document.addEventListener('click', ev => {
+  if (!ev.target.closest('[data-loginok]') || !me) return;
+  const newest = loginAlert.list.reduce((m, x) => Math.max(m, x.created), 0); localStorage.setItem(LOGIN_SEEN + me, String(newest)); loginAlert.list = []; refresh();
+});
 function delBanner() {
   if (!me || !net.profile(me).deleteAt) return '';
   const at = net.profile(me).deleteAt, left = Math.max(0, Math.ceil((at - Date.now()) / DAY));
@@ -688,7 +708,7 @@ function render() {
       ${typingHTML()}<input id="dm" placeholder="Message à ${esc(view.arg)}">${attachBox('dm')}<button data-dm>Envoyer</button></div>${e}`;
   }
   if (view.page === 'dm' && view.arg && unreadDm.peers[view.arg] && document.hasFocus()) net.markDmRead(me, view.arg).catch(() => {}); // conversation ouverte : lue
-  app.innerHTML = delBanner() + (mySanc ? `<div class="card err" role="alert">Mesure de modération : ${sancLabel(mySanc)} ${net.hasAppealed(me, 'sanction') ? '<span class="mut">· appel en cours d’examen</span>' : '<button data-appeal="sanction:">📨 Faire appel</button>'}</div>${view.appealing === 'sanction:' ? appealForm('sanction') : ''}` : '') + (!net.isAdmin(me) ? myAppeals() : '') + h;
+  app.innerHTML = loginBanner() + delBanner() + (mySanc ? `<div class="card err" role="alert">Mesure de modération : ${sancLabel(mySanc)} ${net.hasAppealed(me, 'sanction') ? '<span class="mut">· appel en cours d’examen</span>' : '<button data-appeal="sanction:">📨 Faire appel</button>'}</div>${view.appealing === 'sanction:' ? appealForm('sanction') : ''}` : '') + (!net.isAdmin(me) ? myAppeals() : '') + h;
   a11yPass();
   ensureLive();
   const m = $('#more'); if (m) more.observe(m);
@@ -1189,6 +1209,7 @@ render();
   // temps réel : le serveur annonce chaque changement (SSE) ; l'interrogation ne sert plus que de secours
   setInterval(() => { if (!sync.connected()) sync.poll().then(feedFresh); }, 2000);
   setInterval(() => { if (sync.connected()) sync.poll().then(feedFresh); }, 20000);
+  setInterval(loginCheck, 20000); setTimeout(loginCheck, 1500);
   window.addEventListener('focus', () => { sync.poll().then(feedFresh); if (view.page === 'dm') refresh(); });
 })();
 // la page Tendances se rafraîchit seule (le score dépend de l'heure)

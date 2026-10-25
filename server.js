@@ -25,7 +25,7 @@ function createServer(opts = {}) {
     CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, name TEXT NOT NULL, epoch INTEGER NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS security_log (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, kind TEXT NOT NULL, label TEXT NOT NULL, at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS security_log_name ON security_log (name, at);`);
-  for (const col of ['label TEXT', 'last_seen INTEGER']) { try { db.exec('ALTER TABLE sessions ADD COLUMN ' + col); } catch (e) { /* colonne déjà présente */ } }
+  for (const col of ['label TEXT', 'last_seen INTEGER', 'place TEXT']) { try { db.exec('ALTER TABLE sessions ADD COLUMN ' + col); } catch (e) { /* colonne déjà présente */ } }
   const getRow = db.prepare('SELECT v, version FROM kv WHERE k = ?'), putRow = db.prepare(`INSERT INTO kv (k, v, version) VALUES (?, ?, 1)
     ON CONFLICT(k) DO UPDATE SET v = excluded.v, version = version + 1`);
   const storage = { getItem: k => { const r = getRow.get(k); return r ? r.v : null; }, setItem: (k, v) => { putRow.run(k, String(v)); if (k === Social.KEY) { announce(); setImmediate(() => { try { dev.scan(); } catch (e) { console.error('Webhooks :', e); } }); } } };
@@ -74,21 +74,24 @@ function createServer(opts = {}) {
   };
 
   // ---- sessions ----
-  const insS = db.prepare('INSERT INTO sessions (hash, name, epoch, created, expires, label, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)'), getS = db.prepare('SELECT * FROM sessions WHERE hash = ?'),
+  const insS = db.prepare('INSERT INTO sessions (hash, name, epoch, created, expires, label, last_seen, place) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'), getS = db.prepare('SELECT * FROM sessions WHERE hash = ?'),
     delS = db.prepare('DELETE FROM sessions WHERE hash = ?'), delUser = db.prepare('DELETE FROM sessions WHERE name = ?'),
     trimS = db.prepare('DELETE FROM sessions WHERE hash IN (SELECT hash FROM sessions WHERE name = ? ORDER BY created DESC LIMIT -1 OFFSET ?)'), purge = db.prepare('DELETE FROM sessions WHERE expires < ?');
   // journal de sécurité (connexions, échecs, changements de mot de passe, révocations) : navigateur et système seulement, jamais d'adresse IP
   const insL = db.prepare('INSERT INTO security_log (name, kind, label, at) VALUES (?, ?, ?, ?)'), trimL = db.prepare('DELETE FROM security_log WHERE name = ? AND id NOT IN (SELECT id FROM security_log WHERE name = ? ORDER BY id DESC LIMIT 200)');
-  const secLog = (name, kind, req) => { insL.run(name, kind, req ? deviceLabel(req.headers['user-agent']) : '', Date.now()); trimL.run(name, name); };
+  try { db.exec('ALTER TABLE security_log ADD COLUMN place TEXT'); } catch (e) { /* colonne déjà présente */ }
+  // lieu approximatif : déduit du fuseau horaire annoncé par le navigateur (« Europe/Paris » → « Paris (Europe) »), jamais de l'adresse IP
+  const placeOf = req => { const z = String(req && req.headers['x-timezone'] || ''); if (!/^[A-Za-z0-9_+\-]+(\/[A-Za-z0-9_+\-]+){0,2}$/.test(z) || z.length > 40) return ''; const p = z.split('/'); return p.length > 1 ? `${p[p.length - 1].replace(/_/g, ' ')} (${p[0]})` : z; };
+  const secLog = (name, kind, req) => { db.prepare('INSERT INTO security_log (name, kind, label, at, place) VALUES (?, ?, ?, ?, ?)').run(name, kind, req ? deviceLabel(req.headers['user-agent']) : '', Date.now(), placeOf(req)); trimL.run(name, name); };
   const openSession = (name, req, kind) => {
     const token = crypto.randomBytes(32).toString('hex'), now = Date.now();
-    purge.run(now); insS.run(sha(token), name, net.epoch(name), now, now + SESSION_MS, req ? deviceLabel(req.headers['user-agent']) : 'Appareil du stream', now); trimS.run(name, MAX_SESSIONS);
+    purge.run(now); insS.run(sha(token), name, net.epoch(name), now, now + SESSION_MS, req ? deviceLabel(req.headers['user-agent']) : 'Appareil du stream', now, placeOf(req)); trimS.run(name, MAX_SESSIONS);
     if (kind) secLog(name, kind, req);
     return { name, token };
   };
-  const listS = db.prepare('SELECT hash, label, created, last_seen, expires FROM sessions WHERE name = ? AND expires > ? ORDER BY COALESCE(last_seen, created) DESC'), delSOne = db.prepare('DELETE FROM sessions WHERE name = ? AND hash = ?'),
-    delSOthers = db.prepare('DELETE FROM sessions WHERE name = ? AND hash != ?'), touchS = db.prepare('UPDATE sessions SET last_seen = ? WHERE hash = ?'), listL = db.prepare('SELECT kind, label, at FROM security_log WHERE name = ? ORDER BY id DESC LIMIT 100');
-  const sessionsOf = (name, cur) => listS.all(name, Date.now()).map(r => ({ id: r.hash.slice(0, 16), label: r.label || 'Navigateur', created: r.created, lastSeen: r.last_seen || r.created, current: r.hash === cur }));
+  const listS = db.prepare('SELECT hash, label, place, created, last_seen, expires FROM sessions WHERE name = ? AND expires > ? ORDER BY COALESCE(last_seen, created) DESC'), delSOne = db.prepare('DELETE FROM sessions WHERE name = ? AND hash = ?'),
+    delSOthers = db.prepare('DELETE FROM sessions WHERE name = ? AND hash != ?'), touchS = db.prepare('UPDATE sessions SET last_seen = ? WHERE hash = ?'), listL = db.prepare('SELECT kind, label, place, at FROM security_log WHERE name = ? ORDER BY id DESC LIMIT 100');
+  const sessionsOf = (name, cur) => listS.all(name, Date.now()).map(r => ({ id: r.hash.slice(0, 16), label: r.label || 'Navigateur', place: r.place || '', created: r.created, lastSeen: r.last_seen || r.created, current: r.hash === cur }));
   function auth(req) {
     const t = /^Bearer (cnch_[0-9a-f]{40})$/.exec(req.headers.authorization || ''); // jeton d'API personnel : n'ouvre que /api/v1/*
     if (t) { const k = dev.checkToken(t[1]); return k && { name: k.name, scopes: k.scopes, tokenId: k.id, api: true }; }
