@@ -430,6 +430,9 @@ console.log('ok');
     const p = r.notifPrefs('npa'); p.types.mention.bell = false; p.types.dm.bell = true; p.tz = 0;
     r.setNotifPrefs('npa', p);
     assert.ok(!r.notifications('npa').some(n => n.type === 'mention') && r.notifications('npa').some(n => n.type === 'dm'));
+    // types invitations (group) et RSVP (event) réglables, push compris ; « tout marquer comme lu »
+    assert.ok(Social.NP_TYPES.includes('group') && Social.NP_TYPES.includes('event') && r.notifPrefs('npa').types.event.push === true);
+    assert.ok(r.notifications('npa').some(n => !n.read)); r.notifications('npa', true); assert.ok(r.notifications('npa').every(n => n.read), 'tout marqué lu');
     // heures calmes, y compris à cheval sur minuit
     const q = Social.normPrefs({ quiet: { on: true, from: '22:00', to: '08:00' }, tz: 0 });
     assert.ok(Social.inQuiet(q, Date.UTC(2026, 0, 1, 23, 0)) && Social.inQuiet(q, Date.UTC(2026, 0, 1, 7, 59)) && !Social.inQuiet(q, Date.UTC(2026, 0, 1, 12, 0)));

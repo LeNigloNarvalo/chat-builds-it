@@ -49,8 +49,8 @@
   async function hashPw(pw, salt) { salt = salt || randHex(16); return salt + '$' + await sha(salt + pw); }
 
     // ---- préférences de notifications (par compte) : pour chaque type, cloche / push / e-mail ; heures calmes ; résumé quotidien ----
-  const NP_TYPES = ['mention', 'dm', 'reply', 'follow'], NP_CHANNELS = ['bell', 'push', 'email'];
-  const NP_DEFAULT = { mention: { bell: true, push: true, email: false }, dm: { bell: false, push: true, email: false }, reply: { bell: true, push: true, email: false }, follow: { bell: true, push: true, email: false } };
+  const NP_TYPES = ['mention', 'dm', 'reply', 'follow', 'group', 'event'], NP_CHANNELS = ['bell', 'push', 'email'];
+  const NP_DEFAULT = { mention: { bell: true, push: true, email: false }, dm: { bell: false, push: true, email: false }, reply: { bell: true, push: true, email: false }, follow: { bell: true, push: true, email: false }, group: { bell: true, push: true, email: false }, event: { bell: true, push: true, email: false } };
   const hhmm = v => { const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(v || '')); return m ? m[0] : null; };
   const toMin = v => +v.slice(0, 2) * 60 + +v.slice(3);
   function normPrefs(o) {
@@ -68,7 +68,7 @@
     const a = toMin(p.quiet.from), b = toMin(p.quiet.to), m = localMin(at == null ? Date.now() : at, p.tz);
     return a === b ? false : a < b ? m >= a && m < b : m >= a || m < b;
   }
-  const NP_LABEL = { mention: 'vous a mentionné', dm: 'vous a écrit', reply: 'a répondu à votre post', follow: 'vous suit maintenant', like: 'a aimé votre post', repost: 'a repartagé votre post', quote: 'a cité votre post', react: 'a réagi à votre post', poll: 'sondage terminé', group: 'activité dans une communauté', search: 'nouveaux résultats d’une recherche enregistrée', sanction: 'mesure de modération', hide: 'post masqué', appeal: 'appel de modération' };
+  const NP_LABEL = { event: 'RSVP ou rappel d’événement', mention: 'vous a mentionné', dm: 'vous a écrit', reply: 'a répondu à votre post', follow: 'vous suit maintenant', like: 'a aimé votre post', repost: 'a repartagé votre post', quote: 'a cité votre post', react: 'a réagi à votre post', poll: 'sondage terminé', group: 'activité dans une communauté', search: 'nouveaux résultats d’une recherche enregistrée', sanction: 'mesure de modération', hide: 'post masqué', appeal: 'appel de modération' };
 
   // ---- confidentialité : qui voit le profil et les publications (all | followers | me) ; suppression de compte avec délai de grâce ----
   const PRIV_LEVELS = ['all', 'followers', 'me'], GRACE_MS = 7 * 86400000;
