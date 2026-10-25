@@ -144,3 +144,10 @@ mark { background: #ffe066; color: #000; border-radius: 3px; padding: 0 2px; }
 .sens-h{margin-top:8px;padding:6px 10px;border:1px solid #c98a00;border-left-width:4px;border-radius:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .sens.blur{filter:blur(24px);pointer-events:none;user-select:none;overflow:hidden;border-radius:10px}.sens.blur video,.sens.blur audio{visibility:hidden}
 .pinb{background:none;border:1px solid var(--acc,#9146ff)}
+.state{text-align:center;display:grid;gap:8px;justify-items:center;padding:22px 16px}.state h2{margin:0;font-size:1.1rem}.state p{margin:0;max-width:44ch}.state .row{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}.state .sicon{font-size:2.2rem;line-height:1}
+.state.error{border-color:var(--err)}.state.loading{text-align:left;justify-items:stretch}
+.spin{display:inline-block;width:14px;height:14px;border:2px solid var(--bd);border-top-color:var(--acc);border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px}
+.skel{display:grid;gap:8px;margin-top:10px}.skel i{display:block;height:12px;border-radius:6px;background:linear-gradient(90deg,var(--bd),var(--card),var(--bd));background-size:200% 100%;animation:sh 1.4s linear infinite}.skel i:nth-child(2){width:80%}.skel i:nth-child(3){width:55%}
+@keyframes spin{to{transform:rotate(360deg)}}@keyframes sh{to{background-position:-200% 0}}
+@media(prefers-reduced-motion:reduce){.spin,.skel i{animation:none}}
+#netbar{position:sticky;top:0;z-index:6;text-align:center;padding:8px 12px;font-size:.875rem;background:var(--err);color:#fff;display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap}#netbar.back{background:var(--ok)}#netbar button{padding:2px 10px;background:rgba(255,255,255,.2);color:#fff;border-color:rgba(255,255,255,.5)}

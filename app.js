@@ -247,7 +247,28 @@ function lightbox() {
   document.body.appendChild(d); d.querySelector('[data-lbclose]').focus();
 }
 const closeLb = () => { const from = lb && lb.from; lb = null; lightbox(); if (from) { const b = document.querySelector(`[data-gal="${from}"]`); if (b) b.focus(); } };
-const attempt = async f => { try { err = ''; await f(); } catch (e) { err = e.message; } render(); };
+// en cas d'échec la saisie du formulaire est conservée et l'action peut être rejouée avec « Réessayer »
+let lastAction = null;
+const attempt = async f => {
+  const snap = States.snapshot(document.getElementById('app') || document);
+  try { err = ''; await f(); lastAction = null; } catch (e) { err = e.message; lastAction = f; render(); States.restore(document, snap); return; }
+  render();
+};
+// « Réessayer » : rejoue la dernière action échouée, sinon recharge les données de la page
+async function retry() {
+  const f = lastAction, snap = States.snapshot(document.getElementById('app') || document);
+  err = '';
+  if (f) return attempt(f);
+  netState('retry');
+  try { await sync.pull(true); if (!booting) checkSession(); netState(''); } catch (e) { err = e.message; netState('off'); }
+  for (const k of [st, ses, tfa, pk]) if (k && 'loaded' in k) k.loaded = false;
+  if (view.page === 'stats') statsLoad(); if (view.page === 'dev') devLoad && devLoad();
+  fts.err = ''; adm.stErr = '';
+  if (feedScope()) await feedLoad(true);
+  for (const [k, q] of pagerSpecs()) pagerLoad(k, q, true);
+  render(); States.restore(document, snap);
+}
+document.addEventListener('click', ev => { if (ev.target.closest('[data-retry]')) retry(); else if (ev.target.closest('[data-netretry]')) retry(); });
 // re-rendu sans perdre la saisie en cours (changement venu d'un autre visiteur)
 function refresh() {
   if (me) checkSession();
@@ -265,8 +286,20 @@ if ('serviceWorker' in navigator) {
 }
 window.addEventListener('beforeinstallprompt', ev => { ev.preventDefault(); installEv = ev; if (view.page === 'settings') refresh(); });
 window.addEventListener('appinstalled', () => { installEv = null; notice = 'Cornichon est installé ✔'; if (view.page === 'settings') refresh(); });
-const showOffline = () => { const o = document.getElementById('offline'); if (o) o.hidden = navigator.onLine; };
-window.addEventListener('online', () => { showOffline(); sync.poll().then(feedFresh); }); window.addEventListener('offline', showOffline); showOffline();
+// détection de coupure réseau : événements du navigateur + échec réel d'une requête (sync.online())
+let netShown = '', backT = 0;
+function netState(s) {
+  let bar = document.getElementById('netbar');
+  if (!s) { if (netShown !== 'off' && netShown !== 'retry') return; s = 'back'; }
+  if (s === netShown) return; netShown = s; clearTimeout(backT);
+  if (!bar) { bar = document.createElement('div'); bar.id = 'netbar'; bar.setAttribute('role', 'status'); bar.setAttribute('aria-live', 'polite'); document.body.insertBefore(bar, document.body.firstChild); }
+  bar.className = s === 'back' ? 'back' : ''; bar.innerHTML = `<span>${esc(States.bar(s))}</span>${s === 'off' ? `<button data-netretry>${t('state.retry')}</button>` : ''}`;
+  if (s === 'back') backT = setTimeout(() => { netShown = ''; bar.remove(); }, 2500);
+}
+const showOffline = () => { const o = document.getElementById('offline'); if (o) o.hidden = true; if (!navigator.onLine) netState('off'); else if (netShown === 'off') { netState('retry'); sync.poll().then(() => { netState(''); feedFresh(); }, () => netState('off')); } };
+window.addEventListener('online', showOffline); window.addEventListener('offline', () => netState('off')); showOffline();
+setInterval(() => { if (!navigator.onLine) netState('off'); else if (!sync.online()) { if (netShown !== 'off') netState('off'); } else if (netShown === 'off') netState(''); }, 2000);
+window.addEventListener('unhandledrejection', ev => { if (States.kind(ev.reason) === 'network') { netState('off'); ev.preventDefault(); } });
 const clearOffline = () => { if ('serviceWorker' in navigator && navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage('clear-data'); };
 // à chaque changement de données : affiche les nouvelles mentions / réponses / abonnés selon les réglages
 // nouveaux messages privés reçus (via le flux temps réel) : notification système si l'appli est en arrière-plan
@@ -316,7 +349,7 @@ async function sesLoad() {
   ses.loaded = true; if (view.page === 'security' || view.page === 'privacy') refresh();
 }
 function sessionsCard() {
-  if (!ses.loaded) { sesLoad(); return '<div class="card"><h2>💻 Sessions actives</h2><p class="mut" role="status">Chargement…</p></div>'; }
+  if (!ses.loaded) { sesLoad(); return `<div class="card"><h2>💻 Sessions actives</h2>${States.loading('Chargement…')}</div>`; }
   const d = ses.data || { sessions: [], log: [] };
   return `<div class="card" role="group" aria-labelledby="h-ses"><h2 id="h-ses">💻 Sessions actives (${d.sessions.length})</h2>
     <p class="mut">Les appareils connectés à votre compte : navigateur, lieu approximatif (d’après le fuseau horaire, jamais l’IP), date de connexion et dernière activité. Une alerte s’affiche à chaque nouvelle connexion.</p>
@@ -392,7 +425,7 @@ const v1 = s => ($(s) || {}).value;
 const qrSvg = text => { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createSvgTag(5, 3, 'QR code à scanner avec votre appli d’authentification', 'QR code TOTP'); };
 const groupCode = c => String(c).replace(/(.{4})(?=.)/g, '$1 ');
 function tfaCard() {
-  if (!tfa.loaded) { tfaLoad(); return '<div class="card"><h2>🔐 Double authentification (TOTP)</h2><p class="mut" role="status">Chargement…</p></div>'; }
+  if (!tfa.loaded) { tfaLoad(); return `<div class="card"><h2>🔐 Double authentification (TOTP)</h2>${States.loading('Chargement…')}</div>`; }
   const d = tfa.data || { enabled: false, devices: [], backupLeft: 0 }, e = err ? `<p class="err" role="alert">${esc(err)}</p>` : '';
   const codes = tfa.codes ? `<div class="card" role="status"><b class="ok">Codes de secours — notez-les maintenant, ils ne seront plus jamais affichés :</b>
     <div class="backup" id="tfa-codes">${tfa.codes.map(c => `<code>${esc(c)}</code>`).join('')}</div>
@@ -453,7 +486,7 @@ async function pkLoad() {
   pk.loaded = true; if (view.page === 'settings') { const k = document.activeElement && document.activeElement.id; if (!/^pk-/.test(k || '')) refresh(); }
 }
 function pkCard() {
-  if (!pk.loaded) { pkLoad(); return '<div class="card"><h2>🔑 Clés d’accès (passkeys)</h2><p class="mut" role="status">Chargement…</p></div>'; }
+  if (!pk.loaded) { pkLoad(); return `<div class="card"><h2>🔑 Clés d’accès (passkeys)</h2>${States.loading('Chargement…')}</div>`; }
   const keys = pk.keys || [];
   return `<div class="card" role="group" aria-labelledby="h-pk"><h2 id="h-pk">🔑 Clés d’accès (passkeys)</h2>
     <p class="mut">Connectez-vous sans mot de passe, par empreinte digitale ou Face ID. Ces clés s’ajoutent à la double authentification TOTP : elles ne la remplacent pas.</p>
@@ -666,7 +699,7 @@ async function stLoad() { try { adm.st = await sync.get('/api/admin/status'); ad
 const dur = s => s >= 86400 ? Math.floor(s / 86400) + ' j ' + Math.floor(s % 86400 / 3600) + ' h' : s >= 3600 ? Math.floor(s / 3600) + ' h ' + Math.floor(s % 3600 / 60) + ' min' : s >= 60 ? Math.floor(s / 60) + ' min ' + s % 60 + ' s' : s + ' s';
 function statusPage(head) {
   if (!adm.st || (Date.now() - (adm.stAt || 0) > 5000 && !adm.stBusy)) { adm.stBusy = true; stLoad().finally(() => { adm.stBusy = false; }); }
-  const S = adm.st; if (!S) return head + (adm.stErr ? `<p class="err" role="alert">${esc(adm.stErr)}</p>` : '<p class="mut" role="status">Chargement…</p>');
+  const S = adm.st; if (!S) return head + (adm.stErr ? `<p class="err" role="alert">${esc(adm.stErr)}</p>` : States.loading('Chargement…'));
   const R = S.requests, c = R.codes, bad = S.errors.count, B = S.backups, late = B && B.last && Date.now() - B.last > 2 * B.everyHours * 3600000 + 3600000;
   const tile = (l, v, cls) => `<div class="card"><div class="mut">${l}</div><b class="${cls || ''}" style="font-size:1.4em">${v}</b></div>`;
   return head + `<div class="card"><b>🩺 État du serveur</b> <span class="${bad ? 'err' : 'ok'}">${bad ? '⚠️ ' + bad + ' erreur(s) depuis le démarrage' : '✅ aucune erreur'}</span>
@@ -683,7 +716,7 @@ function statusPage(head) {
     <div class="card"><b>⚙️ Configuration (variables d’environnement)</b><p class="mut">Port <code>${S.config.port}</code> · <code>PUBLIC_URL</code> ${S.config.publicUrl ? esc(S.config.publicUrl) : 'non définie'} · base <code>${esc(S.db.file)}</code> · webhooks privés ${S.config.webhookPrivate ? 'autorisés' : 'refusés'}</p></div>`;
 }
 function backupsPage(head) {
-  if (!adm.bk) { bkLoad(); return head + '<p class="mut" role="status">Chargement…</p>'; }
+  if (!adm.bk) { bkLoad(); return head + States.loading('Chargement…'); }
   const B = adm.bk, newest = B.backups[0];
   return head + `<div class="card"><b>💾 Sauvegardes du serveur</b>
     <p class="mut">Une copie complète de la base est faite automatiquement chaque jour. ${newest ? 'Dernière : ' + ago(newest.at) + '.' : 'Aucune sauvegarde pour l’instant.'} Restaurer remplace toutes les données actuelles (une sauvegarde de sécurité est créée juste avant).</p>
@@ -828,12 +861,12 @@ function ftsPage() {
     <label class="inl">Jusqu’au <input id="fts-until" type="date" value="${esc(fts.until)}"></label>
     ${fts.from || fts.since || fts.until ? '<button data-ftsx="reset">✕ Effacer les filtres</button>' : ''}</div></div>` +
     (fts.err ? `<p class="mut" role="alert">${esc(fts.err)}</p>` : '') +
-    (!fts.q.trim() ? '<p class="mut">Commencez à taper pour lancer la recherche.</p>' : !r ? '<p class="mut" role="status">Recherche en cours…</p>' :
+    (!fts.q.trim() ? '<p class="mut">Commencez à taper pour lancer la recherche.</p>' : !r ? States.loading('Recherche en cours…') :
       `<p class="mut" role="status">${r.total} post${r.total > 1 ? 's' : ''} trouvé${r.total > 1 ? 's' : ''}${fts.busy ? ' …' : ''}</p>` +
       (r.tags.length ? `<div class="card"><b>#️⃣ Hashtags</b><div class="row">${r.tags.map(x => `<button data-tag="${esc(x.tag)}">${ftsMark(x.htag)} <span class="mut">${x.n}</span></button>`).join('')}</div></div>` : '') +
       (r.users.length ? r.users.map(u => `<div class="card">${av(u.name)}<span class="who" data-user="${esc(u.name)}">${ftsMark(u.hdisplay || u.hname || u.name)}</span> <span class="mut">@${ftsMark(u.hname || u.name)}</span>${u.bio ? `<p class="mut">${ftsMark(u.hbio || u.bio)}</p>` : ''}</div>`).join('') : '') +
       r.posts.map(postCard).join('') + (r.more ? '<button class="card morebar" data-ftsx="more">Voir plus de résultats</button>' : '') +
-      (!r.posts.length && !r.users.length && !r.tags.length && !fts.busy ? '<p class="mut">Aucun résultat : essayez un autre mot ou élargissez les filtres.</p>' : ''));
+      (!r.posts.length && !r.users.length && !r.tags.length && !fts.busy ? States.empty('🔎', 'Aucun résultat', 'Essayez un autre mot ou élargissez les filtres.') : ''));
 }
 document.addEventListener('input', ev => {
   const id = ev.target.id; if (!/^fts-(q|from|since|until)$/.test(id)) return;
@@ -880,7 +913,7 @@ function mediaPage(e) {
     ${md.busy ? `<p class="mut" role="status">${esc(md.busy)}</p>` : ''}${md.msg ? `<p class="ok" role="status">${esc(md.msg)}</p>` : ''}</div>${e}
     ${list.length ? `<div class="card row" role="group" aria-label="Sélection"><button data-mdall>${n === list.length ? '☐ Tout désélectionner' : '☑ Tout sélectionner'}</button><span class="mut" aria-live="polite">${n} sélectionné${n > 1 ? 's' : ''}</span>
       ${md.confirm && n ? `<span class="err">Supprimer définitivement ${n} média${n > 1 ? 's' : ''} ?</span> <button data-mddelyes>🗑 Oui, supprimer</button><button data-mdno>Annuler</button>` : `<button data-mddel ${n ? '' : 'disabled'}>🗑 Supprimer la sélection</button>`}</div>
-    <div class="mgrid">${list.map(card).join('')}</div>` : '<div class="card mut">Aucun média pour l’instant : envoie ta première image.</div>'}`;
+    <div class="mgrid">${list.map(card).join('')}</div>` : States.empty('🖼️', 'Aucun média', 'Envoie ta première image pour la retrouver ici.')}`;
 }
 document.addEventListener('change', async ev => {
   const t = ev.target, D = t.dataset; if (!D) return;
@@ -912,8 +945,8 @@ function draftsPage(e) {
     <button data-drpub="${d.id}">🚀 Publier maintenant</button><button data-drdel="${d.id}">🗑 Supprimer</button></div>
     <span class="mut">enregistré ${ago(d.updatedAt)}</span></div>`;
   return `<div class="card"><h2>📝 Brouillons & publications planifiées</h2><p class="mut">Ce que tu écris est sauvegardé automatiquement. Une publication planifiée part à l’heure choisie, même si tu fermes le navigateur : c’est le serveur qui s’en charge.</p><p class="ok" role="status">${esc(draftMsg)}</p></div>${e}` + composer('Écris un nouveau brouillon…')
-    + `<div class="card"><b>📅 Planifiés (${sch.length})</b></div>` + (sch.map(item).join('') || '<p class="mut">Aucune publication planifiée.</p>')
-    + `<div class="card"><b>📝 Brouillons (${plain.length})</b></div>` + (plain.map(item).join('') || '<p class="mut">Aucun brouillon.</p>');
+    + `<div class="card"><b>📅 Planifiés (${sch.length})</b></div>` + (sch.map(item).join('') || States.empty('⏰', 'Aucune publication planifiée'))
+    + `<div class="card"><b>📝 Brouillons (${plain.length})</b></div>` + (plain.map(item).join('') || States.empty('📝', 'Aucun brouillon', 'Tes brouillons enregistrés apparaîtront ici.'));
 }
 // enregistrement automatique 0,8 s après la dernière frappe (relit puis écrit côté serveur)
 async function saveNow(k) {
@@ -984,11 +1017,19 @@ function whoToFollow() {
     <span class="mut sugwhy">${why(x)}</span><span class="sugact"><button data-sfollow="${esc(x.name)}" aria-label="Suivre @${esc(x.name)}">＋ Suivre</button> <button data-sdismiss="${esc(x.name)}" aria-label="Ignorer la suggestion @${esc(x.name)}">Ignorer</button></span></div>`).join('')
     : '<p class="mut">Plus de suggestions pour le moment : reviens quand le bocal se sera rempli.</p>') + '</section>';
 }
+// une exception pendant le rendu ne doit jamais laisser un écran blanc : page 404 (introuvable) ou 500 avec « Réessayer »
 function render() {
+  try { renderPage(); } catch (x) {
+    console.error(x);
+    const nf = States.kind(x) === 'notfound';
+    $('#app').innerHTML = (nf ? States.notFound() : States.serverError()) + (nf ? '' : `<p class="mut">${esc(x && x.message || '')}</p>`);
+  }
+}
+function renderPage() {
   const nav = $('#nav'), app = $('#app');
   $('#me').innerHTML = me ? `${STREAM ? '<b>🔴 STREAM</b> ' : ''}@${esc(me)}${net.isAdmin(me) ? t('me.admin') : ''} <button data-logout>${t('me.logout')}</button>` : '';
   livePill();
-  if (booting) { nav.innerHTML = ''; app.innerHTML = `<p class="mut" role="status">${t('loading.server')}</p>`; return; }
+  if (booting) { nav.innerHTML = ''; app.innerHTML = States.loading(t('loading.server')); return; }
   if (me && !sync.online()) $('#me').innerHTML += ` <span class="err" role="status">${t('offline.short')}</span>`;
   if (LINK && LINK.kind === 'reset' && !linkMsg) {
     nav.innerHTML = '';
@@ -1033,14 +1074,14 @@ function render() {
   for (const [pg, on] of [['notifs', news.notifs], ['dm', news.dm]]) if (on) nav.querySelectorAll(`[data-page="${pg}"]`).forEach(b => b.insertAdjacentHTML('beforeend', '<span class="newpill" role="status">nouveau</span>'));
   if (news.notifs) nav.querySelector('[data-navmore]')?.insertAdjacentHTML('beforeend', '<span class="newpill" role="status">nouveau</span>');
   livePill();
-  const e = err ? `<p class="err">${esc(err)}</p>` : '';
+  const e = err ? States.error(err, { kept: !!lastAction }) : '';
   // onglets du fil : global + une entrée par liste (les siennes)
   const tabs = () => { const ls = net.lists(me, me); return `<div class="card tabs" role="tablist" aria-label="Choix du fil"><button role="tab" aria-selected="${view.page === 'feed'}" class="${view.page === 'feed' ? 'on' : ''}" data-page="feed">🏠 Tout</button>${ls.map(l => `<button role="tab" aria-selected="${view.page === 'list' && view.arg.id === l.id}" class="${view.page === 'list' && view.arg.id === l.id && view.arg.owner === me ? 'on' : ''}" data-lopen="${esc(me)}:${l.id}">${l.public ? '🌐' : '🔒'} ${esc(l.name)}</button>`).join('')}<button data-page="lists">＋ Listes</button></div>`; };
   const mySanc = net.sanctionOf(me);
-  const list = ps => ps.map(p => postHTML(p)).join('') || `<p class="mut">${t('empty')}</p>`;
+  const list = ps => ps.map(p => postHTML(p)).join('') || States.empty('🫙', t('state.empty.title'), t('empty'));
   let h = '';
   const paged = () => {
-    if (fs.scope !== feedScope() || fs.who !== me || !fs.loaded) return `<p class="mut" role="status">${t('loading.feed')}</p>`;
+    if (fs.scope !== feedScope() || fs.who !== me || !fs.loaded) return err && !fs.busy ? '' : States.loading(t('loading.feed'));
     const pm = byId(net.db().posts, pc.posts), ps = fs.ids.map(i => pm.get(i)).filter(Boolean);
     return (fs.fresh ? `<button class="card newbar" data-newposts>${I18n.tn('new', fs.fresh)}</button>` : '') + list(ps)
       + (fs.more ? `<button class="card morebar" id="more" data-more>${t('loading.more')}</button>` : ps.length ? `<p class="mut" role="status">${t('seen.all')}</p>` : '');
@@ -1092,7 +1133,7 @@ function render() {
       <details class="ssmenu" ${ss.length ? 'open' : ''}><summary>📌 Mes recherches enregistrées ${ss.reduce((a, s) => a + s.fresh, 0) ? `<span class="badge">${ss.reduce((a, s) => a + s.fresh, 0)}</span>` : ''}</summary>
       ${ss.map(s => `<div class="row"><button data-ssopen="${s.id}">🔎 ${esc(s.name)}${s.name !== s.q ? ` <span class="mut">${esc(s.q)}</span>` : ''} · ${s.sort === 'popular' ? 'populaires' : 'récents'}</button>${s.fresh ? ` <span class="badge" title="Nouveaux résultats">${s.fresh} nouveau${s.fresh > 1 ? 'x' : ''}</span>` : ''} <button data-ssdel="${s.id}" aria-label="Supprimer ${esc(s.name)}">✕</button></div>`).join('') || '<p class="mut">Aucune recherche enregistrée.</p>'}</details></div>` +
       (bare ? `<p class="mut">${rdy ? sp.total : 0} post${sp.total > 1 && rdy ? 's' : ''}${r.users.length ? ` · ${r.users.length} compte${r.users.length > 1 ? 's' : ''}` : ''} · tri : ${o.sort === 'popular' ? 'populaire' : 'récent'}</p>` : '') +
-      (sq && !rdy ? `<p class="mut" role="status">Recherche en cours…</p>` : freshBar('search', 'nouveau résultat', 'nouveaux résultats') + r.users.map(u => `<div class="card">${av(u.name)}<span class="who" data-user="${u.name}">${esc(shown(u.name))}</span> <span class="mut">${esc(u.bio)}</span></div>`).join('') + (bare ? list(r.posts) : '') + moreBtn('search') + (rdy && !sp.more && r.posts.length ? `<p class="mut" role="status">${t('seen.all')}</p>` : ''));
+      (sq && !rdy ? `${States.loading('Recherche en cours…')}` : freshBar('search', 'nouveau résultat', 'nouveaux résultats') + r.users.map(u => `<div class="card">${av(u.name)}<span class="who" data-user="${u.name}">${esc(shown(u.name))}</span> <span class="mut">${esc(u.bio)}</span></div>`).join('') + (bare ? list(r.posts) : '') + moreBtn('search') + (rdy && !sp.more && r.posts.length ? `<p class="mut" role="status">${t('seen.all')}</p>` : ''));
   } else if (view.page === 'notifs') {
     const L = { dm: 'vous a écrit', sanction: 'a pris une mesure de modération contre votre compte', like: 'a aimé votre post', reply: 'a répondu à votre post', mention: 'vous a mentionné', follow: 'vous suit', repost: 'a repartagé votre post', quote: 'a cité votre post', react: 'a réagi à votre post', group: Notif.TEXT.group, poll: 'Votre sondage est terminé : voir les résultats', search: 'a de nouveaux résultats' };
     const gname = id => { try { return net.group(id).name; } catch (x) { return 'une communauté supprimée'; } };
@@ -1101,10 +1142,10 @@ function render() {
     const center = `<div class="card" role="group" aria-labelledby="h-nc"><h2 id="h-nc">🔔 Centre de notifications ${unreadN ? `<span class="badge" role="status">${unreadN} non lue${unreadN > 1 ? 's' : ''}</span>` : ''}</h2>
       <div class="row" role="group" aria-label="Filtrer par type">${NFILTERS.map(([k, l]) => { const c = allN.filter(n => k !== 'all' && k !== 'unread' ? nmatch(n, k) && !n.read : k === 'unread' ? !n.read : false).length; return `<button data-nfilter="${k}" aria-pressed="${nfilter === k}" class="${nfilter === k ? 'on' : ''}">${l}${c && k !== 'unread' ? ` <span class="badge">${c}</span>` : ''}</button>`; }).join(' ')}</div>
       <div class="row"><button data-nreadall ${unreadN ? '' : 'disabled'}>✅ Tout marquer comme lu</button> <span class="mut">${unreadN ? 'Les non lues sont en gras avec une pastille 🔵.' : 'Tout est lu.'}</span></div></div>`;
-    h = center + (!nready ? `<p class="mut" role="status">Chargement des notifications…</p>` : freshBar('notifs', 'nouvelle notification', 'nouvelles notifications')) + shownN.map(n => `<div class="card" ${n.read ? '' : 'style="border-left:4px solid #9146ff;font-weight:600"'} ${n.type === 'dm' ? `data-chat="${n.room ? '#' + n.room : esc(n.from)}"` : n.type === 'search' ? `data-ssopen="${n.search}"` : n.type === 'group' ? `data-cmopen="${n.group}"` : n.type === 'event' ? 'data-page="events"' : n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}>${n.read ? '' : '🔵 '}${n.type === 'search' ? `🔎 <b>${esc(n.name)}</b> : ${n.count} nouveau${n.count > 1 ? 'x' : ''} résultat${n.count > 1 ? 's' : ''}` : ''}${n.type === 'search' ? '' : n.from ? `<b>${esc(n.from)}</b> ` : n.type === 'event' ? '📅 ' : '📊 '}${n.type === 'react' && n.emoji ? n.emoji + ' ' : ''}${n.type === 'dm' && n.count > 1 ? `(×${n.count}) ` : ''}${n.type === 'event' ? `${Notif.TEXT.event[n.what] || 'événement'} · <b>${esc(n.title)}</b> · ${esc(evWhen(n.start))}` : n.type === 'group' ? `${L.group[n.what] || 'communauté'} · 👥 ${esc(gname(n.group))}` : n.type === 'search' ? '' : n.type === 'sanction' ? ({ warn: 'vous a averti', suspend: 'a suspendu votre compte', ban: 'a banni votre compte' })[n.what] || L.sanction : n.type === 'hide' ? 'a masqué votre post (vous pouvez faire appel)' : n.type === 'verif' ? ({ new: 'demande la vérification de son profil', accepted: 'a vérifié votre profil ✅', rejected: 'a refusé votre demande de vérification', granted: `vous a attribué le badge ${(Social.BADGES[n.badge] || {}).label || ''}`, revoked: `a révoqué votre badge ${(Social.BADGES[n.badge] || {}).label || ''}` })[n.what] + (n.answer ? ' : « ' + esc(n.answer) + ' »' : '') : n.type === 'appeal' ? ({ new: 'a fait appel d’une décision', accepted: 'a accepté votre appel', rejected: 'a rejeté votre appel' })[n.what] + (n.answer ? ' : « ' + esc(n.answer) + ' »' : '') : L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') + (nready ? moreBtn('notifs') + (!np.more && nl.length ? `<p class="mut" role="status">${t('seen.all')}</p>` : '') : '') + (nready && !shownN.length ? `<p class="mut">${nl.length ? 'Aucune notification dans ce filtre.' : 'Aucune notification.'}</p>` : '') + `<details class="card" open><summary><b>⚙️ Réglages par type (cloche, push, e-mail)</b></summary>${prefsPage()}</details>`;
+    h = center + (!nready ? `${States.loading('Chargement des notifications…')}` : freshBar('notifs', 'nouvelle notification', 'nouvelles notifications')) + shownN.map(n => `<div class="card" ${n.read ? '' : 'style="border-left:4px solid #9146ff;font-weight:600"'} ${n.type === 'dm' ? `data-chat="${n.room ? '#' + n.room : esc(n.from)}"` : n.type === 'search' ? `data-ssopen="${n.search}"` : n.type === 'group' ? `data-cmopen="${n.group}"` : n.type === 'event' ? 'data-page="events"' : n.postId ? `data-open="${n.postId}"` : `data-user="${n.from}"`}>${n.read ? '' : '🔵 '}${n.type === 'search' ? `🔎 <b>${esc(n.name)}</b> : ${n.count} nouveau${n.count > 1 ? 'x' : ''} résultat${n.count > 1 ? 's' : ''}` : ''}${n.type === 'search' ? '' : n.from ? `<b>${esc(n.from)}</b> ` : n.type === 'event' ? '📅 ' : '📊 '}${n.type === 'react' && n.emoji ? n.emoji + ' ' : ''}${n.type === 'dm' && n.count > 1 ? `(×${n.count}) ` : ''}${n.type === 'event' ? `${Notif.TEXT.event[n.what] || 'événement'} · <b>${esc(n.title)}</b> · ${esc(evWhen(n.start))}` : n.type === 'group' ? `${L.group[n.what] || 'communauté'} · 👥 ${esc(gname(n.group))}` : n.type === 'search' ? '' : n.type === 'sanction' ? ({ warn: 'vous a averti', suspend: 'a suspendu votre compte', ban: 'a banni votre compte' })[n.what] || L.sanction : n.type === 'hide' ? 'a masqué votre post (vous pouvez faire appel)' : n.type === 'verif' ? ({ new: 'demande la vérification de son profil', accepted: 'a vérifié votre profil ✅', rejected: 'a refusé votre demande de vérification', granted: `vous a attribué le badge ${(Social.BADGES[n.badge] || {}).label || ''}`, revoked: `a révoqué votre badge ${(Social.BADGES[n.badge] || {}).label || ''}` })[n.what] + (n.answer ? ' : « ' + esc(n.answer) + ' »' : '') : n.type === 'appeal' ? ({ new: 'a fait appel d’une décision', accepted: 'a accepté votre appel', rejected: 'a rejeté votre appel' })[n.what] + (n.answer ? ' : « ' + esc(n.answer) + ' »' : '') : L[n.type]} <span class="mut">· ${ago(n.at)}</span></div>`).join('') + (nready ? moreBtn('notifs') + (!np.more && nl.length ? `<p class="mut" role="status">${t('seen.all')}</p>` : '') : '') + (nready && !shownN.length ? `<p class="mut">${nl.length ? 'Aucune notification dans ce filtre.' : 'Aucune notification.'}</p>` : '') + `<details class="card" open><summary><b>⚙️ Réglages par type (cloche, push, e-mail)</b></summary>${prefsPage()}</details>`;
   } else if (view.page === 'thread') {
     const p = net.db().posts.find(x => x.id === view.arg);
-    h = p ? postHTML(p) + composer(t('composer.reply'), p.id) + e + net.replies(p.id, me).map(r => postHTML(r)).join('') : '<p class="mut">Post supprimé.</p>';
+    h = p ? postHTML(p) + composer(t('composer.reply'), p.id) + e + net.replies(p.id, me).map(r => postHTML(r)).join('') : States.notFound('Ce post n’existe pas ou a été supprimé.');
   } else if (view.page === 'profile') {
     const name = view.arg || me, u = net.profile(name), fl = net.followers(name), self = u.name === me;
     h = `<div class="card prof"><div class="banner" style="background:${bannerCss(u.banner)}"></div><div class="pbody">${av(u.name, true)}<b class="pname">${esc(u.display || u.name)}</b>${tbadges(u.name)} <span class="mut">@${esc(u.name)}</span>
@@ -1180,6 +1221,7 @@ function render() {
   }
   if (view.page === 'dm' && isRoom(view.arg) && unreadDm.rooms[+view.arg.slice(1)] && document.hasFocus()) net.markRoomRead(me, +view.arg.slice(1)).catch(() => {});
   else if (view.page === 'dm' && view.arg && unreadDm.peers[view.arg] && document.hasFocus()) net.markDmRead(me, view.arg).catch(() => {}); // conversation ouverte : lue
+  if (!h) h = States.notFound();
   app.innerHTML = loginBanner() + delBanner() + (mySanc ? `<div class="card err" role="alert">Mesure de modération : ${sancLabel(mySanc)} ${net.hasAppealed(me, 'sanction') ? '<span class="mut">· appel en cours d’examen</span>' : '<button data-appeal="sanction:">📨 Faire appel</button>'}</div>${view.appealing === 'sanction:' ? appealForm('sanction') : ''}` : '') + (!net.isAdmin(me) ? myAppeals() : '') + h;
   a11yPass();
   ensureLive();
@@ -1203,7 +1245,7 @@ function barChart(vals, labels, color, title) {
   return `<div class="bars" role="img" aria-label="${esc(title)} : ${vals.map((v, i) => labels[i] + ' ' + v).join(', ')}">${vals.map((v, i) => `<span class="bar" title="${esc(labels[i])} : ${v}" style="height:${Math.max(v ? 4 : 1, Math.round(v / max * 100))}%;background:${color}"></span>`).join('')}</div>`;
 }
 function statsPage(e) {
-  if (!st.loaded) { statsLoad(); return '<div class="card"><h2>📈 Statistiques de mes publications</h2><p class="mut" role="status">Chargement…</p></div>'; }
+  if (!st.loaded) { statsLoad(); return `<div class="card"><h2>📈 Statistiques de mes publications</h2>${States.loading('Chargement…')}</div>`; }
   const d = st.data; if (!d) return `<div class="card"><h2>📈 Statistiques</h2>${e}<button data-statsgo="${st.days}">Réessayer</button></div>`;
   const dl = d.series.map(x => I18n.date(new Date(x.day + 'T12:00:00Z').getTime(), { day: 'numeric', month: 'short', timeZone: 'UTC' }));
   const hmax = Math.max(1, ...d.hours), best = d.hours.map((v, h) => [v, h]).sort((a, b) => b[0] - a[0] || a[1] - b[1]).filter(x => x[0] > 0).slice(0, 3).map(x => x[1]);
@@ -1236,7 +1278,7 @@ async function devLoad() {
 const dt = ms => ms ? I18n.dateTime(ms) : '—';
 const EVLAB = { mention: '💬 nouvelle mention', follow: '➕ nouvel abonné', ping: '🏓 ping' };
 function devPage(e) {
-  if (!dev.loaded) { devLoad(); return '<p class="mut" role="status">Chargement…</p>'; }
+  if (!dev.loaded) { devLoad(); return States.loading('Chargement…'); }
   const d = dev.data || { tokens: [], hooks: [], log: [], events: [] }, base = location.origin;
   const tokens = d.tokens.map(t => `<div class="card"><b>🔑 ${esc(t.label)}</b> <code>${esc(t.prefix)}…</code> <span class="mut">${t.scopes.map(s => s === 'read' ? 'lecture' : 'publication').join(' + ')} · créé ${dt(t.created)} · ${t.last_used ? 'utilisé ' + t.uses + '× (dernier : ' + dt(t.last_used) + ')' : 'jamais utilisé'}</span>
     <button data-dvrevoke="${t.id}" aria-label="Révoquer le jeton ${esc(t.label)}">🗑 Révoquer</button></div>`).join('') || '<p class="mut">Aucun jeton : crée-en un pour publier ou lire depuis un script.</p>';

@@ -8,7 +8,8 @@ const { Store } = require('./store.js'), Social = require('./social.js'), Stats 
 const SESSION_MS = 30 * 86400000, MAX_SESSIONS = 20, MAX_BODY = 10 * 1024 * 1024;
 // actions qui modifient les données : le 1er argument (l'utilisateur) est TOUJOURS remplacé par le titulaire de la session
 const ACTIONS = new Set(['addMedia', 'setMediaAlt', 'deleteMedia', 'post', 'deletePost', 'editPost', 'toggleBookmark', 'togglePin', 'setWarning', 'toggleTopic', 'toggleRepost', 'toggleLike', 'react', 'quote', 'toggleFollow', 'updateProfile', 'setOnboarding', 'importUser', 'send', 'toggleBlock', 'toggleMute', 'report', 'moderate', 'liftSanction', 'appeal', 'decideAppeal', 'adminSanction', 'adminDeleteUser', 'requestVerification', 'decideVerification', 'grantBadge', 'revokeBadge', 'exportUser', 'markDmRead', 'deleteConversation', 'saveDraft', 'deleteDraft', 'publishDraft', 'createList', 'updateList', 'deleteList', 'toggleListMember', 'saveSharedList', 'forgetSharedList', 'dismissSuggestion', 'saveSearch', 'deleteSearch', 'markSearchSeen', 'checkSearches', 'setNotifPrefs', 'setPrivacy', 'requestDeletion', 'cancelDeletion', 'vote', 'createGroup', 'updateGroup', 'deleteGroup', 'joinGroup', 'leaveGroup', 'handleRequest', 'inviteToGroup', 'respondInvite', 'cancelInvite', 'removeFromGroup', 'unbanFromGroup', 'setGroupMod', 'createRoom', 'sendRoom', 'markRoomRead', 'addToRoom', 'renameRoom', 'removeFromRoom', 'setRoomAdmin', 'setRoomMute', 'leaveRoom', 'reportMessage', 'resolveMessageReport', 'createEvent', 'updateEvent', 'deleteEvent', 'rsvp']);
-const STATIC = new Set(['index.html', 'style.css', 'a11y.js', 'theme.js', 'social.js', 'sync.js', 'diag.js', 'app.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'notif.js', 'qrcode.js', 'stats.js']);
+const States = require('./states.js');
+const STATIC = new Set(['index.html', 'states.js', 'i18n.js', 'style.css', 'a11y.js', 'theme.js', 'social.js', 'sync.js', 'diag.js', 'app.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'notif.js', 'qrcode.js', 'stats.js']);
 const TYPES = { html: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', webmanifest: 'application/manifest+json; charset=utf-8', svg: 'image/svg+xml' };
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 
@@ -433,7 +434,10 @@ function createServer(opts = {}) {
       if (res.headersSent) return res.end();
       if (e.code === undefined && e.constructor !== Error) fail('Erreur interne', e);
       // messages de l'application (Error simples) renvoyés tels quels ; erreurs internes jamais détaillées
-      send(res, e.code >= 400 ? e.code : e.constructor === Error ? 400 : 500, { error: e.code >= 400 || e.constructor === Error ? e.message : 'Erreur interne du serveur : réessayez dans un instant' });
+      const code = e.code >= 400 ? e.code : e.constructor === Error ? 400 : 500;
+      // navigation du navigateur : vraie page 404/500 plutôt que du JSON
+      if ((code === 404 || code === 500) && req.method === 'GET' && !(req.url || '').startsWith('/api/') && /text\/html/.test(req.headers.accept || '')) { res.writeHead(code, Object.assign({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }, HEAD)); return res.end(States.page(code)); }
+      send(res, code, { error: e.code >= 400 || e.constructor === Error ? e.message : 'Erreur interne du serveur : réessayez dans un instant' });
     }
   });
   server.on('close', () => { clearInterval(beat); clearInterval(sched); clearInterval(reaper); clearInterval(mailer); if (backupTimer) clearInterval(backupTimer); for (const c of live) c.res.end(); live.clear(); db.close(); });
